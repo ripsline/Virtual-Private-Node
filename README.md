@@ -28,12 +28,12 @@ Before running the installer, you need:
 
 **Option 1: Direct execution (recommended)**
 ```bash
-curl -sSL https://raw.githubusercontent.com/YOUR_USERNAME/btcpay-installer/main/install.sh | sudo bash
+curl -sSL https://raw.githubusercontent.com/ripsline/btcpay-installer/main/install.sh | sudo bash
 ```
 
 **Option 2: Download then execute**
 ```bash
-wget https://raw.githubusercontent.com/YOUR_USERNAME/btcpay-installer/main/install.sh
+wget https://raw.githubusercontent.com/ripsline/btcpay-installer/main/install.sh
 chmod +x install.sh
 sudo ./install.sh
 ```
