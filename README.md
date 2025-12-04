@@ -2,7 +2,7 @@
 
 Official GitHub for ripsline Virtual Private Node
 
-One-command installation of a complete BTCPay Server stack with Bitcoin, Lightning Network (LND), Tor, and Lightning Terminal.
+One-command installation of a complete BTCPay Server stack with Bitcoin, Lightning Network (LND), Tor, Lightning Terminal, NIP-05 Nostr Identity, & Nostr Zaps.
 
 ## 🚀 Quick Start
 
@@ -10,9 +10,8 @@ One-command installation of a complete BTCPay Server stack with Bitcoin, Lightni
 
 Before running the installer, you need:
 
-1. **A fresh VPS** running Ubuntu 20.04+ or Debian 10+
-   - Minimum: 2GB RAM, 2 CPU cores, 500GB storage
-   - Recommended: 4GB RAM, 4 CPU cores, 1TB+ storage
+1. **A fresh VPS** running Ubuntu 24 LTS
+   - Minimum: 4GB RAM, 2 CPU cores, 50GB storage
 
 2. **A domain name** with DNS configured
    - Create an A record pointing to your VPS IP address
@@ -98,12 +97,6 @@ You'll be prompted to:
 - **VPS IP Address** - For LND configuration
 - **Domain** - Your BTCPay Server URL
 
-### Lightning Terminal Access
-
-Access at: `https://your-domain.com:8443`
-
-Use the password shown during installation.
-
 ## 🔧 Post-Installation
 
 ### LND Announceable Host Fix
@@ -158,7 +151,7 @@ docker exec btcpayserver_lnd_bitcoin lncli getinfo
 - **LND fix script:** `/root/BTCPayServer/fix-lnd-host.sh`
 - **Bitcoin data:** `/var/lib/docker/volumes/generated_bitcoin_datadir/`
 - **LND data:** `/var/lib/docker/volumes/generated_lnd_bitcoin_datadir/`
-- **Environment config:** `/root/BTCPayServer/btcpayserver-docker/.env`
+- **Environment config:** `/root/BTCPayServer/.env`
 
 ## 🔒 Security Recommendations
 
@@ -176,16 +169,9 @@ docker exec btcpayserver_lnd_bitcoin lncli getinfo
    # Set: PasswordAuthentication no
    systemctl restart sshd
    ```
+3. **Backup your Lightning wallet regularly**
 
-3. **Enable automatic security updates:**
-   ```bash
-   apt install unattended-upgrades
-   dpkg-reconfigure -plow unattended-upgrades
-   ```
-
-4. **Backup your Lightning wallet regularly**
-
-5. **Use strong passwords** for your BTCPay admin account
+4. **Use strong passwords & 2FA** for your BTCPay admin account
 
 ## 🆘 Troubleshooting
 
@@ -224,13 +210,6 @@ docker exec btcpayserver_bitcoind bitcoin-cli getblockchaininfo | grep progress
 
 ### Backup Important Data
 
-**Backup LND wallet seed** (do this immediately):
-```bash
-docker exec btcpayserver_lnd_bitcoin lncli create
-# Or if already created:
-docker exec btcpayserver_lnd_bitcoin cat /data/chain/bitcoin/mainnet/seed.txt
-```
-
 **Backup channel database** (before updates):
 ```bash
 docker cp btcpayserver_lnd_bitcoin:/data/chain/bitcoin/mainnet/channel.backup ./channel.backup
@@ -244,7 +223,6 @@ See official BTCPay Server documentation for restore procedures.
 
 - **BTCPay Server Docs:** https://docs.btcpayserver.org/
 - **LND Documentation:** https://docs.lightning.engineering/
-- **Community Support:** https://chat.btcpayserver.org/
 
 ## ⚠️ Disclaimer
 
