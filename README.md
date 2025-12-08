@@ -236,7 +236,7 @@ This is an automated installer. Always:
 
 This installer includes:
 - ✅ Taproot Channel support
-- ✅ NIP-05 Nostr Username
+- ✅ NIP-05 Nostr Username & Zaps Capability
 - ✅ Storage optimization (`opt-save-storage-xs`)
 - ✅ Tor support (`opt-add-tor`)
 - ✅ Lightning Terminal (`opt-add-lightning-terminal`)
