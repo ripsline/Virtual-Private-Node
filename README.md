@@ -11,7 +11,7 @@ One-command installation of a complete BTCPay Server stack with Bitcoin, Lightni
 Before running the installer, you need:
 
 1. **A fresh VPS** running Ubuntu 24 LTS
-   - Minimum: 4GB RAM, 2 CPU cores, 50GB storage
+   - Recommended: 4GB RAM, 2 CPU cores, 90GB storage
 
 2. **A domain name** with DNS configured
    - Create an A record pointing to your VPS IP address
@@ -27,12 +27,12 @@ Before running the installer, you need:
 
 **Option 1: Direct execution (recommended)**
 ```bash
-curl -sSL https://raw.githubusercontent.com/ripsline/btcpay-installer/main/install.sh | sudo bash
+curl -sSL https://raw.githubusercontent.com/ripsline/Virtual-Private-Node/main/install.sh | sudo bash
 ```
 
 **Option 2: Download then execute**
 ```bash
-wget https://raw.githubusercontent.com/ripsline/btcpay-installer/main/install.sh
+wget https://raw.githubusercontent.com/ripsline/Virtual-Private-Node/main/install.sh
 chmod +x install.sh
 sudo ./install.sh
 ```
@@ -86,7 +86,7 @@ Visit: `https://your-domain.com`
 
 You'll be prompted to:
 1. Create your admin account
-2. Set up your Bitcoin wallet
+2. Set up your Bitcoin wallet (Optional)
 3. Configure Lightning Network
 
 ### Important Credentials
@@ -235,6 +235,8 @@ This is an automated installer. Always:
 ## 📝 What's Different From Default BTCPay?
 
 This installer includes:
+- ✅ Taproot Channel support
+- ✅ NIP-05 Nostr Username
 - ✅ Storage optimization (`opt-save-storage-xs`)
 - ✅ Tor support (`opt-add-tor`)
 - ✅ Lightning Terminal (`opt-add-lightning-terminal`)
