@@ -14,7 +14,8 @@ echo ""
 
 # Check if running as root, if not request sudo
 if [ "$EUID" -ne 0 ]; then 
-   echo "🔐 Root access required. Please enter your root password:"
+   echo "🔐 Root access required."
+   echo "   Re-launching with sudo (you may be prompted for password)..."
    exec sudo "$0" "$@"
    exit
 fi
@@ -66,20 +67,20 @@ if [ -f "/root/BTCPayServer/.installed" ]; then
     sleep 10
 fi
 
-# Disable and remove swap to free up disk space
-echo "💾 Optimizing disk space (removing swap file)..."
-if [ -f /swap.img ]; then
-    swapoff /swap.img 2>/dev/null || true
-    rm -f /swap.img
-    sed -i '/swap.img/d' /etc/fstab
-    echo "✅ Swap file removed (~3.9GB freed)"
-elif swapon --show | grep -q .; then
-    # Disable any other swap
-    swapoff -a
-    sed -i '/swap/d' /etc/fstab
-    echo "✅ Swap disabled"
+# Check and configure swap if needed
+echo "💾 Checking swap configuration..."
+
+if swapon --show | grep -q .; then
+    echo "✅ Swap already configured"
+    swapon --show
 else
-    echo "✅ No swap file found (already optimized)"
+    echo "   No swap found, creating 4GB swap..."
+    fallocate -l 4G /swap.img
+    chmod 600 /swap.img
+    mkswap /swap.img
+    swapon /swap.img
+    echo "/swap.img none swap sw 0 0" >> /etc/fstab
+    echo "✅ 4GB swap created and enabled"
 fi
 echo ""
 
@@ -95,10 +96,10 @@ fi
 echo "✅ Detected IP: $DETECTED_IP"
 echo ""
 
-
+# Pre-configured values
 DEFAULT_DOMAIN=""
 LETSENCRYPT_EMAIL=""
-CUSTOMER_ID="}"
+CUSTOMER_ID=""
 
 # Check if domain is provided, if not prompt for it
 if [ -z "$DEFAULT_DOMAIN" ]; then
@@ -195,7 +196,7 @@ if [ -z "$RESOLVED_IP" ]; then
     echo "If you haven't configured DNS yet:"
     echo ""
     echo "1. Log into your domain DNS panel"
-    echo "   (https://client.mynymbox.net/ or your domain registrar)"
+    echo "   (Domain registrar)"
     echo ""
     echo "2. Create an A record:"
     echo "   Hostname: @ (for root domain) or subdomain name"
@@ -301,12 +302,25 @@ export NBITCOIN_NETWORK="mainnet"
 export BTCPAYGEN_CRYPTO1="btc"
 export BTCPAYGEN_LIGHTNING="lnd"
 export BTCPAYGEN_EXCLUDE_FRAGMENTS="nginx-https"
-export BTCPAYGEN_ADDITIONAL_FRAGMENTS="opt-save-storage-xs;opt-add-tor;opt-add-lightning-terminal"
+export BTCPAYGEN_ADDITIONAL_FRAGMENTS="opt-save-storage-xs;opt-add-tor;opt-add-lightning-terminal;opt-lnd-config.custom"
 export REVERSEPROXY_HTTP_PORT="10080"
 export BTCPAY_ENABLE_SSH=false
 export LETSENCRYPT_EMAIL="$LETSENCRYPT_EMAIL"
 export ACME_CA_URI="production"
 export LIT_PASSWD="$LIT_PASSWD"
+
+# Create custom LND configuration for Simple Taproot Channels
+echo "⚙️  Configuring LND with Simple Taproot Channels..."
+cat > docker-compose-generator/docker-fragments/opt-lnd-config.custom.yml << 'LND_CUSTOM_CONFIG'
+version: '3'
+services:
+  lnd_bitcoin:
+    environment:
+      LND_EXTRA_ARGS: |
+        protocol.simple-taproot-chans=true
+LND_CUSTOM_CONFIG
+echo "✅ LND Taproot configuration created"
+echo ""
 
 # Create temporary nginx config (HTTP only for initial setup)
 echo "📝 Creating temporary nginx configuration..."
@@ -441,9 +455,9 @@ server {
     include /etc/letsencrypt/options-ssl-nginx.conf;
     ssl_dhparam /etc/letsencrypt/ssl-dhparams.pem;
     
-    location /.well-known/nostr.json {
+    location = /.well-known/nostr.json {
         root /var/www/html;
-        add_header Access-Control-Allow-Origin *;
+        add_header Access-Control-Allow-Origin * always;
         add_header Content-Type application/json;
     }
     
@@ -535,7 +549,7 @@ echo "🔌 Setting LND announceable host..."
 /root/BTCPayServer/fix-lnd-host.sh
 echo ""
 
-# Save customer info file (NOTE: LIT password NOT saved - customer set it interactively)
+# Save customer info file
 cat > /root/BTCPayServer/CUSTOMER_INFO.txt << EOFINFO
 ================================================
 ripsline Virtual Private Node Installation Details
@@ -594,7 +608,7 @@ echo "   https://$BTCPAY_HOST"
 echo ""
 echo "⚡ Lightning Terminal:"
 echo "   URL: https://$BTCPAY_HOST/lit"
-echo "   Password: (viewable w/ cat ~/BTCPayServer/.env)"
+echo "   Password: (viewable w/ cat /root/BTCPayServer/.env)"
 echo "   💡 Make sure you saved this password securely!"
 echo ""
 echo "🆔 NIP-05 Nostr Identity:"
@@ -645,9 +659,7 @@ echo ""
 echo "================================================"
 echo ""
 echo "🔒 Security Reminder:"
-echo "   *You should have already changed your VPS SSH root password in mynymbox Client Portal"
-echo "   *If you haven't already done so, please change your Mynymbox client portal password (VPS provider)!"
-echo "   *Please save your lightning terminal password (cat ~/BTCPayServer/.env)"
+echo "   *Please save your lightning terminal password (cat /root/BTCPayServer/.env)"
 echo ""
 echo "================================================"
 echo ""
