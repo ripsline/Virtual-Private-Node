@@ -85,18 +85,17 @@ fi
 echo ""
 
 # Auto-detect IP address (force IPv4)
-echo "🔍 Detecting your rlVPN IP address..."
+echo "🔍 Detecting your VPS IP address..."
 DETECTED_IP=$(curl -4 -s ifconfig.me || curl -4 -s icanhazip.com || curl -4 -s ipinfo.io/ip)
 
 if [ -z "$DETECTED_IP" ]; then
     echo "❌ Could not auto-detect IP address."
-    read -p "Please enter your rlVPN IP manually: " DETECTED_IP
+    read -p "Please enter your VPS IP manually: " DETECTED_IP
 fi
 
 echo "✅ Detected IP: $DETECTED_IP"
 echo ""
 
-# Pre-configured values
 DEFAULT_DOMAIN=""
 LETSENCRYPT_EMAIL=""
 CUSTOMER_ID=""
@@ -196,7 +195,7 @@ if [ -z "$RESOLVED_IP" ]; then
     echo "If you haven't configured DNS yet:"
     echo ""
     echo "1. Log into your domain DNS panel"
-    echo "   (Domain registrar)"
+    echo "   (domain registrar)"
     echo ""
     echo "2. Create an A record:"
     echo "   Hostname: @ (for root domain) or subdomain name"
@@ -233,7 +232,7 @@ if [ "$RESOLVED_IP" != "$DETECTED_IP" ]; then
     echo "   → The A record should point to: $DETECTED_IP"
     echo ""
     echo "3. Running script on wrong server"
-    echo "   → Make sure you're on the correct rlVPN"
+    echo "   → Make sure you're on the correct VPS"
     echo ""
     echo "To fix:"
     echo "• If you just configured DNS: Wait and try again"
@@ -281,13 +280,13 @@ echo "✅ Firewall configured"
 echo ""
 
 # Create BTCPay directory
-echo "📁 Creating ripsline Virtual Private Node directory..."
+echo "📁 Creating BTCPay directory..."
 cd /root
 mkdir -p BTCPayServer
 cd BTCPayServer
 
 # Clone repository
-echo "📦 Cloning ripsline Virtual Private Node..."
+echo "📦 Cloning BTCPay repository..."
 if [ -d "btcpayserver-docker" ]; then
     echo "   Directory exists, removing old installation..."
     rm -rf btcpayserver-docker
@@ -549,6 +548,173 @@ echo "🔌 Setting LND announceable host..."
 /root/BTCPayServer/fix-lnd-host.sh
 echo ""
 
+# Create backup-btcpay-and-save-scb.sh script
+echo "📋 Creating backup script..."
+cat > /root/BTCPayServer/backup-btcpay-and-save-scb.sh << 'EOFBACKUPSCRIPT'
+#!/bin/bash
+# BTCPay Server Backup Script with Channel Backup (SCB) Display
+# Creates full backup and displays channel.backup for easy copy/paste
+# Location: /root/BTCPayServer/backup-btcpay-and-save-scb.sh
+
+set -e
+
+echo "================================================"
+echo "  BTCPay Server Backup & Channel Backup (SCB)"
+echo "================================================"
+echo ""
+
+# Check if running as root
+if [ "$EUID" -ne 0 ]; then 
+   echo "❌ This script must be run as root"
+   echo "   Please run: sudo $0"
+   exit 1
+fi
+
+rlVPN_IP="IP_PLACEHOLDER"
+
+# Date for backup filename reference
+BACKUP_DATE=$(date +%Y-%m-%d)
+
+echo "🔄 Step 1: Creating full BTCPay Server backup..."
+echo "   (This includes database, settings, and all data)"
+echo ""
+
+# Change to btcpay-docker directory
+cd /root/BTCPayServer/btcpayserver-docker
+
+# Run the official BTCPay backup script
+if ./btcpay-backup.sh; then
+    echo ""
+    echo "✅ Full backup created successfully"
+else
+    echo ""
+    echo "❌ Backup failed. Please check error messages above."
+    exit 1
+fi
+
+echo ""
+echo "================================================"
+echo "📦 Full Backup Download (Optional - For Merchants)"
+echo "================================================"
+echo ""
+echo "The full backup includes:"
+echo "  • Complete database (invoices, payments, store data)"
+echo "  • Channel backup (included below)"
+echo "  • Configuration files"
+echo "  • Everything needed to restore your BTCPay Server"
+echo ""
+echo "To download the full backup to YOUR LOCAL MACHINE:"
+echo ""
+echo "1. Open a NEW terminal on your local Dedicated Device"
+echo "2. Run this command:"
+echo ""
+echo "   scp -i ~/.ssh/id_ed25519_VirtualPrivateNode root@$rlVPN_IP:/var/lib/docker/volumes/backup_datadir/_data/backup.tar.gz ./btcpay-backup-$BACKUP_DATE.tar.gz"
+echo ""
+echo "3. The file will download to your current directory"
+echo ""
+echo "💡 Merchants should download the full backup weekly/monthly"
+echo "   for business records and invoice history."
+echo ""
+
+echo ""
+echo "🔍 Step 2: Extracting Lightning Channel Backup (SCB)..."
+echo ""
+
+# Path to live channel.backup file
+CHANNEL_BACKUP_PATH="/var/lib/docker/volumes/generated_lnd_bitcoin_datadir/_data/data/chain/bitcoin/mainnet/channel.backup"
+
+# Check if channel.backup exists
+if [ ! -f "$CHANNEL_BACKUP_PATH" ]; then
+    echo "⚠️  Warning: channel.backup file not found"
+    echo "   This might mean:"
+    echo "   • No Lightning channels have been opened yet"
+    echo "   • LND is not running"
+    echo ""
+    echo "   If you haven't opened any Lightning channels yet, this is normal."
+    echo ""
+    read -p "Press Enter to continue..."
+    CHANNEL_BACKUP_FOUND=false
+else
+    CHANNEL_BACKUP_FOUND=true
+fi
+
+echo ""
+echo "================================================"
+echo "📋 CRITICAL: Lightning Channel Backup (SCB)"
+echo "    ⚠️  THIS IS YOUR MOST IMPORTANT BACKUP ⚠️"
+echo "================================================"
+echo ""
+
+if [ "$CHANNEL_BACKUP_FOUND" = true ]; then
+    echo "✅ Channel backup found and ready to save"
+    echo ""
+    echo "This backup allows you to recover Lightning channel funds"
+    echo "in case of VPS failure or data loss."
+    echo ""
+    echo "INSTRUCTIONS:"
+    echo "1. Copy EVERYTHING below (including the BEGIN/END lines)"
+    echo "2. Paste into a secure location:"
+    echo "   • Password manager (KeePass, 1Password, Bitwarden)"
+    echo ""
+    echo "3. Suggested filename: channel-backup-$BACKUP_DATE.txt"
+    echo ""
+    echo "⚠️  IMPORTANT: Rerun & Save this EVERY TIME you open a new channel!"
+    echo ""
+    echo "⚠️  SECURITY: This contains sensitive channel data."
+    echo "   Only store in encrypted password managers or encrypted files."
+    echo "   Do NOT paste in plain text files, emails, or unencrypted notes."
+    echo ""
+    echo "================================================"
+    echo ""
+    
+    # Display base64 encoded channel.backup
+    echo "--- BEGIN CHANNEL BACKUP $BACKUP_DATE ---"
+    base64 "$CHANNEL_BACKUP_PATH"
+    echo "--- END CHANNEL BACKUP $BACKUP_DATE ---"
+    
+    echo ""
+    echo "================================================"
+    echo ""
+    echo "🔑 PASTE IT INTO YOUR PASSWORD MANAGER RIGHT NOW!"
+    echo "   • KeePass"
+    echo "   • 1Password" 
+    echo "   • Bitwarden"
+    echo ""
+    echo "💡 Label it: Lightning Channel Backup - $BACKUP_DATE"
+    echo "⚠️  Without this, you CANNOT recover your Lightning funds!"
+    echo ""
+    echo "To recover later (if needed):"
+    echo "  1. Save the text to a file: channel-backup.txt"
+    echo "  2. Remove the BEGIN/END lines (keep only base64 data)"
+    echo "  3. Decode: base64 -d channel-backup.txt > channel.backup"
+    echo "  4. Use during LND recovery process"
+    echo ""
+else
+    echo "⚠️  No channel backup available yet"
+    echo ""
+    echo "Once you open your first Lightning channel, run this script"
+    echo "again to get your channel backup."
+    echo ""
+fi
+
+echo "================================================"
+echo ""
+echo "Summary:"
+echo "  📦 Full BTCPay backup available for download (optional)"
+echo "  🔑 Channel backup displayed above - DID YOU SAVE IT?"
+echo ""
+echo "================================================"
+echo ""
+EOFBACKUPSCRIPT
+
+# Replace IP placeholder in backup script
+sed -i "s/IP_PLACEHOLDER/$DETECTED_IP/g" /root/BTCPayServer/backup-btcpay-and-save-scb.sh
+
+# Make executable
+chmod +x /root/BTCPayServer/backup-btcpay-and-save-scb.sh
+echo "✅ Backup script created"
+echo ""
+
 # Save customer info file
 cat > /root/BTCPayServer/CUSTOMER_INFO.txt << EOFINFO
 ================================================
@@ -562,12 +728,11 @@ Configuration:
 - Domain: $BTCPAY_HOST
 - rlVPN IP: $DETECTED_IP
 - Email: $LETSENCRYPT_EMAIL
-- Lightning Terminal: https://$BTCPAY_HOST/lit
-- Lightning Terminal Password: (You created this during installation)
 
 Important Files:
 - BTCPay location: /root/BTCPayServer
 - LND fix script: /root/BTCPayServer/fix-lnd-host.sh
+- Backup script: /root/BTCPayServer/backup-btcpay-and-save-scb.sh
 - Nginx config: /etc/nginx/sites-available/btcpayserver
 - This info file: /root/BTCPayServer/CUSTOMER_INFO.txt
 
@@ -606,11 +771,6 @@ echo ""
 echo "📍 Access your server:"
 echo "   https://$BTCPAY_HOST"
 echo ""
-echo "⚡ Lightning Terminal:"
-echo "   URL: https://$BTCPAY_HOST/lit"
-echo "   Password: (viewable w/ cat /root/BTCPayServer/.env)"
-echo "   💡 Make sure you saved this password securely!"
-echo ""
 echo "🆔 NIP-05 Nostr Identity:"
 echo "   Template created at: /var/www/html/.well-known/nostr.json"
 echo "   Public URL: https://$BTCPAY_HOST/.well-known/nostr.json"
@@ -628,8 +788,9 @@ echo ""
 echo "🔄 After BTCPay updates, run:"
 echo "   /root/BTCPayServer/fix-lnd-host.sh"
 echo ""
-echo "📧 Need help? support@ripsline.com"
-echo "   Reference: {{CUSTOMER_ID}}"
+echo "📋 Lightning Channel Backups:"
+echo "   Script: /root/BTCPayServer/backup-btcpay-and-save-scb.sh"
+echo "   ⚠️  Run this after opening ANY new Lightning channel!"
 echo ""
 echo "================================================"
 echo ""
@@ -648,18 +809,6 @@ echo "⏳ Important Notes:"
 echo "   *Bitcoin blockchain sync: 1-5 days"
 echo "   *You can start creating BTCPay admin right away!"
 echo "   *Create your admin account at the URL above"
-echo "   *Lightning Terminal accessible at: https://$BTCPAY_HOST/lit"
-echo ""
-echo "⚠️  CRITICAL: Do NOT Re-run the Installer Script!"
-echo "   *The installer is now locked to prevent accidental data loss."
-echo "   *Re-running would delete ALL your Bitcoin and Lightning funds!"
-echo "   *For updates, use: btcpay-update.sh"
-echo "   *For help: support@ripsline.com"
-echo ""
-echo "================================================"
-echo ""
-echo "🔒 Security Reminder:"
-echo "   *Please save your lightning terminal password (cat /root/BTCPayServer/.env)"
 echo ""
 echo "================================================"
 echo ""
