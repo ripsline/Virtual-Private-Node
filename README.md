@@ -149,29 +149,22 @@ docker exec btcpayserver_lnd_bitcoin lncli getinfo
 
 - **BTCPay installation:** `/root/BTCPayServer/btcpayserver-docker/`
 - **LND fix script:** `/root/BTCPayServer/fix-lnd-host.sh`
+- **Backup script:** `/root/BTCPayServer/backup-btcpay-and-save-scb.sh`
 - **Bitcoin data:** `/var/lib/docker/volumes/generated_bitcoin_datadir/`
 - **LND data:** `/var/lib/docker/volumes/generated_lnd_bitcoin_datadir/`
 - **Environment config:** `/root/BTCPayServer/.env`
 
 ## 🔒 Security Recommendations
 
-1. **Change SSH port** (optional but recommended):
-   ```bash
-   nano /etc/ssh/sshd_config
-   # Change Port 22 to something else, e.g., Port 2222
-   # Then: ufw allow 2222/tcp && ufw delete allow 22/tcp
-   systemctl restart sshd
-   ```
-
-2. **Disable password authentication** (use SSH keys):
+1. **Disable password authentication** (use SSH keys):
    ```bash
    nano /etc/ssh/sshd_config
    # Set: PasswordAuthentication no
    systemctl restart sshd
    ```
-3. **Backup your Lightning wallet regularly**
+2. **Run backup script after each channel open**
 
-4. **Use strong passwords & 2FA** for your BTCPay admin account
+3. **Use strong passwords & 2FA** for your BTCPay admin account
 
 ## 🆘 Troubleshooting
 
@@ -200,11 +193,7 @@ docker exec btcpayserver_lnd_bitcoin lncli getinfo
 
 ### "Bitcoin still syncing"
 
-Initial Bitcoin blockchain sync takes **24-72 hours** depending on your VPS speed. Check progress:
-
-```bash
-docker exec btcpayserver_bitcoind bitcoin-cli getblockchaininfo | grep progress
-```
+Initial Bitcoin blockchain sync takes **1-5 days** depending on your VPS speed.
 
 ## 🔄 Backup & Restore
 
@@ -212,7 +201,7 @@ docker exec btcpayserver_bitcoind bitcoin-cli getblockchaininfo | grep progress
 
 **Backup channel database** (before updates):
 ```bash
-docker cp btcpayserver_lnd_bitcoin:/data/chain/bitcoin/mainnet/channel.backup ./channel.backup
+/root/BTCPayServer/backup-btcpay-and-save-scb.sh
 ```
 
 ### Restore
