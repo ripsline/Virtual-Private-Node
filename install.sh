@@ -2,8 +2,6 @@
 set -e
 
 # ripsline Virtual Private Node Auto-Installer
-# Customer: {{CUSTOMER_NAME}}
-# Order ID: {{CUSTOMER_ID}}
 # Generated: {{GENERATION_DATE}}
 
 echo "================================================"
