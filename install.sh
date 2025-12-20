@@ -2,6 +2,8 @@
 set -e
 
 # ripsline Virtual Private Node Auto-Installer
+# Customer: {{CUSTOMER_NAME}}
+# Order ID: {{CUSTOMER_ID}}
 # Generated: {{GENERATION_DATE}}
 
 echo "================================================"
@@ -102,7 +104,7 @@ CUSTOMER_ID=""
 if [ -z "$DEFAULT_DOMAIN" ]; then
     echo "⚠️  No pre-configured domain found"
     echo ""
-    read -p "Enter your domain (e.g., example.com or rlvpn.example.com): " DEFAULT_DOMAIN
+    read -p "Enter your domain (e.g., example.com or node.example.com): " DEFAULT_DOMAIN
     echo ""
 fi
 
@@ -568,6 +570,19 @@ if [ "$EUID" -ne 0 ]; then
    exit 1
 fi
 
+# Detect original SSH user (before sudo)
+if [ -n "$SUDO_USER" ]; then
+    ACTUAL_USER="$SUDO_USER"
+else
+    ACTUAL_USER=$(who am i | awk '{print $1}')
+fi
+
+if [ -z "$ACTUAL_USER" ] || [ "$ACTUAL_USER" = "root" ]; then
+    echo "⚠️  Warning: Could not detect non-root SSH user"
+    echo "   Using 'root' for scp command (may not work on your VPS)"
+    ACTUAL_USER="root"
+fi
+
 rlVPN_IP="IP_PLACEHOLDER"
 
 # Date for backup filename reference
@@ -584,6 +599,11 @@ cd /root/BTCPayServer/btcpayserver-docker
 if ./btcpay-backup.sh; then
     echo ""
     echo "✅ Full backup created successfully"
+    echo ""
+    echo "📋 Copying backup to accessible location..."
+    cp /var/lib/docker/volumes/backup_datadir/_data/backup.tar.gz /tmp/backup.tar.gz
+    chmod 644 /tmp/backup.tar.gz
+    echo "✅ Backup copied to: /tmp/backup.tar.gz"
 else
     echo ""
     echo "❌ Backup failed. Please check error messages above."
@@ -606,9 +626,13 @@ echo ""
 echo "1. Open a NEW terminal on your local Dedicated Device"
 echo "2. Run this command:"
 echo ""
-echo "   scp -i ~/.ssh/id_ed25519_VirtualPrivateNode root@$rlVPN_IP:/var/lib/docker/volumes/backup_datadir/_data/backup.tar.gz ./btcpay-backup-$BACKUP_DATE.tar.gz"
+echo "   scp -i ~/.ssh/id_ed25519_VirtualPrivateNode $ACTUAL_USER@$rlVPN_IP:/tmp/backup.tar.gz ./"
 echo ""
 echo "3. The file will download to your current directory"
+echo ""
+echo "💡 Note: Backup will remain in /tmp/backup.tar.gz until:"
+echo "   • Server reboot (auto-deleted)"
+echo "   • Manual deletion: rm /tmp/backup.tar.gz"
 echo ""
 echo "💡 Merchants should download the full backup weekly/monthly"
 echo "   for business records and invoice history."
@@ -790,6 +814,9 @@ echo "📋 Lightning Channel Backups:"
 echo "   Script: /root/BTCPayServer/backup-btcpay-and-save-scb.sh"
 echo "   ⚠️  Run this after opening ANY new Lightning channel!"
 echo ""
+echo "📧 Need help? support@ripsline.com"
+echo "   Reference: {{CUSTOMER_ID}}"
+echo ""
 echo "================================================"
 echo ""
 echo "🔄 IMPORTANT: Reboot Recommended"
@@ -807,6 +834,12 @@ echo "⏳ Important Notes:"
 echo "   *Bitcoin blockchain sync: 1-5 days"
 echo "   *You can start creating BTCPay admin right away!"
 echo "   *Create your admin account at the URL above"
+echo ""
+echo "================================================"
+echo ""
+echo "⚠️ Security Reminder:"
+echo "   *You should have already changed your VPS SSH root password in Flokinet Client Portal"
+echo "   *If you haven't already done so, please change your Flokinet client portal password (VPS provider)!"
 echo ""
 echo "================================================"
 echo ""
