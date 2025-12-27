@@ -147,11 +147,11 @@ cd ~/BTCPayServer/btcpayserver-docker
 
 1. **Disable password authentication** (use SSH keys):
    
-see: **https://ripsline.com/docs/ssh-keys/**
+   see: **https://ripsline.com/docs/ssh-keys/**
   
 2. **Run backup script after each channel open**
 
-see: **https://ripsline.com/docs/channel-backups/**
+   see: **https://ripsline.com/docs/channel-backups/**
 
 4. **Use strong passwords & 2FA** for your BTCPay admin account
 
