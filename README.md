@@ -15,7 +15,7 @@ Before running the installer, you need:
 
 2. **A domain name** with DNS configured
    - Create an A record pointing to your VPS IP address
-   - Example: `btcpay.yourdomain.com → 123.456.789.10`
+   - Example: `node.yourdomain.com → 123.456.789.10`
    - ⚠️ **Wait 5-10 minutes** for DNS propagation before running the script
 
 3. **Root access** to your VPS
@@ -47,7 +47,7 @@ sudo ./install.sh
 
 The script will prompt you for:
 
-1. **Your domain** (e.g., `btcpay.yourdomain.com`)
+1. **Your domain** (e.g., `node.yourdomain.com`)
 2. **Your email** (for Let's Encrypt SSL certificates)
 
 The script will automatically:
