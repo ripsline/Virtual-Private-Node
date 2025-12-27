@@ -54,7 +54,7 @@ The script will automatically:
 - Detect your VPS IP address
 - Generate a secure Lightning Terminal password
 - Configure firewall rules
-- Install and configure BTCPay Server
+- Install enhanced BTCPay Server Config
 
 Installation takes **15-30 minutes** depending on your VPS speed.
 
@@ -69,6 +69,8 @@ This installer configures:
 - ✅ **Lightning Terminal** (advanced LND management)
 - ✅ **SSL/TLS** via Let's Encrypt (automatic HTTPS)
 - ✅ **UFW Firewall** (properly configured)
+- ✅ **Taproot Channel Support**
+- ✅ **NIP-05 Nostr Username**
 
 ### Firewall Rules
 
@@ -89,14 +91,6 @@ You'll be prompted to:
 2. Set up your Bitcoin wallet (Optional)
 3. Configure Lightning Network
 
-### Important Credentials
-
-**Save these from the installation output:**
-
-- **Lightning Terminal Password** - You'll need this to access Lightning Terminal
-- **VPS IP Address** - For LND configuration
-- **Domain** - Your BTCPay Server URL
-
 ## 🔧 Post-Installation
 
 ### LND Announceable Host Fix
@@ -113,17 +107,10 @@ This script:
 
 ### Useful Commands
 
-**Check BTCPay Server status:**
-```bash
-cd /root/BTCPayServer/btcpayserver-docker
-./btcpay-down.sh  # Stop
-./btcpay-up.sh    # Start
-```
-
 **View logs:**
 ```bash
 cd /root/BTCPayServer/btcpayserver-docker
-docker logs btcpayserver_btcpayserver_1 --tail 100
+docker logs btcpayserver_bitcoind --tail 100
 docker logs btcpayserver_lnd_bitcoin --tail 100
 ```
 
@@ -137,12 +124,14 @@ cd /root/BTCPayServer/btcpayserver-docker
 
 **Check Bitcoin sync status:**
 ```bash
-docker exec btcpayserver_bitcoind bitcoin-cli getblockchaininfo
+cd ~/BTCPayServer/btcpayserver-docker
+./bitcoin-cli.sh getblockchaininfo | grep verificationprogress
 ```
 
 **Check LND status:**
 ```bash
-docker exec btcpayserver_lnd_bitcoin lncli getinfo
+cd ~/BTCPayServer/btcpayserver-docker
+./bitcoin-lncli.sh getinfo
 ```
 
 ## 📁 File Locations
@@ -157,14 +146,14 @@ docker exec btcpayserver_lnd_bitcoin lncli getinfo
 ## 🔒 Security Recommendations
 
 1. **Disable password authentication** (use SSH keys):
-   ```bash
-   nano /etc/ssh/sshd_config
-   # Set: PasswordAuthentication no
-   systemctl restart sshd
-   ```
+   
+see: **https://ripsline.com/docs/ssh-keys/**
+  
 2. **Run backup script after each channel open**
 
-3. **Use strong passwords & 2FA** for your BTCPay admin account
+see: **https://ripsline.com/docs/channel-backups/**
+
+4. **Use strong passwords & 2FA** for your BTCPay admin account
 
 ## 🆘 Troubleshooting
 
@@ -219,7 +208,6 @@ This is an automated installer. Always:
 - Test on a staging server first
 - Understand what the script does before running
 - Keep backups of important data
-- Use at your own risk
 
 ## 📝 What's Different From Default BTCPay?
 
@@ -232,10 +220,6 @@ This installer includes:
 - ✅ Automatic LND announceable host fix
 - ✅ Pre-configured firewall rules
 - ✅ Mainnet-only (no testnet)
-
-## 🤝 Contributing
-
-Found a bug or want to improve the installer? Contributions welcome!
 
 ## 📄 License
 
