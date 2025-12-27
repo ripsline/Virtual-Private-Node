@@ -219,7 +219,6 @@ This installer includes:
 - ✅ Lightning Terminal (`opt-add-lightning-terminal`)
 - ✅ Automatic LND announceable host fix
 - ✅ Pre-configured firewall rules
-- ✅ Mainnet-only (no testnet)
 
 ## 📄 License
 
