@@ -1,229 +1,260 @@
-# ripsline Virtual-Private-Node Auto-Installer
+# ripsline Virtual Private Node
 
-Official GitHub for ripsline Virtual Private Node
+Open-source Bitcoin node installer with BTCPay Server, Lightning Network (LND), and optional Haven Nostr relay support.
 
-One-command installation of a complete BTCPay Server stack with Bitcoin, Lightning Network (LND), Tor, Lightning Terminal, NIP-05 Nostr Identity, & Nostr Zaps.
+## Features
 
-## 🚀 Quick Start
+- **BTCPay Server** - Self-hosted Bitcoin payment processor
+- **Lightning Network (LND)** - With Simple Taproot Channels enabled
+- **Lightning Terminal (LIT)** - Manage your Lightning node with a web interface
+- **Tor Support** - Privacy-enhanced connections
+- **Haven Relay** - Optional personal Nostr relay
+- **NIP-05 Identity** - Nostr identity verification
+- **Automated SSL** - Let's Encrypt certificates
+- **Security Hardened** - UFW firewall, secure defaults
+
+## Quick Start
 
 ### Prerequisites
 
-Before running the installer, you need:
-
-1. **A fresh VPS** running Ubuntu 24 LTS
-   - Recommended: 4GB RAM, 2 CPU cores, 90GB storage
-
-2. **A domain name** with DNS configured
-   - Create an A record pointing to your VPS IP address
-   - Example: `node.yourdomain.com → 123.456.789.10`
-   - ⚠️ **Wait 5-10 minutes** for DNS propagation before running the script
-
-3. **Root access** to your VPS
-   ```bash
-   sudo su -
-   ```
+- Fresh Ubuntu 24 LTS VPS
+- Minimum 4GB RAM
+- 80GB+ storage for Pruned Bitcoin blockchain
+- Domain name with DNS configured to point to your VPS IP
 
 ### Installation
 
-**Option 1: Direct execution (recommended)**
 ```bash
-curl -sSL https://raw.githubusercontent.com/ripsline/Virtual-Private-Node/main/install.sh | sudo bash
+# Login as root
+sudo su -
+
+# Clone the repository
+git clone https://github.com/ripsline/virtual-private-node.git
+cd virtual-private-node
+
+# Run the installer
+sudo bash install-ripsline.sh
 ```
 
-**Option 2: Download then execute**
-```bash
-wget https://raw.githubusercontent.com/ripsline/Virtual-Private-Node/main/install.sh
-chmod +x install.sh
-sudo ./install.sh
+The installer will:
+1. Verify DNS configuration
+2. Install system dependencies
+3. Set up BTCPay Server with Lightning Network
+4. Configure nginx with SSL
+5. Set up firewall rules
+6. Create helper scripts for management
+
+### Post-Installation
+
+After installation completes:
+
+1. **Reboot your server** (recommended for kernel updates)
+2. **Wait 2-3 minutes** for services to start
+3. **Access your node** at `https://yourdomain.com`
+4. **Create your admin account** in BTCPay Server
+5. **Wait 1-5 days** for Bitcoin blockchain to sync
+
+## Directory Structure
+
+After installation, your server will have:
+
+```
+/root/ripsline/
+├── btcpayserver-docker/       # BTCPay Server installation
+├── config/                    # Configuration templates
+│   ├── nginx-btcpay.conf
+│   ├── nginx-haven.conf
+│   ├── lnd-custom.yml
+│   └── nostr.json.template
+├── scripts/                   # Helper scripts
+│   ├── install-haven.sh
+│   ├── backup-and-scb.sh
+│   ├── fix-lnd-host.sh
+│   ├── update-ripsline.sh
+│   └── import-notes.sh
+├── .installed                 # Installation lock file
+└── RIPSLINE_INFO.txt          # Your installation details
 ```
 
-**Option 3: Manual copy-paste**
-1. Copy the entire `install.sh` script
-2. On your VPS: `nano install.sh`
-3. Paste the script and save (Ctrl+X, Y, Enter)
-4. Run: `chmod +x install.sh && sudo ./install.sh`
+## Helper Scripts
 
-### During Installation
+### Backup & Channel Backup (SCB)
 
-The script will prompt you for:
-
-1. **Your domain** (e.g., `node.yourdomain.com`)
-2. **Your email** (for Let's Encrypt SSL certificates)
-
-The script will automatically:
-- Detect your VPS IP address
-- Generate a secure Lightning Terminal password
-- Configure firewall rules
-- Install enhanced BTCPay Server Config
-
-Installation takes **15-30 minutes** depending on your VPS speed.
-
-## 📦 What Gets Installed
-
-This installer configures:
-
-- ✅ **BTCPay Server** (latest version)
-- ✅ **Bitcoin Core** (mainnet, pruned for storage optimization)
-- ✅ **Lightning Network Daemon (LND)**
-- ✅ **Tor** (for privacy and .onion access)
-- ✅ **Lightning Terminal** (advanced LND management)
-- ✅ **SSL/TLS** via Let's Encrypt (automatic HTTPS)
-- ✅ **UFW Firewall** (properly configured)
-- ✅ **Taproot Channel Support**
-- ✅ **NIP-05 Nostr Username**
-
-### Firewall Rules
-
-The installer opens these ports:
-- `22/tcp` - SSH (keep this secure!)
-- `80/tcp` - HTTP (redirects to HTTPS)
-- `443/tcp` - HTTPS
-- `9735/tcp` - Lightning Network
-
-## 🎯 After Installation
-
-### Access Your Server
-
-Visit: `https://your-domain.com`
-
-You'll be prompted to:
-1. Create your admin account
-2. Set up your Bitcoin wallet (Optional)
-3. Configure Lightning Network
-
-## 🔧 Post-Installation
-
-### LND Announceable Host Fix
-
-After BTCPay Server updates, your LND announceable host may reset. To fix:
+**CRITICAL**: Run this after opening any Lightning channel!
 
 ```bash
-/root/BTCPayServer/fix-lnd-host.sh
+sudo /root/ripsline/scripts/backup-and-scb.sh
 ```
 
-This script:
-- Sets `BTCPAY_ANNOUNCEABLE_HOST` to your VPS IP
-- Restarts LND automatically
+This will:
+- Create a full BTCPay backup
+- Display your Lightning channel backup (SCB)
+- Show instructions for downloading files
 
-### Useful Commands
+**Save your channel backup** to a password manager (KeePass, 1Password, Bitwarden) - this is the only way to recover Lightning funds if your VPS fails!
 
-**View logs:**
+### Fix LND Host (After BTCPay Updates)
+
+After updating BTCPay Server, run this to fix Lightning connectivity:
+
 ```bash
-cd /root/BTCPayServer/btcpayserver-docker
-docker logs btcpayserver_bitcoind --tail 100
-docker logs btcpayserver_lnd_bitcoin --tail 100
+sudo /root/ripsline/scripts/fix-lnd-host.sh
 ```
 
-**Update BTCPay Server:**
+### Install Haven Nostr Relay
+
+Install a personal Nostr relay on your node:
+
 ```bash
-cd /root/BTCPayServer/btcpayserver-docker
-./btcpay-update.sh
-# Then run the LND fix:
-/root/BTCPayServer/fix-lnd-host.sh
+sudo /root/ripsline/scripts/install-haven.sh
 ```
 
-**Check Bitcoin sync status:**
+Features:
+- Personal Nostr relay for your notes and other stuff
+- Private chat relay (Web of Trust)
+- Media storage (Blossom)
+- Import existing notes from other relays
+
+### Update ripsline Scripts
+
+Update helper scripts and configs (does not update BTCPay):
+
 ```bash
-cd ~/BTCPayServer/btcpayserver-docker
-./bitcoin-cli.sh getblockchaininfo | grep verificationprogress
+sudo /root/ripsline/scripts/update-ripsline.sh
 ```
 
-**Check LND status:**
+## Updating BTCPay Server
+
+To update BTCPay Server itself:
+
 ```bash
-cd ~/BTCPayServer/btcpayserver-docker
-./bitcoin-lncli.sh getinfo
+sudo su -
 ```
 
-## 📁 File Locations
-
-- **BTCPay installation:** `/root/BTCPayServer/btcpayserver-docker/`
-- **LND fix script:** `/root/BTCPayServer/fix-lnd-host.sh`
-- **Backup script:** `/root/BTCPayServer/backup-btcpay-and-save-scb.sh`
-- **Bitcoin data:** `/var/lib/docker/volumes/generated_bitcoin_datadir/`
-- **LND data:** `/var/lib/docker/volumes/generated_lnd_bitcoin_datadir/`
-- **Environment config:** `/root/BTCPayServer/.env`
-
-## 🔒 Security Recommendations
-
-1. **Disable password authentication** (use SSH keys):
-   
-   see: **https://ripsline.com/docs/ssh-keys/**
-  
-2. **Run backup script after each channel open**
-
-   see: **https://ripsline.com/docs/channel-backups/**
-
-4. **Use strong passwords & 2FA** for your BTCPay admin account
-
-## 🆘 Troubleshooting
-
-### "Domain not accessible"
-
-- Check DNS propagation: `nslookup your-domain.com`
-- Wait 5-10 minutes and try again
-- Verify A record points to correct IP
-
-### "Certificate error"
-
-- Let's Encrypt rate limits: 5 failed attempts per hour
-- Check domain is correctly pointing to your server
-- Wait an hour and try again
-
-### "LND won't start"
-
-- Run the fix script: `/root/BTCPayServer/fix-lnd-host.sh`
-- Check logs: `docker logs btcpayserver_lnd_bitcoin`
-
-### "Can't connect to Lightning peers"
-
-- Verify port 9735 is open: `ufw status`
-- Check your VPS provider doesn't block ports
-- Run: `/root/BTCPayServer/fix-lnd-host.sh`
-
-### "Bitcoin still syncing"
-
-Initial Bitcoin blockchain sync takes **1-5 days** depending on your VPS speed.
-
-## 🔄 Backup & Restore
-
-### Backup Important Data
-
-**Backup channel database** (before updates):
 ```bash
-/root/BTCPayServer/backup-btcpay-and-save-scb.sh
+cd /root/ripsline/btcpayserver-docker
 ```
 
-### Restore
+```bash
+btcpay-update.sh
+```
 
-See official BTCPay Server documentation for restore procedures.
+After updating BTCPay, always run the LND fix script:
 
-## 📚 Additional Resources
+```bash
+/root/ripsline/scripts/fix-lnd-host.sh
+```
 
-- **BTCPay Server Docs:** https://docs.btcpayserver.org/
-- **LND Documentation:** https://docs.lightning.engineering/
+## NIP-05 Nostr Identity
 
-## ⚠️ Disclaimer
+Your node includes NIP-05 identity verification support.
 
-This is an automated installer. Always:
-- Test on a staging server first
-- Understand what the script does before running
-- Keep backups of important data
+1. Edit the configuration file:
+```bash
+sudo nano /var/www/html/.well-known/nostr.json
+```
 
-## 📝 What's Different From Default BTCPay?
+2. Replace `yourname` with your desired username
+3. Replace `YOUR_HEX_PUBKEY_HERE` with your Nostr public key (hex format)
+4. Save and exit (Ctrl+X, Y, Enter)
 
-This installer includes:
-- ✅ Taproot Channel support
-- ✅ NIP-05 Nostr Username & Zaps Capability
-- ✅ Storage optimization (`opt-save-storage-xs`)
-- ✅ Tor support (`opt-add-tor`)
-- ✅ Lightning Terminal (`opt-add-lightning-terminal`)
-- ✅ Automatic LND announceable host fix
-- ✅ Pre-configured firewall rules
+Your identity will be: `yourname@yourdomain.com`
 
-## 📄 License
+Public URL: `https://yourdomain.com/.well-known/nostr.json`
 
-MIT License - Use freely, modify as needed.
+## Useful Commands
+
+```bash
+# Check BTCPay status
+docker ps
+
+# Check nginx status
+systemctl status nginx
+
+# Reload nginx
+systemctl reload nginx
+
+# Check firewall status
+ufw status
+
+# View SSL certificate info
+certbot certificates
+```
+
+## Lightning Channel Management
+
+### Opening Channels
+
+1. Connect BTCPay to Zeus Wallet
+2. Or use BTCPay Server's Lightning interface
+3. **IMPORTANT**: After opening ANY channel, run backup script!
+
+### Channel Backup
+
+```bash
+sudo /root/ripsline/scripts/backup-and-scb.sh
+```
+
+Save the channel backup to your password manager **immediately**!
+
+## Troubleshooting
+
+### BTCPay Not Accessible
+
+1. Check if services are running:
+```bash
+docker ps
+```
+
+2. Check nginx:
+```bash
+systemctl status nginx
+nginx -t
+```
+
+3. Check firewall:
+```bash
+ufw status
+```
+
+### Lightning Not Connecting
+
+```bash
+# Run the fix script
+sudo /root/ripsline/scripts/fix-lnd-host.sh
+
+# Check LND status
+docker logs btcpayserver_lnd_bitcoin
+```
+
+## Security Recommendations
+
+1. **Change SSH password** in your VPS provider's control panel
+2. **Enable SSH key authentication** - see [docs](https://ripsline.com/docs/ssh-keys/)
+3. **Disable password authentication** after setting up SSH keys
+4. **Backup your Lightning channels** after any changes
+5. **Keep your system updated**
+
+## Support
+
+- **Documentation**: https://ripsline.com/docs
+- **Email**: support@ripsline.com
+- **Issues**: https://github.com/ripsline/virtual-private-node/issues
+
+## For Customer Orders (ripsline.com)
+
+If you purchased through ripsline.com, you'll receive a personalized installer with your information pre-filled (domain, email, order ID).
+
+The `templates/install-template.sh` file in this repo is used to generate those personalized installers.
+
+## License
+
+MIT License - See LICENSE file for details
+
+## Contributing
+
+Contributions welcome! Please open an issue or pull request.
 
 ---
 
-**Made with ⚡ for the Bitcoin community**
+**Note**: This is a self-hosted solution. You are responsible for maintaining and securing your server. Always backup your Lightning channels and Bitcoin wallet seed!

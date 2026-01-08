@@ -1,0 +1,6 @@
+version: '3'
+services:
+  lnd_bitcoin:
+    environment:
+      LND_EXTRA_ARGS: |
+        protocol.simple-taproot-chans=true
