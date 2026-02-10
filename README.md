@@ -35,6 +35,8 @@ node installer starts automatically.
 
 ~~~bash
 su -
+~~~
+~~~bash
 apt update
 apt install -y sudo git wget
 ~~~

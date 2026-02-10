@@ -6,6 +6,7 @@ import (
     "os"
     "os/exec"
     "strings"
+    "time"
 
     tea "github.com/charmbracelet/bubbletea"
     "github.com/charmbracelet/lipgloss"
@@ -18,139 +19,248 @@ const (
     systemUser     = "bitcoin"
 )
 
-// installConfig holds all choices made during setup.
 type installConfig struct {
     network    *NetworkConfig
-    components string // "bitcoin" or "bitcoin+lnd"
-    pruneSize  int    // GB
-    p2pMode    string // "tor" or "hybrid"
+    components string
+    pruneSize  int
+    p2pMode    string
     publicIPv4 string
     sshPort    int
 }
 
-// NeedsInstall returns true if the node has not been set up yet.
-// Checks for the config file written at the end of installation.
 func NeedsInstall() bool {
     _, err := os.Stat("/etc/rlvpn/config.json")
     return err != nil
 }
 
-// Run is the main installation entry point. It gathers config
-// from the TUI, installs all components, creates the wallet,
-// and launches the welcome TUI.
-func Run() error {
-    if err := checkOS(); err != nil {
-        return err
+// ── Install progress TUI ─────────────────────────────────
+//
+// Runs each install step inside a bubbletea program so the
+// progress renders inside a bordered box matching the brand.
+
+// stepStatus tracks whether a step is pending, running, done, or failed.
+type stepStatus int
+
+const (
+    stepPending stepStatus = iota
+    stepRunning
+    stepDone
+    stepFailed
+)
+
+// installStep is a named step with its execution function and status.
+type installStep struct {
+    name   string
+    fn     func() error
+    status stepStatus
+    err    error
+}
+
+// stepDoneMsg is sent when a step completes.
+type stepDoneMsg struct {
+    index int
+    err   error
+}
+
+// installModel is the bubbletea model for the install progress screen.
+type installModel struct {
+    steps      []installStep
+    current    int
+    done       bool
+    failed     bool
+    width      int
+    height     int
+    subStatus  string // sub-output like "Downloading..."
+}
+
+var (
+    installBoxStyle = lipgloss.NewStyle().
+        Border(lipgloss.RoundedBorder()).
+        BorderForeground(lipgloss.Color("245")).
+        Padding(1, 2)
+
+    installTitleStyle = lipgloss.NewStyle().
+        Bold(true).
+        Foreground(lipgloss.Color("0")).
+        Background(lipgloss.Color("15")).
+        Padding(0, 2)
+
+    installDoneStyle = lipgloss.NewStyle().
+        Foreground(lipgloss.Color("15"))
+
+    installRunningStyle = lipgloss.NewStyle().
+        Foreground(lipgloss.Color("220")).
+        Bold(true)
+
+    installPendingStyle = lipgloss.NewStyle().
+        Foreground(lipgloss.Color("243"))
+
+    installFailedStyle = lipgloss.NewStyle().
+        Foreground(lipgloss.Color("196")).
+        Bold(true)
+
+    installDimStyle = lipgloss.NewStyle().
+        Foreground(lipgloss.Color("243"))
+)
+
+func (m installModel) Init() tea.Cmd {
+    // Start the first step
+    return m.runStep(0)
+}
+
+func (m installModel) runStep(index int) tea.Cmd {
+    return func() tea.Msg {
+        if index >= len(m.steps) {
+            return stepDoneMsg{index: index, err: nil}
+        }
+        err := m.steps[index].fn()
+        return stepDoneMsg{index: index, err: err}
+    }
+}
+
+func (m installModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+    switch msg := msg.(type) {
+    case tea.WindowSizeMsg:
+        m.width = msg.Width
+        m.height = msg.Height
+        return m, nil
+
+    case tea.KeyMsg:
+        if msg.String() == "ctrl+c" {
+            return m, tea.Quit
+        }
+
+    case stepDoneMsg:
+        if msg.index < len(m.steps) {
+            if msg.err != nil {
+                m.steps[msg.index].status = stepFailed
+                m.steps[msg.index].err = msg.err
+                m.failed = true
+                m.done = true
+                return m, nil
+            }
+            m.steps[msg.index].status = stepDone
+
+            // Start next step
+            next := msg.index + 1
+            if next < len(m.steps) {
+                m.current = next
+                m.steps[next].status = stepRunning
+                return m, m.runStep(next)
+            }
+
+            // All steps complete
+            m.done = true
+            return m, func() tea.Msg {
+                time.Sleep(500 * time.Millisecond)
+                return tea.KeyMsg{Type: tea.KeyEnter}
+            }
+        }
+
+    }
+    return m, nil
+}
+
+func (m installModel) View() string {
+    if m.width == 0 {
+        return "Loading..."
     }
 
-    // Launch the TUI to gather configuration
-    cfg, err := RunTUI()
-    if err != nil {
-        return err
+    boxWidth := minInt(m.width-4, 70)
+
+    title := installTitleStyle.Width(boxWidth).Align(lipgloss.Center).
+        Render(" Installing Virtual Private Node ")
+
+    var lines []string
+    for i, s := range m.steps {
+        prefix := "  "
+        style := installPendingStyle
+        indicator := "○"
+
+        switch s.status {
+        case stepDone:
+            style = installDoneStyle
+            indicator = "✓"
+        case stepRunning:
+            style = installRunningStyle
+            indicator = "⟳"
+        case stepFailed:
+            style = installFailedStyle
+            indicator = "✗"
+        case stepPending:
+            style = installPendingStyle
+            indicator = "○"
+        }
+
+        line := style.Render(fmt.Sprintf("%s%s [%d/%d] %s",
+            prefix, indicator, i+1, len(m.steps), s.name))
+
+        lines = append(lines, line)
+
+        if s.status == stepFailed && s.err != nil {
+            lines = append(lines, installFailedStyle.Render(
+                fmt.Sprintf("      Error: %v", s.err)))
+        }
     }
-    if cfg == nil {
-        fmt.Println("\n  Installation cancelled.")
+
+    content := strings.Join(lines, "\n")
+    box := installBoxStyle.Width(boxWidth).Render(content)
+
+    var footer string
+    if m.done && !m.failed {
+        footer = installDoneStyle.Render("  Installation complete!")
+    } else if m.failed {
+        footer = installFailedStyle.Render("  Installation failed. Check the error above.")
+    } else {
+        footer = installDimStyle.Render("  Installing... ctrl+c to cancel")
+    }
+
+    full := lipgloss.JoinVertical(lipgloss.Center,
+        "",
+        title,
+        "",
+        box,
+        "",
+        footer,
+    )
+
+    return lipgloss.Place(m.width, m.height,
+        lipgloss.Center, lipgloss.Center,
+        full,
+    )
+}
+
+// runInstallTUI launches the install progress as a TUI.
+// Returns an error if any step fails.
+func runInstallTUI(steps []installStep) error {
+    if len(steps) == 0 {
         return nil
     }
+    steps[0].status = stepRunning
 
-    // Build and run installation steps
-    steps := buildSteps(cfg)
-    total := len(steps)
+    m := installModel{
+        steps:   steps,
+        current: 0,
+    }
 
-    fmt.Println()
-    for i, step := range steps {
-        fmt.Printf("  [%d/%d] %s...\n", i+1, total, step.name)
-        if err := step.fn(); err != nil {
-            return fmt.Errorf("%s failed: %w", step.name, err)
+    p := tea.NewProgram(m, tea.WithAltScreen())
+    result, err := p.Run()
+    if err != nil {
+        return fmt.Errorf("install TUI error: %w", err)
+    }
+
+    final := result.(installModel)
+    if final.failed {
+        for _, s := range final.steps {
+            if s.status == stepFailed {
+                return fmt.Errorf("%s failed: %w", s.name, s.err)
+            }
         }
-        fmt.Printf("  ✓ %s\n", step.name)
     }
-
-    // LND wallet creation — separate interactive phase
-    // Shown in centered TUI boxes to distinguish it from
-    // the automated install steps above.
-    if cfg.components == "bitcoin+lnd" {
-        if err := walletCreationPhase(cfg); err != nil {
-            return err
-        }
-    }
-
-    // Configure shell environment so bitcoin-cli and lncli
-    // work without long flags for the ripsline user
-    fmt.Println("\n  Configuring shell environment...")
-    if err := setupShellEnvironment(cfg); err != nil {
-        fmt.Printf("  Warning: shell setup failed: %v\n", err)
-    } else {
-        fmt.Println("  ✓ Shell environment configured")
-    }
-
-    // Save persistent config — this file's existence is what
-    // NeedsInstall() checks on subsequent logins
-    appCfg := &config.AppConfig{
-        Network:    cfg.network.Name,
-        Components: cfg.components,
-        PruneSize:  cfg.pruneSize,
-        P2PMode:    cfg.p2pMode,
-        SSHPort:    cfg.sshPort,
-    }
-    if err := config.Save(appCfg); err != nil {
-        return fmt.Errorf("save config: %w", err)
-    }
-
-    // Show brief completion message
-    fmt.Println()
-    fmt.Println("  ═══════════════════════════════════════════")
-    fmt.Println("    Installation Complete!")
-    fmt.Println("  ═══════════════════════════════════════════")
-    fmt.Println()
-    fmt.Println("  Bitcoin Core is syncing. This takes a few hours.")
-    fmt.Println("  Launching dashboard...")
-    fmt.Println()
-
     return nil
 }
 
-// step is a named installation step with a function to execute.
-type step struct {
-    name string
-    fn   func() error
-}
-
-// buildSteps returns the ordered list of installation steps
-// based on the user's component choices.
-func buildSteps(cfg *installConfig) []step {
-    steps := []step{
-        {"Creating system user", func() error { return createSystemUser(systemUser) }},
-        {"Creating directories", func() error { return createDirs(systemUser, cfg) }},
-        {"Disabling IPv6", disableIPv6},
-        {"Configuring firewall", func() error { return configureFirewall(cfg) }},
-        {"Installing Tor", installTor},
-        {"Configuring Tor", func() error { return writeTorConfig(cfg) }},
-        {"Adding user to debian-tor group", func() error { return addUserToTorGroup(systemUser) }},
-        {"Starting Tor", restartTor},
-        {"Installing Bitcoin Core " + bitcoinVersion, func() error { return installBitcoin(bitcoinVersion) }},
-        {"Configuring Bitcoin Core", func() error { return writeBitcoinConfig(cfg) }},
-        {"Creating bitcoind service", func() error { return writeBitcoindService(systemUser) }},
-        {"Starting Bitcoin Core", startBitcoind},
-    }
-
-    if cfg.components == "bitcoin+lnd" {
-        steps = append(steps,
-            step{"Installing LND " + lndVersion, func() error { return installLND(lndVersion) }},
-            step{"Configuring LND", func() error { return writeLNDConfig(cfg) }},
-            step{"Creating LND service", func() error { return writeLNDServiceInitial(systemUser) }},
-            step{"Starting LND", startLND},
-        )
-    }
-
-    return steps
-}
-
-// ── Centered TUI boxes ───────────────────────────────────
-//
-// Used for wallet creation, seed confirmation, and auto-unlock.
-// Creates a mini bubbletea program that shows a centered
-// bordered box with a message and waits for Enter.
+// ── Centered info boxes ──────────────────────────────────
 
 var setupBoxStyle = lipgloss.NewStyle().
     Border(lipgloss.RoundedBorder()).
@@ -165,14 +275,12 @@ var setupTextStyle = lipgloss.NewStyle().
     Foreground(lipgloss.Color("250"))
 
 var setupWarnStyle = lipgloss.NewStyle().
-    Foreground(lipgloss.Color("15")).
+    Foreground(lipgloss.Color("196")).
     Bold(true)
 
 var setupDimStyle = lipgloss.NewStyle().
     Foreground(lipgloss.Color("243"))
 
-// infoBoxModel is a minimal bubbletea model that shows a
-// centered box and waits for Enter.
 type infoBoxModel struct {
     content string
     width   int
@@ -198,32 +306,96 @@ func (m infoBoxModel) View() string {
     if m.width == 0 {
         return "Loading..."
     }
-
-    maxWidth := m.width - 8
-    if maxWidth > 70 {
-        maxWidth = 70
-    }
-
+    maxWidth := minInt(m.width-8, 70)
     box := setupBoxStyle.Width(maxWidth).Render(m.content)
-
     return lipgloss.Place(m.width, m.height,
-        lipgloss.Center, lipgloss.Center,
-        box,
-    )
+        lipgloss.Center, lipgloss.Center, box)
 }
 
-// showInfoBox displays a centered box with content and waits for Enter.
 func showInfoBox(content string) {
     m := infoBoxModel{content: content}
     p := tea.NewProgram(m, tea.WithAltScreen())
     p.Run()
 }
 
-// walletCreationPhase handles the interactive wallet creation.
-// Shows centered TUI boxes before and after handing control
-// to lncli create.
+// ── Main install flow ────────────────────────────────────
+
+func Run() error {
+    if err := checkOS(); err != nil {
+        return err
+    }
+
+    cfg, err := RunTUI()
+    if err != nil {
+        return err
+    }
+    if cfg == nil {
+        fmt.Println("\n  Installation cancelled.")
+        return nil
+    }
+
+    // Build steps and run them in the progress TUI
+    steps := buildSteps(cfg)
+    if err := runInstallTUI(steps); err != nil {
+        return err
+    }
+
+    // LND wallet creation
+    if cfg.components == "bitcoin+lnd" {
+        if err := walletCreationPhase(cfg); err != nil {
+            return err
+        }
+    }
+
+    // Shell environment
+    if err := setupShellEnvironment(cfg); err != nil {
+        fmt.Printf("  Warning: shell setup failed: %v\n", err)
+    }
+
+    // Save config
+    appCfg := &config.AppConfig{
+        Network:    cfg.network.Name,
+        Components: cfg.components,
+        PruneSize:  cfg.pruneSize,
+        P2PMode:    cfg.p2pMode,
+        SSHPort:    cfg.sshPort,
+    }
+    if err := config.Save(appCfg); err != nil {
+        return fmt.Errorf("save config: %w", err)
+    }
+
+    return nil
+}
+
+func buildSteps(cfg *installConfig) []installStep {
+    steps := []installStep{
+        {name: "Creating system user", fn: func() error { return createSystemUser(systemUser) }},
+        {name: "Creating directories", fn: func() error { return createDirs(systemUser, cfg) }},
+        {name: "Disabling IPv6", fn: disableIPv6},
+        {name: "Configuring firewall", fn: func() error { return configureFirewall(cfg) }},
+        {name: "Installing Tor", fn: installTor},
+        {name: "Configuring Tor", fn: func() error { return writeTorConfig(cfg) }},
+        {name: "Adding user to debian-tor group", fn: func() error { return addUserToTorGroup(systemUser) }},
+        {name: "Starting Tor", fn: restartTor},
+        {name: "Installing Bitcoin Core " + bitcoinVersion, fn: func() error { return installBitcoin(bitcoinVersion) }},
+        {name: "Configuring Bitcoin Core", fn: func() error { return writeBitcoinConfig(cfg) }},
+        {name: "Creating bitcoind service", fn: func() error { return writeBitcoindService(systemUser) }},
+        {name: "Starting Bitcoin Core", fn: startBitcoind},
+    }
+
+    if cfg.components == "bitcoin+lnd" {
+        steps = append(steps,
+            installStep{name: "Installing LND " + lndVersion, fn: func() error { return installLND(lndVersion) }},
+            installStep{name: "Configuring LND", fn: func() error { return writeLNDConfig(cfg) }},
+            installStep{name: "Creating LND service", fn: func() error { return writeLNDServiceInitial(systemUser) }},
+            installStep{name: "Starting LND", fn: startLND},
+        )
+    }
+
+    return steps
+}
+
 func walletCreationPhase(cfg *installConfig) error {
-    // Show info box explaining what's about to happen
     walletInfo := setupTitleStyle.Render("Create Your LND Wallet") + "\n\n" +
         setupTextStyle.Render("LND will ask you to:") + "\n\n" +
         setupTextStyle.Render("  1. Enter a wallet password (min 8 characters)") + "\n" +
@@ -238,7 +410,6 @@ func walletCreationPhase(cfg *installConfig) error {
 
     showInfoBox(walletInfo)
 
-    // Wait for LND REST to be ready
     fmt.Println()
     fmt.Println("  Waiting for LND to be ready...")
     if err := waitForLND(); err != nil {
@@ -247,8 +418,6 @@ func walletCreationPhase(cfg *installConfig) error {
     fmt.Println("  ✓ LND is ready")
     fmt.Println()
 
-    // Hand terminal to lncli create — this is LND's native
-    // interactive wallet creation. We don't customize it.
     lncliArgs := []string{
         "-u", systemUser, "lncli",
         "--lnddir=/var/lib/lnd",
@@ -264,8 +433,6 @@ func walletCreationPhase(cfg *installConfig) error {
         return fmt.Errorf("lncli create failed: %w", err)
     }
 
-    // Show seed confirmation box — gives user time to verify
-    // they've written down their seed before proceeding
     seedConfirm := setupTitleStyle.Render("Seed Phrase Confirmation") + "\n\n" +
         setupWarnStyle.Render("Have you written down your 24-word seed phrase?") + "\n\n" +
         setupTextStyle.Render("Your seed phrase was displayed above by LND.") + "\n" +
@@ -276,7 +443,6 @@ func walletCreationPhase(cfg *installConfig) error {
 
     showInfoBox(seedConfirm)
 
-    // Auto-unlock box — we default to yes, just need the password
     unlockInfo := setupTitleStyle.Render("Auto-Unlock Configuration") + "\n\n" +
         setupTextStyle.Render("Your wallet password will be stored on disk so LND") + "\n" +
         setupTextStyle.Render("can start automatically after a server reboot.") + "\n\n" +
@@ -286,7 +452,6 @@ func walletCreationPhase(cfg *installConfig) error {
 
     showInfoBox(unlockInfo)
 
-    // Prompt for password (outside of bubbletea, raw terminal)
     fmt.Println()
     fmt.Print("  Re-enter your wallet password for auto-unlock: ")
     password := readPassword()
@@ -294,13 +459,11 @@ func walletCreationPhase(cfg *installConfig) error {
 
     if password == "" {
         fmt.Println("  No password entered. Skipping auto-unlock.")
-        fmt.Println("  You can set this up later by creating /var/lib/lnd/wallet_password")
         return nil
     }
 
     if err := setupAutoUnlock(password); err != nil {
         fmt.Printf("  Warning: auto-unlock setup failed: %v\n", err)
-        fmt.Println("  You can set this up manually later.")
     } else {
         fmt.Println("  ✓ Auto-unlock configured")
     }
@@ -308,31 +471,23 @@ func walletCreationPhase(cfg *installConfig) error {
     return nil
 }
 
-// readLine reads a single line from the reader and trims whitespace.
 func readLine(reader *bufio.Reader) string {
     line, _ := reader.ReadString('\n')
     return strings.TrimSpace(line)
 }
 
-// readPassword reads a password from stdin with echo disabled
-// so the password is not visible as the user types.
 func readPassword() string {
     sttyOff := exec.Command("stty", "-echo")
     sttyOff.Stdin = os.Stdin
     sttyOff.Run()
-
     reader := bufio.NewReader(os.Stdin)
     password, _ := reader.ReadString('\n')
-
     sttyOn := exec.Command("stty", "echo")
     sttyOn.Stdin = os.Stdin
     sttyOn.Run()
-
     return strings.TrimSpace(password)
 }
 
-// detectPublicIP tries to determine the server's public IPv4
-// address. Returns empty string if detection fails.
 func detectPublicIP() string {
     cmd := exec.Command("curl", "-4", "-s", "--max-time", "5", "ifconfig.me")
     output, err := cmd.CombinedOutput()
@@ -340,15 +495,12 @@ func detectPublicIP() string {
         return ""
     }
     ip := strings.TrimSpace(string(output))
-    parts := strings.Split(ip, ".")
-    if len(parts) != 4 {
+    if len(strings.Split(ip, ".")) != 4 {
         return ""
     }
     return ip
 }
 
-// readFileOrDefault reads a file or returns a default value if
-// the file doesn't exist or can't be read.
 func readFileOrDefault(path, def string) string {
     data, err := os.ReadFile(path)
     if err != nil {
@@ -357,16 +509,10 @@ func readFileOrDefault(path, def string) string {
     return string(data)
 }
 
-// setupShellEnvironment configures ripsline's shell so that
-// bitcoin-cli and lncli work without long path flags or sudo.
-// Uses bash functions that wrap the real binaries with the
-// correct flags. lncli also gets env vars it reads natively.
 func setupShellEnvironment(cfg *installConfig) error {
     networkFlag := ""
     if cfg.network.Name != "mainnet" {
-        networkFlag = fmt.Sprintf(
-            "\nexport LNCLI_NETWORK=%s", cfg.network.LNCLINetwork,
-        )
+        networkFlag = fmt.Sprintf("\nexport LNCLI_NETWORK=%s", cfg.network.LNCLINetwork)
     }
 
     lndBlock := ""
@@ -381,9 +527,8 @@ export LNCLI_TLSCERTPATH=/var/lib/lnd/tls.cert
 
     content := fmt.Sprintf(`
 # ── Virtual Private Node ──────────────────────
-# Added by rlvpn installer. Do not edit above this line.
+# Added by rlvpn installer
 
-# Bitcoin Core — wrapper so bitcoin-cli just works
 bitcoin-cli() {
     sudo -u bitcoin /usr/local/bin/bitcoin-cli \
         -datadir=/var/lib/bitcoin \
@@ -392,14 +537,12 @@ bitcoin-cli() {
 }
 export -f bitcoin-cli
 %s
-# LND — wrapper for sudo
 lncli() {
     sudo -u bitcoin /usr/local/bin/lncli "$@"
 }
 export -f lncli
 `, lndBlock)
 
-    // Append to ripsline's .bashrc so it loads on every shell session
     f, err := os.OpenFile("/home/ripsline/.bashrc",
         os.O_APPEND|os.O_WRONLY|os.O_CREATE, 0644)
     if err != nil {
@@ -410,6 +553,12 @@ export -f lncli
     if _, err := f.WriteString(content); err != nil {
         return fmt.Errorf("write .bashrc: %w", err)
     }
-
     return nil
+}
+
+func minInt(a, b int) int {
+    if a < b {
+        return a
+    }
+    return b
 }
