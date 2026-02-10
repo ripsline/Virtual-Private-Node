@@ -473,10 +473,10 @@ func (m Model) renderBlockchainInfo() []string {
 
     if ibd {
         rows = append(rows,
-            wLabelStyle.Render("Sync Status")+wWarnStyle.Render("⟳ syncing"))
+            wLabelStyle.Render("Sync Status")+wWarnStyle.Render("🔄 syncing"))
     } else {
         rows = append(rows,
-            wLabelStyle.Render("Sync Status")+wGoodStyle.Render("✓ synced"))
+            wLabelStyle.Render("Sync Status")+wGoodStyle.Render("✅ synced"))
     }
 
     rows = append(rows,
@@ -534,15 +534,15 @@ func (m Model) renderZeus() []string {
 
     restOnion := readOnion("/var/lib/tor/lnd-rest/hostname")
     if restOnion == "" {
-        rows = append(rows, warnStyle.Render("LND REST onion not available yet. Wait for Tor to start."))
+        rows = append(rows, wWarnStyle.Render("LND REST onion not available yet. Wait for Tor to start."))
         return rows
     }
 
-    rows = append(rows, labelStyle.Render("Wallet interface:")+monoStyle.Render("LND (REST)"))
+    rows = append(rows, wLabelStyle.Render("Wallet interface:")+wMonoStyle.Render("LND (REST)"))
     rows = append(rows, "")
-    rows = append(rows, labelStyle.Render("Server address:")+monoStyle.Render(restOnion))
+    rows = append(rows, wLabelStyle.Render("Server address:")+wMonoStyle.Render(restOnion))
     rows = append(rows, "")
-    rows = append(rows, labelStyle.Render("REST Port:")+monoStyle.Render("8080"))
+    rows = append(rows, wLabelStyle.Render("REST Port:")+wMonoStyle.Render("8080"))
     rows = append(rows, "")
 
     // Macaroon preview — truncated to avoid line-wrapping issues
@@ -601,23 +601,23 @@ func (m Model) renderSparrow() []string {
     // Read the current cookie value
     cookieValue := readCookieValue(m.cfg)
 
-    rows = append(rows, labelStyle.Render("URL:")+monoStyle.Render(btcRPC))
-    rows = append(rows, labelStyle.Render("Port:")+monoStyle.Render(port))
-    rows = append(rows, labelStyle.Render("User:")+monoStyle.Render("__cookie__"))
+    rows = append(rows, wLabelStyle.Render("URL:")+wMonoStyle.Render(btcRPC))
+    rows = append(rows, wLabelStyle.Render("Port:")+wMonoStyle.Render(port))
+    rows = append(rows, wLabelStyle.Render("User:")+wMonoStyle.Render("__cookie__"))
 
     if cookieValue != "" {
-        rows = append(rows, labelStyle.Render("Password:")+monoStyle.Render(cookieValue))
+        rows = append(rows, wLabelStyle.Render("Password:")+wMonoStyle.Render(cookieValue))
     } else {
-        rows = append(rows, labelStyle.Render("Password:")+
-            warnStyle.Render("Cookie not available — is bitcoind running?"))
+        rows = append(rows, wLabelStyle.Render("Password:")+
+            wWarnStyle.Render("Cookie not available — is bitcoind running?"))
     }
 
     rows = append(rows, "")
-    rows = append(rows, dimStyle.Render("Steps:"))
-    rows = append(rows, dimStyle.Render("1. In Sparrow Wallet: Sparrow → Settings → Server"))
-    rows = append(rows, dimStyle.Render("2. Select Bitcoin Core tab"))
-    rows = append(rows, dimStyle.Render("3. Enter the URL, port, user, and password above"))
-    rows = append(rows, dimStyle.Render("4. Select Test Connection"))
+    rows = append(rows, wDimStyle.Render("Steps:"))
+    rows = append(rows, wDimStyle.Render("1. In Sparrow Wallet: Sparrow → Settings → Server"))
+    rows = append(rows, wDimStyle.Render("2. Select Bitcoin Core tab"))
+    rows = append(rows, wDimStyle.Render("3. Enter the URL, port, user, and password above"))
+    rows = append(rows, wDimStyle.Render("4. Select Test Connection"))
 
     return rows
 }
