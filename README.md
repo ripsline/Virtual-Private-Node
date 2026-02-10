@@ -15,7 +15,6 @@ and `systemctl`. No wrappers, no abstractions.
 ### Requirements
 
 - Fresh Debian 12+ Server
-- Root access
 - 2 vCPU, 4 GB RAM, 90+ GB SSD
 
 ### Quick Start
@@ -112,11 +111,13 @@ The installer starts automatically.
 
 ### Post-install
 
-Every SSH login as `ripsline` opens a dashboard showing node
-health, service status, and system resources. Use the tabs
-to view logs or get wallet pairing details for Zeus and Sparrow.
+Every SSH login as `ripsline` opens a dashboard with three tabs:
 
-Press `q` to drop to a shell. Manage your node directly:
+- **Dashboard** — service status, disk/RAM usage, sync progress
+- **Pairing** — Zeus and Sparrow wallet connection details
+- **Logs** — live journalctl output for Tor, Bitcoin Core, and LND
+
+Press `q` to drop to a shell:
 
 ~~~bash
 # Bitcoin Core
@@ -151,7 +152,7 @@ sudo journalctl -u lnd -f
 
 1. Open the **Pairing** tab for your RPC URL, port, and credentials
 2. In Sparrow Wallet: Sparrow → Settings → Server → Bitcoin Core
-3. Enter the URL, port, username, and password
+3. Enter the URL, port, user (`__cookie__`), and password
 4. Test Connection
 
 ### Architecture
