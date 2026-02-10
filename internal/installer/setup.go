@@ -6,7 +6,6 @@ import (
     "os"
     "os/exec"
     "strings"
-    "time"
 
     tea "github.com/charmbracelet/bubbletea"
     "github.com/charmbracelet/lipgloss"
@@ -17,6 +16,7 @@ const (
     bitcoinVersion = "29.2"
     lndVersion     = "0.20.0-beta"
     systemUser     = "bitcoin"
+    appVersion     = "0.1.0"
 )
 
 type installConfig struct {
@@ -34,11 +34,7 @@ func NeedsInstall() bool {
 }
 
 // ── Install progress TUI ─────────────────────────────────
-//
-// Runs each install step inside a bubbletea program so the
-// progress renders inside a bordered box matching the brand.
 
-// stepStatus tracks whether a step is pending, running, done, or failed.
 type stepStatus int
 
 const (
@@ -48,7 +44,6 @@ const (
     stepFailed
 )
 
-// installStep is a named step with its execution function and status.
 type installStep struct {
     name   string
     fn     func() error
@@ -56,62 +51,51 @@ type installStep struct {
     err    error
 }
 
-// stepDoneMsg is sent when a step completes.
 type stepDoneMsg struct {
     index int
     err   error
 }
 
-// installModel is the bubbletea model for the install progress screen.
 type installModel struct {
-    steps      []installStep
-    current    int
-    done       bool
-    failed     bool
-    width      int
-    height     int
-    subStatus  string // sub-output like "Downloading..."
+    steps   []installStep
+    current int
+    done    bool
+    failed  bool
+    version string
+    width   int
+    height  int
 }
 
 var (
-    installBoxStyle = lipgloss.NewStyle().
-        Border(lipgloss.RoundedBorder()).
-        BorderForeground(lipgloss.Color("245")).
-        Padding(1, 2)
+    progTitleStyle = lipgloss.NewStyle().
+            Bold(true).
+            Foreground(lipgloss.Color("0")).
+            Background(lipgloss.Color("15")).
+            Padding(0, 2)
 
-    installTitleStyle = lipgloss.NewStyle().
-        Bold(true).
-        Foreground(lipgloss.Color("0")).
-        Background(lipgloss.Color("15")).
-        Padding(0, 2)
+    progBoxStyle = lipgloss.NewStyle().
+            Border(lipgloss.RoundedBorder()).
+            BorderForeground(lipgloss.Color("245")).
+            Padding(1, 2)
 
-    installDoneStyle = lipgloss.NewStyle().
-        Foreground(lipgloss.Color("15"))
-
-    installRunningStyle = lipgloss.NewStyle().
-        Foreground(lipgloss.Color("220")).
-        Bold(true)
-
-    installPendingStyle = lipgloss.NewStyle().
-        Foreground(lipgloss.Color("243"))
-
-    installFailedStyle = lipgloss.NewStyle().
-        Foreground(lipgloss.Color("196")).
-        Bold(true)
-
-    installDimStyle = lipgloss.NewStyle().
-        Foreground(lipgloss.Color("243"))
+    progDoneStyle    = lipgloss.NewStyle().Foreground(lipgloss.Color("15"))
+    progRunStyle     = lipgloss.NewStyle().Foreground(lipgloss.Color("220")).Bold(true)
+    progPendingStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("243"))
+    progFailStyle    = lipgloss.NewStyle().Foreground(lipgloss.Color("196")).Bold(true)
+    progDimStyle     = lipgloss.NewStyle().Foreground(lipgloss.Color("243"))
+    progGoodStyle    = lipgloss.NewStyle().Foreground(lipgloss.Color("10")).Bold(true)
 )
 
+const progWidth = 75
+
 func (m installModel) Init() tea.Cmd {
-    // Start the first step
     return m.runStep(0)
 }
 
 func (m installModel) runStep(index int) tea.Cmd {
     return func() tea.Msg {
         if index >= len(m.steps) {
-            return stepDoneMsg{index: index, err: nil}
+            return stepDoneMsg{index: index}
         }
         err := m.steps[index].fn()
         return stepDoneMsg{index: index, err: err}
@@ -126,8 +110,17 @@ func (m installModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
         return m, nil
 
     case tea.KeyMsg:
-        if msg.String() == "ctrl+c" {
+        switch msg.String() {
+        case "ctrl+c":
             return m, tea.Quit
+        case "enter":
+            if m.done {
+                return m, tea.Quit
+            }
+        case "q":
+            if m.done {
+                return m, tea.Quit
+            }
         }
 
     case stepDoneMsg:
@@ -141,7 +134,6 @@ func (m installModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
             }
             m.steps[msg.index].status = stepDone
 
-            // Start next step
             next := msg.index + 1
             if next < len(m.steps) {
                 m.current = next
@@ -149,14 +141,9 @@ func (m installModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
                 return m, m.runStep(next)
             }
 
-            // All steps complete
             m.done = true
-            return m, func() tea.Msg {
-                time.Sleep(500 * time.Millisecond)
-                return tea.KeyMsg{Type: tea.KeyEnter}
-            }
+            return m, nil
         }
-
     }
     return m, nil
 }
@@ -166,72 +153,60 @@ func (m installModel) View() string {
         return "Loading..."
     }
 
-    boxWidth := minInt(m.width-4, 70)
+    boxWidth := iMinInt(m.width-4, progWidth)
 
-    title := installTitleStyle.Width(boxWidth).Align(lipgloss.Center).
-        Render(" Installing Virtual Private Node ")
+    title := progTitleStyle.Width(boxWidth).Align(lipgloss.Center).
+        Render(fmt.Sprintf(" Virtual Private Node v%s ", m.version))
 
     var lines []string
     for i, s := range m.steps {
-        prefix := "  "
-        style := installPendingStyle
-        indicator := "○"
+        var style lipgloss.Style
+        var indicator string
 
         switch s.status {
         case stepDone:
-            style = installDoneStyle
+            style = progDoneStyle
             indicator = "✓"
         case stepRunning:
-            style = installRunningStyle
+            style = progRunStyle
             indicator = "⟳"
         case stepFailed:
-            style = installFailedStyle
+            style = progFailStyle
             indicator = "✗"
-        case stepPending:
-            style = installPendingStyle
+        default:
+            style = progPendingStyle
             indicator = "○"
         }
 
-        line := style.Render(fmt.Sprintf("%s%s [%d/%d] %s",
-            prefix, indicator, i+1, len(m.steps), s.name))
-
-        lines = append(lines, line)
+        lines = append(lines,
+            style.Render(fmt.Sprintf("  %s [%d/%d] %s",
+                indicator, i+1, len(m.steps), s.name)))
 
         if s.status == stepFailed && s.err != nil {
-            lines = append(lines, installFailedStyle.Render(
-                fmt.Sprintf("      Error: %v", s.err)))
+            lines = append(lines,
+                progFailStyle.Render(fmt.Sprintf("      Error: %v", s.err)))
         }
     }
 
     content := strings.Join(lines, "\n")
-    box := installBoxStyle.Width(boxWidth).Render(content)
+    box := progBoxStyle.Width(boxWidth).Render(content)
 
     var footer string
     if m.done && !m.failed {
-        footer = installDoneStyle.Render("  Installation complete!")
+        footer = progGoodStyle.Render("  ✓ Installation complete — press Enter to continue  ")
     } else if m.failed {
-        footer = installFailedStyle.Render("  Installation failed. Check the error above.")
+        footer = progFailStyle.Render("  Installation failed. Press q to exit.  ")
     } else {
-        footer = installDimStyle.Render("  Installing... ctrl+c to cancel")
+        footer = progDimStyle.Render("  Installing... please wait  ")
     }
 
     full := lipgloss.JoinVertical(lipgloss.Center,
-        "",
-        title,
-        "",
-        box,
-        "",
-        footer,
-    )
+        "", title, "", box, "", footer)
 
     return lipgloss.Place(m.width, m.height,
-        lipgloss.Center, lipgloss.Center,
-        full,
-    )
+        lipgloss.Center, lipgloss.Center, full)
 }
 
-// runInstallTUI launches the install progress as a TUI.
-// Returns an error if any step fails.
 func runInstallTUI(steps []installStep) error {
     if len(steps) == 0 {
         return nil
@@ -241,6 +216,7 @@ func runInstallTUI(steps []installStep) error {
     m := installModel{
         steps:   steps,
         current: 0,
+        version: appVersion,
     }
 
     p := tea.NewProgram(m, tea.WithAltScreen())
@@ -260,7 +236,7 @@ func runInstallTUI(steps []installStep) error {
     return nil
 }
 
-// ── Centered info boxes ──────────────────────────────────
+// ── Info box (centered message, wait for Enter) ──────────
 
 var setupBoxStyle = lipgloss.NewStyle().
     Border(lipgloss.RoundedBorder()).
@@ -268,15 +244,13 @@ var setupBoxStyle = lipgloss.NewStyle().
     Padding(1, 3)
 
 var setupTitleStyle = lipgloss.NewStyle().
-    Foreground(lipgloss.Color("15")).
-    Bold(true)
+    Foreground(lipgloss.Color("15")).Bold(true)
 
 var setupTextStyle = lipgloss.NewStyle().
     Foreground(lipgloss.Color("250"))
 
 var setupWarnStyle = lipgloss.NewStyle().
-    Foreground(lipgloss.Color("196")).
-    Bold(true)
+    Foreground(lipgloss.Color("196")).Bold(true)
 
 var setupDimStyle = lipgloss.NewStyle().
     Foreground(lipgloss.Color("243"))
@@ -306,8 +280,8 @@ func (m infoBoxModel) View() string {
     if m.width == 0 {
         return "Loading..."
     }
-    maxWidth := minInt(m.width-8, 70)
-    box := setupBoxStyle.Width(maxWidth).Render(m.content)
+    maxW := iMinInt(m.width-8, 70)
+    box := setupBoxStyle.Width(maxW).Render(m.content)
     return lipgloss.Place(m.width, m.height,
         lipgloss.Center, lipgloss.Center, box)
 }
@@ -325,7 +299,7 @@ func Run() error {
         return err
     }
 
-    cfg, err := RunTUI()
+    cfg, err := RunTUI(appVersion)
     if err != nil {
         return err
     }
@@ -334,25 +308,21 @@ func Run() error {
         return nil
     }
 
-    // Build steps and run them in the progress TUI
     steps := buildSteps(cfg)
     if err := runInstallTUI(steps); err != nil {
         return err
     }
 
-    // LND wallet creation
     if cfg.components == "bitcoin+lnd" {
         if err := walletCreationPhase(cfg); err != nil {
             return err
         }
     }
 
-    // Shell environment
     if err := setupShellEnvironment(cfg); err != nil {
         fmt.Printf("  Warning: shell setup failed: %v\n", err)
     }
 
-    // Save config
     appCfg := &config.AppConfig{
         Network:    cfg.network.Name,
         Components: cfg.components,
@@ -367,6 +337,9 @@ func Run() error {
     return nil
 }
 
+// buildSteps creates granular install steps. Download, verify,
+// and extract are split into separate visible steps so progress
+// is clear without stdout leaks.
 func buildSteps(cfg *installConfig) []installStep {
     steps := []installStep{
         {name: "Creating system user", fn: func() error { return createSystemUser(systemUser) }},
@@ -377,7 +350,9 @@ func buildSteps(cfg *installConfig) []installStep {
         {name: "Configuring Tor", fn: func() error { return writeTorConfig(cfg) }},
         {name: "Adding user to debian-tor group", fn: func() error { return addUserToTorGroup(systemUser) }},
         {name: "Starting Tor", fn: restartTor},
-        {name: "Installing Bitcoin Core " + bitcoinVersion, fn: func() error { return installBitcoin(bitcoinVersion) }},
+        {name: "Downloading Bitcoin Core " + bitcoinVersion, fn: func() error { return downloadBitcoin(bitcoinVersion) }},
+        {name: "Verifying Bitcoin Core", fn: func() error { return verifyBitcoin(bitcoinVersion) }},
+        {name: "Installing Bitcoin Core", fn: func() error { return extractAndInstallBitcoin(bitcoinVersion) }},
         {name: "Configuring Bitcoin Core", fn: func() error { return writeBitcoinConfig(cfg) }},
         {name: "Creating bitcoind service", fn: func() error { return writeBitcoindService(systemUser) }},
         {name: "Starting Bitcoin Core", fn: startBitcoind},
@@ -385,7 +360,9 @@ func buildSteps(cfg *installConfig) []installStep {
 
     if cfg.components == "bitcoin+lnd" {
         steps = append(steps,
-            installStep{name: "Installing LND " + lndVersion, fn: func() error { return installLND(lndVersion) }},
+            installStep{name: "Downloading LND " + lndVersion, fn: func() error { return downloadLND(lndVersion) }},
+            installStep{name: "Verifying LND", fn: func() error { return verifyLND(lndVersion) }},
+            installStep{name: "Installing LND", fn: func() error { return extractAndInstallLND(lndVersion) }},
             installStep{name: "Configuring LND", fn: func() error { return writeLNDConfig(cfg) }},
             installStep{name: "Creating LND service", fn: func() error { return writeLNDServiceInitial(systemUser) }},
             installStep{name: "Starting LND", fn: startLND},
@@ -394,6 +371,8 @@ func buildSteps(cfg *installConfig) []installStep {
 
     return steps
 }
+
+// ── Wallet creation ──────────────────────────────────────
 
 func walletCreationPhase(cfg *installConfig) error {
     walletInfo := setupTitleStyle.Render("Create Your LND Wallet") + "\n\n" +
@@ -410,7 +389,14 @@ func walletCreationPhase(cfg *installConfig) error {
 
     showInfoBox(walletInfo)
 
+    // Clear screen and show header before lncli takes over
+    fmt.Print("\033[2J\033[H")
     fmt.Println()
+    fmt.Println("  ═══════════════════════════════════════════")
+    fmt.Println("    LND Wallet Creation")
+    fmt.Println("  ═══════════════════════════════════════════")
+    fmt.Println()
+
     fmt.Println("  Waiting for LND to be ready...")
     if err := waitForLND(); err != nil {
         return fmt.Errorf("LND not ready: %w", err)
@@ -433,16 +419,17 @@ func walletCreationPhase(cfg *installConfig) error {
         return fmt.Errorf("lncli create failed: %w", err)
     }
 
+    // Seed confirmation
     seedConfirm := setupTitleStyle.Render("Seed Phrase Confirmation") + "\n\n" +
         setupWarnStyle.Render("Have you written down your 24-word seed phrase?") + "\n\n" +
         setupTextStyle.Render("Your seed phrase was displayed above by LND.") + "\n" +
-        setupTextStyle.Render("If you scroll up, you should still be able to see it.") + "\n\n" +
         setupTextStyle.Render("Make sure you have saved it in a secure location.") + "\n" +
         setupTextStyle.Render("You will NOT be able to see it again.") + "\n\n" +
         setupDimStyle.Render("Press Enter to confirm you have saved your seed...")
 
     showInfoBox(seedConfirm)
 
+    // Auto-unlock
     unlockInfo := setupTitleStyle.Render("Auto-Unlock Configuration") + "\n\n" +
         setupTextStyle.Render("Your wallet password will be stored on disk so LND") + "\n" +
         setupTextStyle.Render("can start automatically after a server reboot.") + "\n\n" +
@@ -452,6 +439,12 @@ func walletCreationPhase(cfg *installConfig) error {
 
     showInfoBox(unlockInfo)
 
+    // Clear screen for password prompt
+    fmt.Print("\033[2J\033[H")
+    fmt.Println()
+    fmt.Println("  ═══════════════════════════════════════════")
+    fmt.Println("    Auto-Unlock Password")
+    fmt.Println("  ═══════════════════════════════════════════")
     fmt.Println()
     fmt.Print("  Re-enter your wallet password for auto-unlock: ")
     password := readPassword()
@@ -470,6 +463,8 @@ func walletCreationPhase(cfg *installConfig) error {
 
     return nil
 }
+
+// ── Helpers ──────────────────────────────────────────────
 
 func readLine(reader *bufio.Reader) string {
     line, _ := reader.ReadString('\n')
@@ -518,7 +513,6 @@ func setupShellEnvironment(cfg *installConfig) error {
     lndBlock := ""
     if cfg.components == "bitcoin+lnd" {
         lndBlock = fmt.Sprintf(`
-# LND — lncli reads these env vars natively
 export LNCLI_LNDDIR=/var/lib/lnd%s
 export LNCLI_MACAROONPATH=/var/lib/lnd/data/chain/bitcoin/%s/admin.macaroon
 export LNCLI_TLSCERTPATH=/var/lib/lnd/tls.cert
@@ -527,8 +521,6 @@ export LNCLI_TLSCERTPATH=/var/lib/lnd/tls.cert
 
     content := fmt.Sprintf(`
 # ── Virtual Private Node ──────────────────────
-# Added by rlvpn installer
-
 bitcoin-cli() {
     sudo -u bitcoin /usr/local/bin/bitcoin-cli \
         -datadir=/var/lib/bitcoin \
@@ -546,14 +538,11 @@ export -f lncli
     f, err := os.OpenFile("/home/ripsline/.bashrc",
         os.O_APPEND|os.O_WRONLY|os.O_CREATE, 0644)
     if err != nil {
-        return fmt.Errorf("open .bashrc: %w", err)
+        return err
     }
     defer f.Close()
-
-    if _, err := f.WriteString(content); err != nil {
-        return fmt.Errorf("write .bashrc: %w", err)
-    }
-    return nil
+    _, err = f.WriteString(content)
+    return err
 }
 
 func minInt(a, b int) int {

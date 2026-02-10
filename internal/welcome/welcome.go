@@ -4,7 +4,8 @@
 //   - Pairing: Zeus and Sparrow wallet connection overview
 //   - Logs: journalctl output for tor, bitcoind, lnd
 //
-// Press esc to quit and drop to a bash shell.
+// All tabs render inside an identically-sized bordered box.
+// Press q to quit and drop to a bash shell.
 // Press backspace to go back from any subview.
 package welcome
 
@@ -47,7 +48,6 @@ var (
             Foreground(lipgloss.Color("15")).
             Bold(true)
 
-    // Short labels — no fixed width, tight spacing
     wLabelStyle = lipgloss.NewStyle().
             Foreground(lipgloss.Color("245"))
 
@@ -60,11 +60,6 @@ var (
 
     wWarnStyle = lipgloss.NewStyle().
             Foreground(lipgloss.Color("245"))
-
-    // Yellow highlight for selected items
-    wSelectedStyle = lipgloss.NewStyle().
-            Foreground(lipgloss.Color("220")).
-            Bold(true)
 
     wGreenDotStyle = lipgloss.NewStyle().
             Foreground(lipgloss.Color("10"))
@@ -89,7 +84,6 @@ var (
     wMonoStyle = lipgloss.NewStyle().
             Foreground(lipgloss.Color("15"))
 
-    // Bright red for warnings
     wWarningStyle = lipgloss.NewStyle().
             Foreground(lipgloss.Color("196")).
             Bold(true)
@@ -99,8 +93,11 @@ var (
             Bold(true)
 )
 
-// Fixed width for consistent layout
-const wContentWidth = 76
+// Width divisible by 3 for even tab distribution
+const wContentWidth = 75
+
+// Fixed inner box height (lines of content inside the border)
+const wBoxHeight = 22
 
 // ── Enums ────────────────────────────────────────────────
 
@@ -137,8 +134,8 @@ type Model struct {
     version   string
     activeTab tab
     logSource logSource
-    logLines  []string // full log buffer
-    logOffset int      // scroll offset (0 = bottom/newest)
+    logLines  []string
+    logOffset int
     subview   subview
     width     int
     height    int
@@ -162,21 +159,6 @@ func Show(cfg *config.AppConfig, version string) {
 
 func (m Model) Init() tea.Cmd { return nil }
 
-// boxHeight returns the fixed inner height for content boxes.
-// All tabs use the same box size.
-func (m Model) boxHeight() int {
-    // terminal height minus title(1) + gap(1) + tabs(1) + gap(1) +
-    // border(2) + padding(2) + footer(1) + gaps(3) = ~12 lines overhead
-    h := m.height - 12
-    if h < 10 {
-        h = 10
-    }
-    if h > 30 {
-        h = 30
-    }
-    return h
-}
-
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
     switch msg := msg.(type) {
     case tea.WindowSizeMsg:
@@ -185,17 +167,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
         return m, nil
 
     case tea.KeyMsg:
-        // Universal: esc always quits to shell
-        if msg.String() == "escape" || msg.String() == "ctrl+c" {
-            return m, tea.Quit
-        }
-
         // Subview navigation
         if m.subview != subviewNone {
             switch msg.String() {
             case "backspace":
-                // QR goes back to Zeus, macaroon goes back to Zeus,
-                // Zeus/Sparrow go back to pairing overview
                 switch m.subview {
                 case subviewQR, subviewMacaroon:
                     m.subview = subviewZeus
@@ -203,6 +178,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
                     m.subview = subviewNone
                 }
                 return m, nil
+            case "q", "ctrl+c":
+                return m, tea.Quit
             case "m":
                 if m.subview == subviewZeus && m.cfg.HasLND() {
                     m.subview = subviewMacaroon
@@ -217,8 +194,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
             return m, nil
         }
 
-        // Main screen keys
+        // Main screen
         switch msg.String() {
+        case "q", "ctrl+c":
+            return m, tea.Quit
+
         case "tab", "right":
             if m.activeTab == tabLogs {
                 m.activeTab = tabDashboard
@@ -226,7 +206,6 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
                 m.activeTab++
             }
             return m, nil
-
         case "shift+tab", "left":
             if m.activeTab == tabDashboard {
                 m.activeTab = tabLogs
@@ -276,22 +255,21 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
         // Scroll logs
         case "up", "k":
             if m.activeTab == tabLogs {
-                maxOffset := len(m.logLines) - m.logsVisible()
-                if maxOffset < 0 {
-                    maxOffset = 0
+                maxOff := len(m.logLines) - wBoxHeight + 3
+                if maxOff < 0 {
+                    maxOff = 0
                 }
-                if m.logOffset < maxOffset {
+                if m.logOffset < maxOff {
                     m.logOffset++
                 }
             }
         case "down", "j":
-            if m.activeTab == tabLogs {
-                if m.logOffset > 0 {
-                    m.logOffset--
-                }
+            if m.activeTab == tabLogs && m.logOffset > 0 {
+                m.logOffset--
             }
 
-        case "r":
+        // Refresh
+        case "R":
             if m.activeTab == tabLogs {
                 switch m.logSource {
                 case logTor:
@@ -308,22 +286,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
     return m, nil
 }
 
-// logsVisible returns how many log lines fit in the box.
-func (m Model) logsVisible() int {
-    // box height minus source tabs(1) and gap(1)
-    v := m.boxHeight() - 2
-    if v < 5 {
-        v = 5
-    }
-    return v
-}
-
 func (m Model) View() string {
     if m.width == 0 {
         return "Loading..."
     }
 
-    // Handle subviews
     switch m.subview {
     case subviewZeus:
         return m.renderZeusScreen()
@@ -335,9 +302,8 @@ func (m Model) View() string {
         return m.renderQRScreen()
     }
 
-    boxWidth := wMinInt(m.width-4, wContentWidth)
+    boxWidth := wMin(m.width-4, wContentWidth)
 
-    // Render tab content
     var content string
     switch m.activeTab {
     case tabDashboard:
@@ -349,25 +315,21 @@ func (m Model) View() string {
     }
 
     title := wTitleStyle.Width(boxWidth).Align(lipgloss.Center).
-        Render(" Virtual Private Node v" + m.version + " ")
+        Render(fmt.Sprintf(" Virtual Private Node v%s ", m.version))
     tabs := m.renderTabs(boxWidth)
     footer := m.renderFooter()
 
     body := lipgloss.JoinVertical(lipgloss.Center,
-        "", title, "", tabs, "", content,
-    )
+        "", title, "", tabs, "", content)
 
-    bodyHeight := lipgloss.Height(body)
-    gap := m.height - bodyHeight - 2
+    bodyH := lipgloss.Height(body)
+    gap := m.height - bodyH - 2
     if gap < 0 {
         gap = 0
     }
 
     full := lipgloss.JoinVertical(lipgloss.Center,
-        body,
-        strings.Repeat("\n", gap),
-        footer,
-    )
+        body, strings.Repeat("\n", gap), footer)
 
     return lipgloss.Place(m.width, m.height,
         lipgloss.Center, lipgloss.Top, full)
@@ -384,78 +346,111 @@ func (m Model) renderTabs(totalWidth int) string {
         {"Pairing", tabPairing},
         {"Logs", tabLogs},
     }
-
-    tabWidth := totalWidth / len(tabs)
-    var rendered []string
+    tabW := totalWidth / len(tabs)
+    var out []string
     for _, t := range tabs {
         if t.id == m.activeTab {
-            rendered = append(rendered,
-                wActiveTabStyle.Width(tabWidth).Align(lipgloss.Center).Render(t.name))
+            out = append(out,
+                wActiveTabStyle.Width(tabW).Align(lipgloss.Center).Render(t.name))
         } else {
-            rendered = append(rendered,
-                wInactiveTabStyle.Width(tabWidth).Align(lipgloss.Center).Render(t.name))
+            out = append(out,
+                wInactiveTabStyle.Width(tabW).Align(lipgloss.Center).Render(t.name))
         }
     }
-    return lipgloss.JoinHorizontal(lipgloss.Top, rendered...)
+    return lipgloss.JoinHorizontal(lipgloss.Top, out...)
 }
 
 func (m Model) renderFooter() string {
     var hint string
     switch m.activeTab {
     case tabDashboard:
-        hint = "← → switch tabs • esc quit to shell"
+        hint = "← → switch tabs • q quit to shell"
     case tabPairing:
         if m.cfg.HasLND() {
-            hint = "z zeus • s sparrow • ← → tabs • esc quit"
+            hint = "z zeus • s sparrow • ← → tabs • q quit"
         } else {
-            hint = "s sparrow • ← → tabs • esc quit"
+            hint = "s sparrow • ← → tabs • q quit"
         }
     case tabLogs:
         if m.cfg.HasLND() {
-            hint = "t tor • b bitcoin • l lnd • ↑↓ scroll • r refresh • esc quit"
+            hint = "t tor • b bitcoin • l lnd • ↑↓ scroll • R refresh • q quit"
         } else {
-            hint = "t tor • b bitcoin • ↑↓ scroll • r refresh • esc quit"
+            hint = "t tor • b bitcoin • ↑↓ scroll • R refresh • q quit"
         }
     }
     return wFooterStyle.Render("  " + hint + "  ")
 }
 
+// ── Fixed-size box helper ────────────────────────────────
+//
+// renderBox wraps content in a bordered box with fixed width
+// and height. Content is padded or truncated to fit exactly.
+
+func renderBox(content string, boxWidth int) string {
+    lines := strings.Split(content, "\n")
+
+    // Truncate if too many lines
+    if len(lines) > wBoxHeight {
+        lines = lines[:wBoxHeight]
+    }
+
+    // Pad if too few lines
+    for len(lines) < wBoxHeight {
+        lines = append(lines, "")
+    }
+
+    padded := strings.Join(lines, "\n")
+    return wBorderStyle.Width(boxWidth).Padding(1, 2).Render(padded)
+}
+
 // ── Dashboard tab ────────────────────────────────────────
 
 func (m Model) renderDashboard(boxWidth int) string {
-    var sections []string
+    var lines []string
 
-    sections = append(sections, wHeaderStyle.Render("Services"))
-    sections = append(sections, "")
-    sections = append(sections, renderServiceRow("tor"))
-    sections = append(sections, renderServiceRow("bitcoind"))
+    // Services section
+    lines = append(lines, wHeaderStyle.Render("Services"))
+    lines = append(lines, "")
+    lines = append(lines, svcRow("tor"))
+    lines = append(lines, svcRow("bitcoind"))
     if m.cfg.HasLND() {
-        sections = append(sections, renderServiceRow("lnd"))
+        lines = append(lines, svcRow("lnd"))
     }
 
-    sections = append(sections, "")
-    sections = append(sections, wHeaderStyle.Render("System"))
-    sections = append(sections, "")
-    sections = append(sections, renderSystemStats()...)
+    // System section
+    lines = append(lines, "")
+    lines = append(lines, wHeaderStyle.Render("System"))
+    lines = append(lines, "")
 
-    sections = append(sections, "")
-    sections = append(sections, wHeaderStyle.Render("Blockchain"))
-    sections = append(sections, "")
-    sections = append(sections, m.renderBlockchainInfo()...)
+    total, used, pct := diskUsage("/")
+    lines = append(lines, "  "+wLabelStyle.Render("Disk: ")+
+        wValueStyle.Render(fmt.Sprintf("%s / %s (%s)", used, total, pct)))
 
-    content := lipgloss.JoinVertical(lipgloss.Left, sections...)
+    ramT, ramU, ramP := memUsage()
+    lines = append(lines, "  "+wLabelStyle.Render("RAM:  ")+
+        wValueStyle.Render(fmt.Sprintf("%s / %s (%s)", ramU, ramT, ramP)))
 
-    // Pad to fixed height
-    contentHeight := lipgloss.Height(content)
-    target := m.boxHeight()
-    if contentHeight < target {
-        content += strings.Repeat("\n", target-contentHeight)
+    btcSize := dirSize("/var/lib/bitcoin")
+    lines = append(lines, "  "+wLabelStyle.Render("Bitcoin data: ")+
+        wValueStyle.Render(btcSize))
+
+    if m.cfg.HasLND() {
+        lndSize := dirSize("/var/lib/lnd")
+        lines = append(lines, "  "+wLabelStyle.Render("LND data: ")+
+            wValueStyle.Render(lndSize))
     }
 
-    return wBorderStyle.Width(boxWidth).Padding(1, 2).Render(content)
+    // Blockchain section
+    lines = append(lines, "")
+    lines = append(lines, wHeaderStyle.Render("Blockchain"))
+    lines = append(lines, "")
+    lines = append(lines, m.blockchainRows()...)
+
+    content := strings.Join(lines, "\n")
+    return renderBox(content, boxWidth)
 }
 
-func renderServiceRow(name string) string {
+func svcRow(name string) string {
     cmd := exec.Command("systemctl", "is-active", "--quiet", name)
     if cmd.Run() == nil {
         return "  " + wGreenDotStyle.Render("●") + " " + wValueStyle.Render(name)
@@ -463,31 +458,7 @@ func renderServiceRow(name string) string {
     return "  " + wRedDotStyle.Render("●") + " " + wDimStyle.Render(name)
 }
 
-func renderSystemStats() []string {
-    var rows []string
-
-    total, used, pct := diskUsage("/")
-    rows = append(rows, "  "+wLabelStyle.Render("Disk: ")+
-        wValueStyle.Render(fmt.Sprintf("%s / %s (%s)", used, total, pct)))
-
-    ramTotal, ramUsed, ramPct := memUsage()
-    rows = append(rows, "  "+wLabelStyle.Render("RAM:  ")+
-        wValueStyle.Render(fmt.Sprintf("%s / %s (%s)", ramUsed, ramTotal, ramPct)))
-
-    btcSize := dirSize("/var/lib/bitcoin")
-    rows = append(rows, "  "+wLabelStyle.Render("Bitcoin data: ")+
-        wValueStyle.Render(btcSize))
-
-    lndSize := dirSize("/var/lib/lnd")
-    if lndSize != "N/A" {
-        rows = append(rows, "  "+wLabelStyle.Render("LND data: ")+
-            wValueStyle.Render(lndSize))
-    }
-
-    return rows
-}
-
-func (m Model) renderBlockchainInfo() []string {
+func (m Model) blockchainRows() []string {
     var rows []string
 
     cmd := exec.Command("sudo", "-u", "bitcoin", "bitcoin-cli",
@@ -506,9 +477,11 @@ func (m Model) renderBlockchainInfo() []string {
     ibd := strings.Contains(info, `"initialblockdownload": true`)
 
     if ibd {
-        rows = append(rows, "  "+wLabelStyle.Render("Sync: ")+wWarnStyle.Render("⟳ syncing"))
+        rows = append(rows, "  "+wLabelStyle.Render("Sync: ")+
+            wWarnStyle.Render("⟳ syncing"))
     } else {
-        rows = append(rows, "  "+wLabelStyle.Render("Sync: ")+wGoodStyle.Render("✓ synced"))
+        rows = append(rows, "  "+wLabelStyle.Render("Sync: ")+
+            wGoodStyle.Render("✓ synced"))
     }
 
     rows = append(rows, "  "+wLabelStyle.Render("Height: ")+
@@ -531,11 +504,13 @@ func (m Model) renderBlockchainInfo() []string {
     return rows
 }
 
-// ── Pairing tab (side-by-side overview) ──────────────────
+// ── Pairing tab ──────────────────────────────────────────
+//
+// Two columns inside the same fixed-size box.
 
 func (m Model) renderPairing(boxWidth int) string {
-    innerWidth := boxWidth - 6 // account for border + padding
-    halfWidth := (innerWidth - 3) / 2
+    innerW := boxWidth - 6
+    halfW := (innerW - 1) / 2
 
     // Zeus column
     var zeusLines []string
@@ -545,25 +520,22 @@ func (m Model) renderPairing(boxWidth int) string {
         if restOnion == "" {
             status = wRedDotStyle.Render("●") + " waiting"
         }
-        zeusLines = append(zeusLines,
+        zeusLines = []string{
             wLightningStyle.Render("⚡ Zeus Wallet"),
             "",
             wDimStyle.Render("LND REST over Tor"),
             "",
             status,
             "",
-            wActionStyle.Render("Press [z] for setup"),
-        )
+            wActionStyle.Render("[z] Setup"),
+        }
     } else {
-        zeusLines = append(zeusLines,
+        zeusLines = []string{
             wDimStyle.Render("Zeus Wallet"),
             "",
             wDimStyle.Render("LND not installed"),
-        )
+        }
     }
-
-    zeusContent := lipgloss.JoinVertical(lipgloss.Left, zeusLines...)
-    zeusBox := wBorderStyle.Width(halfWidth).Padding(1, 2).Render(zeusContent)
 
     // Sparrow column
     btcRPC := readOnion("/var/lib/tor/bitcoin-rpc/hostname")
@@ -571,7 +543,6 @@ func (m Model) renderPairing(boxWidth int) string {
     if btcRPC == "" {
         sparrowStatus = wRedDotStyle.Render("●") + " waiting"
     }
-
     sparrowLines := []string{
         wHeaderStyle.Render("Sparrow Wallet"),
         "",
@@ -579,28 +550,46 @@ func (m Model) renderPairing(boxWidth int) string {
         "",
         sparrowStatus,
         "",
-        wActionStyle.Render("Press [s] for setup"),
+        wActionStyle.Render("[s] Setup"),
     }
 
-    sparrowContent := lipgloss.JoinVertical(lipgloss.Left, sparrowLines...)
-    sparrowBox := wBorderStyle.Width(halfWidth).Padding(1, 2).Render(sparrowContent)
-
-    paired := lipgloss.JoinHorizontal(lipgloss.Top, zeusBox, " ", sparrowBox)
-
-    // Pad to fixed height
-    pairedHeight := lipgloss.Height(paired)
-    target := m.boxHeight() + 4 // +4 for outer border+padding
-    if pairedHeight < target {
-        paired += strings.Repeat("\n", target-pairedHeight)
+    // Pad columns to same height
+    maxLines := len(zeusLines)
+    if len(sparrowLines) > maxLines {
+        maxLines = len(sparrowLines)
+    }
+    for len(zeusLines) < maxLines {
+        zeusLines = append(zeusLines, "")
+    }
+    for len(sparrowLines) < maxLines {
+        sparrowLines = append(sparrowLines, "")
     }
 
-    return paired
+    // Render columns side by side using fixed width
+    zeusCol := lipgloss.NewStyle().Width(halfW).Render(
+        strings.Join(zeusLines, "\n"))
+    sparrowCol := lipgloss.NewStyle().Width(halfW).Render(
+        strings.Join(sparrowLines, "\n"))
+
+    paired := lipgloss.JoinHorizontal(lipgloss.Top, zeusCol, " ", sparrowCol)
+
+    // Pad the paired content to fill the fixed box height
+    pairedLines := strings.Split(paired, "\n")
+    for len(pairedLines) < wBoxHeight {
+        pairedLines = append(pairedLines, "")
+    }
+    if len(pairedLines) > wBoxHeight {
+        pairedLines = pairedLines[:wBoxHeight]
+    }
+
+    content := strings.Join(pairedLines, "\n")
+    return wBorderStyle.Width(boxWidth).Padding(1, 2).Render(content)
 }
 
-// ── Zeus full pairing screen ─────────────────────────────
+// ── Zeus full screen ─────────────────────────────────────
 
 func (m Model) renderZeusScreen() string {
-    boxWidth := wMinInt(m.width-4, wContentWidth)
+    boxWidth := wMin(m.width-4, wContentWidth)
 
     var lines []string
     lines = append(lines, wLightningStyle.Render("⚡ Zeus Wallet — LND REST over Tor"))
@@ -612,10 +601,10 @@ func (m Model) renderZeusScreen() string {
     } else {
         lines = append(lines, wHeaderStyle.Render("Connection Details"))
         lines = append(lines, "")
-        lines = append(lines, wLabelStyle.Render("Type: ")+wMonoStyle.Render("LND (REST)"))
-        lines = append(lines, wLabelStyle.Render("Port: ")+wMonoStyle.Render("8080"))
+        lines = append(lines, "  "+wLabelStyle.Render("Type: ")+wMonoStyle.Render("LND (REST)"))
+        lines = append(lines, "  "+wLabelStyle.Render("Port: ")+wMonoStyle.Render("8080"))
         lines = append(lines, "")
-        lines = append(lines, wLabelStyle.Render("Host:"))
+        lines = append(lines, "  "+wLabelStyle.Render("Host:"))
         lines = append(lines, "  "+wMonoStyle.Render(restOnion))
         lines = append(lines, "")
 
@@ -625,12 +614,12 @@ func (m Model) renderZeusScreen() string {
             if len(preview) > 40 {
                 preview = preview[:40] + "..."
             }
-            lines = append(lines, wLabelStyle.Render("Macaroon (hex):"))
+            lines = append(lines, "  "+wLabelStyle.Render("Macaroon (hex):"))
             lines = append(lines, "  "+wMonoStyle.Render(preview))
             lines = append(lines, "")
-            lines = append(lines, wActionStyle.Render("[m] full macaroon    [r] QR code"))
+            lines = append(lines, "  "+wActionStyle.Render("[m] full macaroon    [r] QR code"))
         } else {
-            lines = append(lines, wWarningStyle.Render("Macaroon not available. Create wallet first."))
+            lines = append(lines, "  "+wWarningStyle.Render("Macaroon not available. Create wallet first."))
         }
     }
 
@@ -640,31 +629,29 @@ func (m Model) renderZeusScreen() string {
     lines = append(lines, wDimStyle.Render("2. Scan QR or add node manually"))
     lines = append(lines, wDimStyle.Render("3. Paste host, port, and macaroon"))
 
-    content := lipgloss.JoinVertical(lipgloss.Left, lines...)
-    box := wBorderStyle.Width(boxWidth).Padding(1, 2).Render(content)
+    content := strings.Join(lines, "\n")
+    box := renderBox(content, boxWidth)
 
     title := wTitleStyle.Width(boxWidth).Align(lipgloss.Center).
         Render(" Zeus Wallet Setup ")
-    footer := wFooterStyle.Render("  m macaroon • r QR code • backspace back • esc quit  ")
+    footer := wFooterStyle.Render("  m macaroon • r QR code • backspace back • q quit  ")
 
     full := lipgloss.JoinVertical(lipgloss.Center,
         "", title, "", box, "", footer)
-
     return lipgloss.Place(m.width, m.height,
         lipgloss.Center, lipgloss.Top, full)
 }
 
-// ── Sparrow full pairing screen ──────────────────────────
+// ── Sparrow full screen ──────────────────────────────────
 
 func (m Model) renderSparrowScreen() string {
-    boxWidth := wMinInt(m.width-4, wContentWidth)
+    boxWidth := wMin(m.width-4, wContentWidth)
 
     var lines []string
     lines = append(lines, wHeaderStyle.Render("Sparrow Wallet — Bitcoin Core RPC over Tor"))
     lines = append(lines, "")
-
     lines = append(lines, wWarningStyle.Render(
-        "WARNING: Cookie changes on restart. Reconnect Sparrow after any restart."))
+        "WARNING: Cookie changes on restart. Reconnect after any restart."))
     lines = append(lines, "")
 
     btcRPC := readOnion("/var/lib/tor/bitcoin-rpc/hostname")
@@ -675,22 +662,21 @@ func (m Model) renderSparrowScreen() string {
         if !m.cfg.IsMainnet() {
             port = "48332"
         }
-        cookieValue := readCookieValue(m.cfg)
+        cookie := readCookieValue(m.cfg)
 
         lines = append(lines, wHeaderStyle.Render("Connection Details"))
         lines = append(lines, "")
-        lines = append(lines, wLabelStyle.Render("Port: ")+wMonoStyle.Render(port))
-        lines = append(lines, wLabelStyle.Render("User: ")+wMonoStyle.Render("__cookie__"))
+        lines = append(lines, "  "+wLabelStyle.Render("Port: ")+wMonoStyle.Render(port))
+        lines = append(lines, "  "+wLabelStyle.Render("User: ")+wMonoStyle.Render("__cookie__"))
         lines = append(lines, "")
-        lines = append(lines, wLabelStyle.Render("URL:"))
+        lines = append(lines, "  "+wLabelStyle.Render("URL:"))
         lines = append(lines, "  "+wMonoStyle.Render(btcRPC))
         lines = append(lines, "")
-
-        if cookieValue != "" {
-            lines = append(lines, wLabelStyle.Render("Password:"))
-            lines = append(lines, "  "+wMonoStyle.Render(cookieValue))
+        if cookie != "" {
+            lines = append(lines, "  "+wLabelStyle.Render("Password:"))
+            lines = append(lines, "  "+wMonoStyle.Render(cookie))
         } else {
-            lines = append(lines, wLabelStyle.Render("Password: ")+
+            lines = append(lines, "  "+wLabelStyle.Render("Password: ")+
                 wWarnStyle.Render("not available — is bitcoind running?"))
         }
     }
@@ -700,20 +686,18 @@ func (m Model) renderSparrowScreen() string {
     lines = append(lines, wDimStyle.Render("1. In Sparrow: File → Preferences → Server"))
     lines = append(lines, wDimStyle.Render("2. Select Bitcoin Core tab"))
     lines = append(lines, wDimStyle.Render("3. Enter URL, port, user, and password"))
-    lines = append(lines, wDimStyle.Render("4. Select Test Connection"))
-    lines = append(lines, wDimStyle.Render("5. Sparrow needs Tor on your local machine"))
-    lines = append(lines, wDimStyle.Render("   SOCKS5 proxy: localhost:9050"))
+    lines = append(lines, wDimStyle.Render("4. Test Connection"))
+    lines = append(lines, wDimStyle.Render("5. Sparrow needs Tor locally (SOCKS5 localhost:9050)"))
 
-    content := lipgloss.JoinVertical(lipgloss.Left, lines...)
-    box := wBorderStyle.Width(boxWidth).Padding(1, 2).Render(content)
+    content := strings.Join(lines, "\n")
+    box := renderBox(content, boxWidth)
 
     title := wTitleStyle.Width(boxWidth).Align(lipgloss.Center).
         Render(" Sparrow Wallet Setup ")
-    footer := wFooterStyle.Render("  backspace back • esc quit  ")
+    footer := wFooterStyle.Render("  backspace back • q quit  ")
 
     full := lipgloss.JoinVertical(lipgloss.Center,
         "", title, "", box, "", footer)
-
     return lipgloss.Place(m.width, m.height,
         lipgloss.Center, lipgloss.Top, full)
 }
@@ -743,15 +727,14 @@ func (m Model) renderQRScreen() string {
     mac := readMacaroonHex(m.cfg)
 
     if restOnion == "" || mac == "" {
-        content := wWarnStyle.Render("QR code not available — missing onion address or macaroon.")
+        content := wWarnStyle.Render("QR not available — missing onion address or macaroon.")
         return lipgloss.Place(m.width, m.height,
             lipgloss.Center, lipgloss.Center, content)
     }
 
-    lndconnectURI := fmt.Sprintf("lndconnect://%s:8080?macaroon=%s",
+    uri := fmt.Sprintf("lndconnect://%s:8080?macaroon=%s",
         restOnion, hexToBase64URL(mac))
-
-    qr := renderQRCode(lndconnectURI)
+    qr := renderQRCode(uri)
 
     var lines []string
     lines = append(lines, wLightningStyle.Render("⚡ Zeus QR Code"))
@@ -759,18 +742,15 @@ func (m Model) renderQRScreen() string {
     lines = append(lines, wDimStyle.Render("You may need to zoom out to see the full QR code."))
     lines = append(lines, wDimStyle.Render("macOS: Cmd+Minus  |  Linux: Ctrl+Minus"))
     lines = append(lines, "")
-
     if qr != "" {
         lines = append(lines, qr)
     } else {
         lines = append(lines, wWarnStyle.Render("Could not generate QR code."))
     }
-
     lines = append(lines, "")
-    lines = append(lines, wFooterStyle.Render("backspace back • esc quit"))
+    lines = append(lines, wFooterStyle.Render("backspace back • q quit"))
 
     content := lipgloss.JoinVertical(lipgloss.Left, lines...)
-
     return lipgloss.Place(m.width, m.height,
         lipgloss.Center, lipgloss.Top, content)
 }
@@ -778,11 +758,9 @@ func (m Model) renderQRScreen() string {
 // ── Logs tab ─────────────────────────────────────────────
 
 func (m Model) renderLogs(boxWidth int) string {
+    // Source selector
     var sources []string
-    torS := wDimStyle
-    btcS := wDimStyle
-    lndS := wDimStyle
-
+    torS, btcS, lndS := wDimStyle, wDimStyle, wDimStyle
     switch m.logSource {
     case logTor:
         torS = wActiveTabStyle
@@ -791,16 +769,14 @@ func (m Model) renderLogs(boxWidth int) string {
     case logLND:
         lndS = wActiveTabStyle
     }
-
     sources = append(sources, torS.Render(" [t] Tor "))
     sources = append(sources, btcS.Render(" [b] Bitcoin "))
     if m.cfg.HasLND() {
         sources = append(sources, lndS.Render(" [l] LND "))
     }
-
     sourceTabs := lipgloss.JoinHorizontal(lipgloss.Top, sources...)
 
-    // Fetch logs if buffer is empty
+    // Fetch if empty
     logLines := m.logLines
     if len(logLines) == 0 {
         switch m.logSource {
@@ -813,54 +789,56 @@ func (m Model) renderLogs(boxWidth int) string {
         }
     }
 
-    // Calculate visible window with scroll offset
-    visible := m.logsVisible()
-    totalLines := len(logLines)
+    // Available lines for logs inside the box
+    // wBoxHeight minus source tabs line (1) and gap (1) and scroll hint (1)
+    visibleLines := wBoxHeight - 3
+    if visibleLines < 5 {
+        visibleLines = 5
+    }
 
-    // offset 0 = show newest (bottom), higher offset = scroll up
-    start := totalLines - visible - m.logOffset
+    totalLines := len(logLines)
+    start := totalLines - visibleLines - m.logOffset
     if start < 0 {
         start = 0
     }
-    end := start + visible
+    end := start + visibleLines
     if end > totalLines {
         end = totalLines
     }
 
-    var displayLines []string
+    var display []string
     if totalLines == 0 {
-        displayLines = []string{wDimStyle.Render("No logs available. Press r to refresh.")}
+        display = []string{wDimStyle.Render("No logs. Press R to refresh.")}
     } else {
         for _, line := range logLines[start:end] {
-            displayLines = append(displayLines, wDimStyle.Render(line))
+            display = append(display, wDimStyle.Render(line))
         }
     }
 
-    // Scroll indicator
     scrollHint := ""
-    if m.logOffset > 0 {
-        scrollHint = wDimStyle.Render(fmt.Sprintf(" ↑ %d more lines above", start))
+    if m.logOffset > 0 && start > 0 {
+        scrollHint = wDimStyle.Render(fmt.Sprintf("  ↑ %d more lines above", start))
     }
 
-    logContent := strings.Join(displayLines, "\n")
-
-    var contentParts []string
-    contentParts = append(contentParts, sourceTabs)
+    // Build content lines
+    var contentLines []string
+    contentLines = append(contentLines, sourceTabs)
     if scrollHint != "" {
-        contentParts = append(contentParts, scrollHint)
+        contentLines = append(contentLines, scrollHint)
+    } else {
+        contentLines = append(contentLines, "")
     }
-    contentParts = append(contentParts, "")
-    contentParts = append(contentParts, logContent)
+    contentLines = append(contentLines, display...)
 
-    content := lipgloss.JoinVertical(lipgloss.Left, contentParts...)
-
-    // Pad to fixed height
-    contentHeight := lipgloss.Height(content)
-    target := m.boxHeight()
-    if contentHeight < target {
-        content += strings.Repeat("\n", target-contentHeight)
+    // Pad/truncate to exact box height
+    for len(contentLines) < wBoxHeight {
+        contentLines = append(contentLines, "")
+    }
+    if len(contentLines) > wBoxHeight {
+        contentLines = contentLines[:wBoxHeight]
     }
 
+    content := strings.Join(contentLines, "\n")
     return wBorderStyle.Width(boxWidth).Padding(1, 2).Render(content)
 }
 
@@ -871,7 +849,6 @@ func renderQRCode(data string) string {
     if err != nil {
         return ""
     }
-
     bitmap := qr.Bitmap()
     rows := len(bitmap)
     cols := len(bitmap[0])
@@ -880,16 +857,16 @@ func renderQRCode(data string) string {
     for y := 0; y < rows; y += 2 {
         for x := 0; x < cols; x++ {
             top := bitmap[y][x]
-            bottom := false
+            bot := false
             if y+1 < rows {
-                bottom = bitmap[y+1][x]
+                bot = bitmap[y+1][x]
             }
             switch {
-            case top && bottom:
+            case top && bot:
                 b.WriteString("█")
-            case top && !bottom:
+            case top && !bot:
                 b.WriteString("▀")
-            case !top && bottom:
+            case !top && bot:
                 b.WriteString("▄")
             default:
                 b.WriteString(" ")
@@ -907,7 +884,6 @@ func hexToBase64URL(hexStr string) string {
     if err != nil {
         return ""
     }
-
     const chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
     result := make([]byte, 0, (len(data)*4/3)+4)
     padding := (3 - len(data)%3) % 3
@@ -921,11 +897,9 @@ func hexToBase64URL(hexStr string) string {
         result = append(result, chars[(n>>6)&63])
         result = append(result, chars[n&63])
     }
-
     if padding > 0 {
         result = result[:len(result)-padding]
     }
-
     s := string(result)
     s = strings.ReplaceAll(s, "+", "-")
     s = strings.ReplaceAll(s, "/", "_")
@@ -956,11 +930,11 @@ func readMacaroonHex(cfg *config.AppConfig) string {
 }
 
 func readCookieValue(cfg *config.AppConfig) string {
-    cookiePath := "/var/lib/bitcoin/.cookie"
+    p := "/var/lib/bitcoin/.cookie"
     if !cfg.IsMainnet() {
-        cookiePath = fmt.Sprintf("/var/lib/bitcoin/%s/.cookie", cfg.Network)
+        p = fmt.Sprintf("/var/lib/bitcoin/%s/.cookie", cfg.Network)
     }
-    data, err := os.ReadFile(cookiePath)
+    data, err := os.ReadFile(p)
     if err != nil {
         return ""
     }
@@ -973,19 +947,19 @@ func readCookieValue(cfg *config.AppConfig) string {
 
 func diskUsage(path string) (string, string, string) {
     cmd := exec.Command("df", "-h", "--output=size,used,pcent", path)
-    output, err := cmd.CombinedOutput()
+    out, err := cmd.CombinedOutput()
     if err != nil {
         return "N/A", "N/A", "N/A"
     }
-    lines := strings.Split(strings.TrimSpace(string(output)), "\n")
+    lines := strings.Split(strings.TrimSpace(string(out)), "\n")
     if len(lines) < 2 {
         return "N/A", "N/A", "N/A"
     }
-    fields := strings.Fields(lines[1])
-    if len(fields) < 3 {
+    f := strings.Fields(lines[1])
+    if len(f) < 3 {
         return "N/A", "N/A", "N/A"
     }
-    return fields[0], fields[1], fields[2]
+    return f[0], f[1], f[2]
 }
 
 func memUsage() (string, string, string) {
@@ -993,72 +967,68 @@ func memUsage() (string, string, string) {
     if err != nil {
         return "N/A", "N/A", "N/A"
     }
-    var total, available int
+    var total, avail int
     for _, line := range strings.Split(string(data), "\n") {
         if strings.HasPrefix(line, "MemTotal:") {
             fmt.Sscanf(line, "MemTotal: %d kB", &total)
         }
         if strings.HasPrefix(line, "MemAvailable:") {
-            fmt.Sscanf(line, "MemAvailable: %d kB", &available)
+            fmt.Sscanf(line, "MemAvailable: %d kB", &avail)
         }
     }
     if total == 0 {
         return "N/A", "N/A", "N/A"
     }
-    used := total - available
+    used := total - avail
     pct := float64(used) / float64(total) * 100
-    return formatKB(total), formatKB(used), fmt.Sprintf("%.0f%%", pct)
+    return fmtKB(total), fmtKB(used), fmt.Sprintf("%.0f%%", pct)
 }
 
 func dirSize(path string) string {
     cmd := exec.Command("du", "-sh", path)
-    output, err := cmd.CombinedOutput()
+    out, err := cmd.CombinedOutput()
     if err != nil {
         return "N/A"
     }
-    fields := strings.Fields(string(output))
-    if len(fields) < 1 {
+    f := strings.Fields(string(out))
+    if len(f) < 1 {
         return "N/A"
     }
-    return fields[0]
+    return f[0]
 }
 
-func formatKB(kb int) string {
+func fmtKB(kb int) string {
     if kb >= 1048576 {
         return fmt.Sprintf("%.1f GB", float64(kb)/1048576.0)
     }
     return fmt.Sprintf("%.0f MB", float64(kb)/1024.0)
 }
 
-// fetchLogLines fetches journal lines and returns them as a slice.
-// No --plain flag as it causes exit code 1 on some Debian installs.
 func fetchLogLines(service string, count int) []string {
     cmd := exec.Command("journalctl", "-u", service,
-        "-n", fmt.Sprintf("%d", count),
-        "--no-pager")
-    output, err := cmd.CombinedOutput()
-    if err != nil && len(output) == 0 {
+        "-n", fmt.Sprintf("%d", count), "--no-pager")
+    out, err := cmd.CombinedOutput()
+    if err != nil && len(out) == 0 {
         return []string{"Could not fetch logs: " + err.Error()}
     }
-    text := strings.TrimSpace(string(output))
+    text := strings.TrimSpace(string(out))
     if text == "" {
         return []string{"No logs available."}
     }
     return strings.Split(text, "\n")
 }
 
-func extractJSON(json, key string) string {
-    search := fmt.Sprintf(`"%s":`, key)
-    idx := strings.Index(json, search)
+func extractJSON(j, key string) string {
+    s := fmt.Sprintf(`"%s":`, key)
+    idx := strings.Index(j, s)
     if idx == -1 {
-        search = fmt.Sprintf(`"%s" :`, key)
-        idx = strings.Index(json, search)
+        s = fmt.Sprintf(`"%s" :`, key)
+        idx = strings.Index(j, s)
         if idx == -1 {
             return ""
         }
     }
-    rest := json[idx+len(search):]
-    rest = strings.TrimSpace(rest)
+    rest := strings.TrimSpace(j[idx+len(s):])
     if strings.HasPrefix(rest, `"`) {
         end := strings.Index(rest[1:], `"`)
         if end == -1 {
@@ -1073,7 +1043,7 @@ func extractJSON(json, key string) string {
     return strings.TrimSpace(rest[:end])
 }
 
-func wMinInt(a, b int) int {
+func wMin(a, b int) int {
     if a < b {
         return a
     }

@@ -1,9 +1,3 @@
-// Package installer — tui.go
-//
-// Interactive TUI for gathering installation configuration.
-// Uses bubbletea for terminal UI with arrow key navigation
-// and lipgloss for styling. Black/white brand with yellow
-// cursor highlight and red warnings.
 package installer
 
 import (
@@ -27,7 +21,7 @@ var (
             Foreground(lipgloss.Color("15")).
             Bold(true)
 
-    // Yellow highlight for the selected/cursor option
+    // Yellow highlight for cursor/selected items
     tuiSelectedStyle = lipgloss.NewStyle().
                 Foreground(lipgloss.Color("220")).
                 Bold(true)
@@ -56,7 +50,13 @@ var (
     tuiSummaryValStyle = lipgloss.NewStyle().
                 Foreground(lipgloss.Color("15")).
                 Bold(true)
+
+    tuiValueStyle = lipgloss.NewStyle().
+            Foreground(lipgloss.Color("15"))
 )
+
+// Width divisible by 3 so tabs divide evenly
+const tuiContentWidth = 75
 
 // ── Questions ────────────────────────────────────────────
 
@@ -137,6 +137,7 @@ type tuiModel struct {
     cursors   []int
     answers   []string
     phase     tuiPhase
+    version   string
     width     int
     height    int
 }
@@ -149,15 +150,14 @@ type tuiResult struct {
     sshPort    string
 }
 
-const tuiContentWidth = 60
-
-func newTuiModel() tuiModel {
+func newTuiModel(version string) tuiModel {
     questions := buildQuestions()
     questions = append(questions, sshQuestion())
     return tuiModel{
         questions: questions,
         cursors:   make([]int, len(questions)),
         answers:   make([]string, len(questions)),
+        version:   version,
     }
 }
 
@@ -172,7 +172,7 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
     case tea.KeyMsg:
         switch msg.String() {
-        case "ctrl+c", "escape":
+        case "ctrl+c", "q":
             m.phase = phaseCancelled
             return m, tea.Quit
         case "up", "k":
@@ -210,8 +210,7 @@ func (m tuiModel) handleEnter() (tea.Model, tea.Cmd) {
     }
 
     q := m.questions[m.current]
-    selected := q.options[m.cursors[m.current]]
-    m.answers[m.current] = selected.value
+    m.answers[m.current] = q.options[m.cursors[m.current]].value
 
     if m.current == 1 {
         m = m.handleComponentChoice()
@@ -260,36 +259,44 @@ func (m tuiModel) handleComponentChoice() tuiModel {
     return m
 }
 
+// View renders the install TUI inside a bordered box matching
+// the welcome TUI style with the same title bar.
 func (m tuiModel) View() string {
     if m.width == 0 || m.height == 0 {
         return "Loading..."
     }
 
-    var b strings.Builder
+    boxWidth := iMinInt(m.width-4, tuiContentWidth)
 
-    title := tuiTitleStyle.Width(tuiContentWidth).Align(lipgloss.Center).
-        Render(" Virtual Private Node ")
-    b.WriteString(title)
-    b.WriteString("\n\n")
+    // Title bar — same as welcome TUI
+    title := tuiTitleStyle.Width(boxWidth).Align(lipgloss.Center).
+        Render(fmt.Sprintf(" Virtual Private Node v%s ", m.version))
 
+    // Render content based on phase
+    var content string
     switch m.phase {
     case phaseQuestions:
-        b.WriteString(m.renderQuestion())
+        content = m.renderQuestion()
     case phaseSummary:
-        b.WriteString(m.renderSummary())
+        content = m.renderSummary()
     }
 
-    b.WriteString("\n")
+    // Footer
+    var footer string
     if m.phase == phaseQuestions {
-        b.WriteString(tuiDimStyle.Render("↑↓ navigate • enter select • backspace back • esc quit"))
+        footer = tuiDimStyle.Render("  ↑↓ navigate • enter select • backspace back • q quit  ")
     } else {
-        b.WriteString(tuiDimStyle.Render("enter confirm • backspace edit • esc cancel"))
+        footer = tuiDimStyle.Render("  enter confirm • backspace edit • q cancel  ")
     }
+
+    // Put content in a bordered box
+    box := tuiBoxStyle.Width(boxWidth).Render(content)
+
+    full := lipgloss.JoinVertical(lipgloss.Center,
+        "", title, "", box, "", footer)
 
     return lipgloss.Place(m.width, m.height,
-        lipgloss.Center, lipgloss.Center,
-        b.String(),
-    )
+        lipgloss.Center, lipgloss.Center, full)
 }
 
 func (m tuiModel) renderQuestion() string {
@@ -310,18 +317,18 @@ func (m tuiModel) renderQuestion() string {
             cursor = "▸ "
             style = tuiSelectedStyle
         }
-        b.WriteString(style.Render(cursor+opt.label) + tuiDimStyle.Render(" — "+opt.desc))
-        b.WriteString("\n")
+        b.WriteString(style.Render(cursor+opt.label) +
+            tuiDimStyle.Render(" — "+opt.desc) + "\n")
         if i == m.cursors[m.current] && opt.warn != "" {
-            b.WriteString("  " + tuiWarningStyle.Render("WARNING: "+opt.warn))
-            b.WriteString("\n")
+            b.WriteString("  " + tuiWarningStyle.Render("WARNING: "+opt.warn) + "\n")
         }
     }
 
     if m.current > 0 {
         b.WriteString("\n" + tuiDimStyle.Render("─────────────────────────────") + "\n")
         for i := 0; i < m.current; i++ {
-            b.WriteString(tuiDimStyle.Render(m.questions[i].title+":") + " " + m.answers[i] + "\n")
+            b.WriteString(tuiDimStyle.Render(m.questions[i].title+": ") +
+                tuiValueStyle.Render(m.answers[i]) + "\n")
         }
     }
 
@@ -347,7 +354,8 @@ func (m tuiModel) renderSummary() string {
         if r.p2pMode == "hybrid" {
             mode = "Hybrid (Tor + clearnet)"
         }
-        rows = append(rows[:3], append([]struct{ key, val string }{{"P2P Mode", mode}}, rows[3:]...)...)
+        rows = append(rows[:3],
+            append([]struct{ key, val string }{{"P2P Mode", mode}}, rows[3:]...)...)
     }
 
     var content strings.Builder
@@ -355,7 +363,6 @@ func (m tuiModel) renderSummary() string {
         content.WriteString(tuiSummaryKeyStyle.Render(row.key+":") +
             tuiSummaryValStyle.Render(" "+row.val) + "\n")
     }
-
     b.WriteString(tuiBoxStyle.Render(content.String()))
     b.WriteString("\n\n")
     b.WriteString(tuiSelectedStyle.Render("Press Enter to install"))
@@ -364,7 +371,10 @@ func (m tuiModel) renderSummary() string {
 }
 
 func (m tuiModel) getResult() tuiResult {
-    r := tuiResult{network: "testnet4", components: "bitcoin+lnd", pruneSize: "25", p2pMode: "tor", sshPort: "22"}
+    r := tuiResult{
+        network: "testnet4", components: "bitcoin+lnd",
+        pruneSize: "25", p2pMode: "tor", sshPort: "22",
+    }
     for i, q := range m.questions {
         if i >= len(m.answers) || m.answers[i] == "" {
             continue
@@ -385,8 +395,9 @@ func (m tuiModel) getResult() tuiResult {
     return r
 }
 
-func RunTUI() (*installConfig, error) {
-    m := newTuiModel()
+// RunTUI launches the config TUI and returns user choices.
+func RunTUI(version string) (*installConfig, error) {
+    m := newTuiModel(version)
     p := tea.NewProgram(m, tea.WithAltScreen())
     result, err := p.Run()
     if err != nil {
@@ -418,4 +429,11 @@ func RunTUI() (*installConfig, error) {
     }
 
     return cfg, nil
+}
+
+func iMinInt(a, b int) int {
+    if a < b {
+        return a
+    }
+    return b
 }

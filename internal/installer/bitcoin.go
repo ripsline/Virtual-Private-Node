@@ -6,34 +6,38 @@ import (
     "os/exec"
 )
 
-// installBitcoin downloads, verifies, and installs Bitcoin Core.
-func installBitcoin(version string) error {
+// downloadBitcoin fetches the Bitcoin Core tarball and SHA256SUMS.
+func downloadBitcoin(version string) error {
     filename := fmt.Sprintf("bitcoin-%s-x86_64-linux-gnu.tar.gz", version)
     url := fmt.Sprintf("https://bitcoincore.org/bin/bitcoin-core-%s/%s", version, filename)
     shaURL := fmt.Sprintf("https://bitcoincore.org/bin/bitcoin-core-%s/SHA256SUMS", version)
 
-    fmt.Println("    Downloading...")
     if err := download(url, "/tmp/"+filename); err != nil {
         return err
     }
-    if err := download(shaURL, "/tmp/SHA256SUMS"); err != nil {
-        return err
-    }
+    return download(shaURL, "/tmp/SHA256SUMS")
+}
 
-    fmt.Println("    Verifying checksum...")
+// verifyBitcoin checks the SHA256 checksum of the downloaded tarball.
+func verifyBitcoin(version string) error {
     cmd := exec.Command("sha256sum", "--ignore-missing", "--check", "SHA256SUMS")
     cmd.Dir = "/tmp"
     if output, err := cmd.CombinedOutput(); err != nil {
-        return fmt.Errorf("checksum verification failed: %s: %s", err, output)
+        return fmt.Errorf("checksum failed: %s: %s", err, output)
     }
+    return nil
+}
 
-    fmt.Println("    Extracting...")
-    cmd = exec.Command("tar", "-xzf", "/tmp/"+filename, "-C", "/tmp")
+// extractAndInstallBitcoin extracts the tarball and copies binaries
+// to /usr/local/bin/, then cleans up temp files.
+func extractAndInstallBitcoin(version string) error {
+    filename := fmt.Sprintf("bitcoin-%s-x86_64-linux-gnu.tar.gz", version)
+
+    cmd := exec.Command("tar", "-xzf", "/tmp/"+filename, "-C", "/tmp")
     if output, err := cmd.CombinedOutput(); err != nil {
         return fmt.Errorf("extract failed: %s: %s", err, output)
     }
 
-    // Install all binaries to /usr/local/bin/
     extractDir := fmt.Sprintf("/tmp/bitcoin-%s/bin", version)
     entries, err := os.ReadDir(extractDir)
     if err != nil {
@@ -49,7 +53,6 @@ func installBitcoin(version string) error {
         }
     }
 
-    // Clean up
     os.Remove("/tmp/" + filename)
     os.Remove("/tmp/SHA256SUMS")
     os.RemoveAll(fmt.Sprintf("/tmp/bitcoin-%s", version))
@@ -57,13 +60,10 @@ func installBitcoin(version string) error {
     return nil
 }
 
-// writeBitcoinConfig writes bitcoin.conf based on the user's
-// network and prune size choices.
+// writeBitcoinConfig writes bitcoin.conf using cookie auth only.
 func writeBitcoinConfig(cfg *installConfig) error {
-    // Prune value in MB (config is in GB)
     pruneMB := cfg.pruneSize * 1000
 
-    // Base config — applies to all networks
     content := fmt.Sprintf(`# Virtual Private Node — Bitcoin Core Configuration
 #
 # Network: %s
@@ -83,7 +83,6 @@ listen=1
 listenonion=1
 `, cfg.network.Name, cfg.pruneSize, cfg.network.BitcoinFlag, pruneMB)
 
-    // Network-specific section
     if cfg.network.Name == "testnet4" {
         content += fmt.Sprintf(`
 # ── Testnet4 ──────────────────────────────────
@@ -113,16 +112,13 @@ zmqpubrawtx=tcp://127.0.0.1:%d
         return err
     }
 
-    // Set ownership so the bitcoin user can read it
     cmd := exec.Command("chown", "root:"+systemUser, "/etc/bitcoin/bitcoin.conf")
     if output, err := cmd.CombinedOutput(); err != nil {
         return fmt.Errorf("%s: %s", err, output)
     }
-
     return nil
 }
 
-// writeBitcoindService creates the systemd service file for bitcoind.
 func writeBitcoindService(username string) error {
     content := fmt.Sprintf(`[Unit]
 Description=Bitcoin Core
@@ -144,29 +140,23 @@ NoNewPrivileges=true
 [Install]
 WantedBy=multi-user.target
 `, username, username)
-
     return os.WriteFile("/etc/systemd/system/bitcoind.service", []byte(content), 0644)
 }
 
-// startBitcoind enables and starts the bitcoind systemd service.
 func startBitcoind() error {
-    commands := [][]string{
+    for _, args := range [][]string{
         {"systemctl", "daemon-reload"},
         {"systemctl", "enable", "bitcoind"},
         {"systemctl", "start", "bitcoind"},
-    }
-
-    for _, args := range commands {
+    } {
         cmd := exec.Command(args[0], args[1:]...)
         if output, err := cmd.CombinedOutput(); err != nil {
             return fmt.Errorf("%v: %s: %s", args, err, output)
         }
     }
-
     return nil
 }
 
-// download fetches a URL to a local path using wget or curl.
 func download(url, dest string) error {
     var cmd *exec.Cmd
     if _, err := exec.LookPath("wget"); err == nil {
@@ -174,10 +164,8 @@ func download(url, dest string) error {
     } else {
         cmd = exec.Command("curl", "-sL", "-o", dest, url)
     }
-
     if output, err := cmd.CombinedOutput(); err != nil {
         return fmt.Errorf("download %s: %s: %s", url, err, output)
     }
-
     return nil
 }
