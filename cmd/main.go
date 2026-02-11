@@ -15,28 +15,22 @@ func main() {
     if !installer.NeedsInstall() {
         cfg, err := config.Load()
         if err != nil {
-            fmt.Fprintf(os.Stderr, "Warning: could not load config: %v\n", err)
+            fmt.Fprintf(os.Stderr, "Warning: %v\n", err)
             cfg = config.Default()
         }
         welcome.Show(cfg, version)
         return
     }
-
     if os.Geteuid() != 0 {
-        fmt.Println("ERROR: Installer must run as root.")
-        fmt.Println("Run with: sudo rlvpn")
+        fmt.Println("ERROR: Run with sudo")
         os.Exit(1)
     }
-
     if err := installer.Run(); err != nil {
-        fmt.Fprintf(os.Stderr, "\n  Installation failed: %v\n", err)
+        fmt.Fprintf(os.Stderr, "\n  Failed: %v\n", err)
         os.Exit(1)
     }
-
-    // Launch welcome TUI immediately after install
     cfg, err := config.Load()
     if err != nil {
-        fmt.Fprintf(os.Stderr, "Warning: could not load config: %v\n", err)
         cfg = config.Default()
     }
     welcome.Show(cfg, version)

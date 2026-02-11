@@ -22,6 +22,8 @@ const (
     appVersion     = "0.1.0"
 )
 
+func LitVersionStr() string { return litVersion }
+
 type installConfig struct {
     network    *NetworkConfig
     components string
@@ -71,16 +73,11 @@ type installModel struct {
 
 var (
     progTitleStyle = lipgloss.NewStyle().
-            Bold(true).
-            Foreground(lipgloss.Color("0")).
-            Background(lipgloss.Color("15")).
-            Padding(0, 2)
-
+            Bold(true).Foreground(lipgloss.Color("0")).
+            Background(lipgloss.Color("15")).Padding(0, 2)
     progBoxStyle = lipgloss.NewStyle().
             Border(lipgloss.RoundedBorder()).
-            BorderForeground(lipgloss.Color("245")).
-            Padding(1, 2)
-
+            BorderForeground(lipgloss.Color("245")).Padding(1, 2)
     progDoneStyle    = lipgloss.NewStyle().Foreground(lipgloss.Color("15"))
     progRunStyle     = lipgloss.NewStyle().Foreground(lipgloss.Color("220")).Bold(true)
     progPendingStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("243"))
@@ -89,9 +86,7 @@ var (
     progGoodStyle    = lipgloss.NewStyle().Foreground(lipgloss.Color("10")).Bold(true)
 )
 
-func (m installModel) Init() tea.Cmd {
-    return m.runStep(0)
-}
+func (m installModel) Init() tea.Cmd { return m.runStep(0) }
 
 func (m installModel) runStep(i int) tea.Cmd {
     return func() tea.Msg {
@@ -140,11 +135,9 @@ func (m installModel) View() string {
     if m.width == 0 {
         return "Loading..."
     }
-
     bw := iMin(m.width-4, 76)
     title := progTitleStyle.Width(bw).Align(lipgloss.Center).
         Render(fmt.Sprintf(" Virtual Private Node v%s ", m.version))
-
     var lines []string
     for i, s := range m.steps {
         var sty lipgloss.Style
@@ -159,16 +152,14 @@ func (m installModel) View() string {
         default:
             sty, ind = progPendingStyle, "○"
         }
-        lines = append(lines, sty.Render(fmt.Sprintf(
-            "  %s [%d/%d] %s", ind, i+1, len(m.steps), s.name)))
+        lines = append(lines, sty.Render(fmt.Sprintf("  %s [%d/%d] %s",
+            ind, i+1, len(m.steps), s.name)))
         if s.status == stepFailed && s.err != nil {
             lines = append(lines, progFailStyle.Render(
                 fmt.Sprintf("      Error: %v", s.err)))
         }
     }
-
     box := progBoxStyle.Width(bw).Render(strings.Join(lines, "\n"))
-
     var footer string
     if m.done && !m.failed {
         footer = progGoodStyle.Render("  ✓ Complete — press Enter to continue  ")
@@ -177,11 +168,8 @@ func (m installModel) View() string {
     } else {
         footer = progDimStyle.Render("  Installing... please wait  ")
     }
-
-    full := lipgloss.JoinVertical(lipgloss.Center,
-        "", title, "", box, "", footer)
-    return lipgloss.Place(m.width, m.height,
-        lipgloss.Center, lipgloss.Center, full)
+    full := lipgloss.JoinVertical(lipgloss.Center, "", title, "", box, "", footer)
+    return lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center, full)
 }
 
 func runInstallTUI(steps []installStep, version string) error {
@@ -206,33 +194,19 @@ func runInstallTUI(steps []installStep, version string) error {
     return nil
 }
 
-// ── Info box (centered message, waits for Enter) ─────────
+// ── Info box ─────────────────────────────────────────────
 
 var (
-    setupBoxStyle = lipgloss.NewStyle().
-            Border(lipgloss.RoundedBorder()).
-            BorderForeground(lipgloss.Color("245")).
-            Padding(1, 3)
-
-    setupTitleStyle = lipgloss.NewStyle().
-            Foreground(lipgloss.Color("15")).
-            Bold(true)
-
-    setupTextStyle = lipgloss.NewStyle().
-            Foreground(lipgloss.Color("250"))
-
-    setupWarnStyle = lipgloss.NewStyle().
-            Foreground(lipgloss.Color("196")).
-            Bold(true)
-
-    setupDimStyle = lipgloss.NewStyle().
-            Foreground(lipgloss.Color("243"))
+    setupBoxStyle   = lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(lipgloss.Color("245")).Padding(1, 3)
+    setupTitleStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("15")).Bold(true)
+    setupTextStyle  = lipgloss.NewStyle().Foreground(lipgloss.Color("250"))
+    setupWarnStyle  = lipgloss.NewStyle().Foreground(lipgloss.Color("196")).Bold(true)
+    setupDimStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("243"))
 )
 
 type infoBoxModel struct {
-    content string
-    width   int
-    height  int
+    content       string
+    width, height int
 }
 
 func (m infoBoxModel) Init() tea.Cmd { return nil }
@@ -255,8 +229,7 @@ func (m infoBoxModel) View() string {
         return "Loading..."
     }
     box := setupBoxStyle.Width(iMin(m.width-8, 70)).Render(m.content)
-    return lipgloss.Place(m.width, m.height,
-        lipgloss.Center, lipgloss.Center, box)
+    return lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center, box)
 }
 
 func showInfoBox(content string) {
@@ -270,7 +243,6 @@ func Run() error {
     if err := checkOS(); err != nil {
         return err
     }
-
     cfg, err := RunTUI(appVersion)
     if err != nil {
         return err
@@ -278,16 +250,13 @@ func Run() error {
     if cfg == nil {
         return nil
     }
-
     steps := buildSteps(cfg)
     if err := runInstallTUI(steps, appVersion); err != nil {
         return err
     }
-
     if err := setupShellEnvironment(cfg); err != nil {
         fmt.Printf("  Warning: shell setup failed: %v\n", err)
     }
-
     appCfg := &config.AppConfig{
         Network:    cfg.network.Name,
         Components: cfg.components,
@@ -314,8 +283,9 @@ func buildSteps(cfg *installConfig) []installStep {
         {name: "Configuring Bitcoin Core", fn: func() error { return writeBitcoinConfig(cfg) }},
         {name: "Creating bitcoind service", fn: func() error { return writeBitcoindService(systemUser) }},
         {name: "Starting Bitcoin Core", fn: startBitcoind},
+        {name: "Installing unattended-upgrades", fn: installUnattendedUpgrades},
+        {name: "Configuring auto-security-updates", fn: configureUnattendedUpgrades},
     }
-
     if cfg.components == "bitcoin+lnd" {
         steps = append(steps,
             installStep{name: "Downloading LND " + lndVersion, fn: func() error { return downloadLND(lndVersion) }},
@@ -326,16 +296,14 @@ func buildSteps(cfg *installConfig) []installStep {
             installStep{name: "Starting LND", fn: startLND},
         )
     }
-
     return steps
 }
 
-// ── Wallet creation (called from dashboard Lightning card) ─
+// ── Wallet creation (from dashboard Lightning card) ──────
 
 func RunWalletCreation(networkName string) error {
     net := NetworkConfigFromName(networkName)
 
-    // Show explanation box
     info := setupTitleStyle.Render("Create Your LND Wallet") + "\n\n" +
         setupTextStyle.Render("LND will ask you to:") + "\n\n" +
         setupTextStyle.Render("  1. Enter a wallet password (min 8 characters)") + "\n" +
@@ -349,14 +317,13 @@ func RunWalletCreation(networkName string) error {
         setupDimStyle.Render("Press Enter to continue...")
     showInfoBox(info)
 
-    // Clear screen and show header for lncli
+    // Clear screen for lncli
     fmt.Print("\033[2J\033[H")
     fmt.Println()
     fmt.Println("  ═══════════════════════════════════════════")
     fmt.Println("    LND Wallet Creation")
     fmt.Println("  ═══════════════════════════════════════════")
     fmt.Println()
-
     fmt.Println("  Waiting for LND...")
     if err := waitForLND(); err != nil {
         return err
@@ -376,15 +343,17 @@ func RunWalletCreation(networkName string) error {
         return fmt.Errorf("lncli create: %w", err)
     }
 
-    // Seed confirmation box
+    // Seed confirmation — tell user to scroll up
     seedMsg := setupTitleStyle.Render("Seed Phrase Confirmation") + "\n\n" +
         setupWarnStyle.Render("Have you written down your 24-word seed phrase?") + "\n\n" +
-        setupTextStyle.Render("Make sure you saved it in a secure location.") + "\n" +
-        setupTextStyle.Render("You will NOT be able to see it again.") + "\n\n" +
+        setupTextStyle.Render("Scroll up in your terminal to see your seed.") + "\n" +
+        setupTextStyle.Render("Once you close this session, it will no longer") + "\n" +
+        setupTextStyle.Render("be visible anywhere.") + "\n\n" +
+        setupTextStyle.Render("Make sure you saved it in a secure location.") + "\n\n" +
         setupDimStyle.Render("Press Enter to confirm...")
     showInfoBox(seedMsg)
 
-    // Auto-unlock box
+    // Auto-unlock
     unlockMsg := setupTitleStyle.Render("Auto-Unlock Configuration") + "\n\n" +
         setupTextStyle.Render("Your wallet password will be stored so LND") + "\n" +
         setupTextStyle.Render("starts automatically after reboot.") + "\n\n" +
@@ -408,8 +377,6 @@ func RunWalletCreation(networkName string) error {
         } else {
             fmt.Println("  ✓ Auto-unlock configured")
         }
-
-        // Update config
         appCfg, err := config.Load()
         if err == nil {
             appCfg.AutoUnlock = true
@@ -420,13 +387,24 @@ func RunWalletCreation(networkName string) error {
     return nil
 }
 
-// ── LIT installation (called from Software tab) ──────────
+// ── LIT installation (from Software tab) ─────────────────
 
 func RunLITInstall(cfg *config.AppConfig) error {
-    // Generate UI password
+    // Confirmation box
+    confirmMsg := setupTitleStyle.Render("Install Lightning Terminal") + "\n\n" +
+        setupTextStyle.Render("This will:") + "\n\n" +
+        setupTextStyle.Render("  • Download Lightning Terminal v" + litVersion) + "\n" +
+        setupTextStyle.Render("  • Modify LND config (enable rpcmiddleware)") + "\n" +
+        setupTextStyle.Render("  • Restart LND") + "\n" +
+        setupTextStyle.Render("  • Create Tor hidden service for LIT web UI") + "\n" +
+        setupTextStyle.Render("  • Restart Tor") + "\n\n" +
+        setupDimStyle.Render("Press Enter to proceed...")
+    showInfoBox(confirmMsg)
+
+    // Generate UI password (12 bytes = 24 hex chars)
     passBytes := make([]byte, 12)
     rand.Read(passBytes)
-    litPassword := hex.EncodeToString(passBytes)[:16]
+    litPassword := hex.EncodeToString(passBytes)
 
     steps := []installStep{
         {name: "Downloading Lightning Terminal " + litVersion,
@@ -439,6 +417,8 @@ func RunLITInstall(cfg *config.AppConfig) error {
             fn: enableRPCMiddleware},
         {name: "Restarting LND",
             fn: func() error { return exec.Command("systemctl", "restart", "lnd").Run() }},
+        {name: "Creating LIT directories",
+            fn: createLITDirs},
         {name: "Creating LIT configuration",
             fn: func() error { return writeLITConfig(cfg, litPassword) }},
         {name: "Creating litd service",
@@ -455,7 +435,6 @@ func RunLITInstall(cfg *config.AppConfig) error {
         return err
     }
 
-    // Save LIT state to config
     cfg.LITInstalled = true
     cfg.LITPassword = litPassword
     return config.Save(cfg)
@@ -472,14 +451,11 @@ func readPassword() string {
     sttyOff := exec.Command("stty", "-echo")
     sttyOff.Stdin = os.Stdin
     sttyOff.Run()
-
     reader := bufio.NewReader(os.Stdin)
     password, _ := reader.ReadString('\n')
-
     sttyOn := exec.Command("stty", "echo")
     sttyOn.Stdin = os.Stdin
     sttyOn.Run()
-
     return strings.TrimSpace(password)
 }
 
@@ -504,25 +480,19 @@ func readFileOrDefault(path, def string) string {
     return string(data)
 }
 
-// setupShellEnvironment configures ripsline's shell so that
-// bitcoin-cli and lncli work without long path flags.
 func setupShellEnvironment(cfg *installConfig) error {
     networkFlag := ""
     if cfg.network.Name != "mainnet" {
-        networkFlag = fmt.Sprintf("\nexport LNCLI_NETWORK=%s",
-            cfg.network.LNCLINetwork)
+        networkFlag = fmt.Sprintf("\nexport LNCLI_NETWORK=%s", cfg.network.LNCLINetwork)
     }
-
     lndBlock := ""
     if cfg.components == "bitcoin+lnd" {
         lndBlock = fmt.Sprintf(`
-# LND env vars
 export LNCLI_LNDDIR=/var/lib/lnd%s
 export LNCLI_MACAROONPATH=/var/lib/lnd/data/chain/bitcoin/%s/admin.macaroon
 export LNCLI_TLSCERTPATH=/var/lib/lnd/tls.cert
 `, networkFlag, cfg.network.LNCLINetwork)
     }
-
     content := fmt.Sprintf(`
 # ── Virtual Private Node ──────────────────────
 bitcoin-cli() {
@@ -554,9 +524,4 @@ func minInt(a, b int) int {
         return a
     }
     return b
-}
-
-// LitVersionStr returns the LIT version for display.
-func LitVersionStr() string {
-    return litVersion
 }

@@ -1,7 +1,3 @@
-// Package welcome displays the post-install dashboard.
-// Four tabs: Dashboard, Pairing, Logs, Software.
-// Dashboard has four navigable cards in a 2x2 grid.
-// q quits to shell. Backspace goes back from subviews.
 package welcome
 
 import (
@@ -23,96 +19,40 @@ import (
 // ── Styles ───────────────────────────────────────────────
 
 var (
-    wTitleStyle = lipgloss.NewStyle().
-            Bold(true).
+    wTitleStyle = lipgloss.NewStyle().Bold(true).
             Foreground(lipgloss.Color("0")).
-            Background(lipgloss.Color("15")).
-            Padding(0, 2)
-
-    wActiveTabStyle = lipgloss.NewStyle().
-            Bold(true).
+            Background(lipgloss.Color("15")).Padding(0, 2)
+    wActiveTabStyle = lipgloss.NewStyle().Bold(true).
             Foreground(lipgloss.Color("0")).
-            Background(lipgloss.Color("15")).
-            Padding(0, 2)
-
+            Background(lipgloss.Color("15")).Padding(0, 2)
     wInactiveTabStyle = lipgloss.NewStyle().
                 Foreground(lipgloss.Color("250")).
-                Background(lipgloss.Color("236")).
-                Padding(0, 2)
-
-    wHeaderStyle = lipgloss.NewStyle().
-            Foreground(lipgloss.Color("15")).
-            Bold(true)
-
-    wLabelStyle = lipgloss.NewStyle().
-            Foreground(lipgloss.Color("245"))
-
-    wValueStyle = lipgloss.NewStyle().
-            Foreground(lipgloss.Color("15"))
-
-    wGoodStyle = lipgloss.NewStyle().
-            Foreground(lipgloss.Color("15")).
-            Bold(true)
-
-    wWarnStyle = lipgloss.NewStyle().
-            Foreground(lipgloss.Color("245"))
-
-    // Yellow for selected/highlighted items
-    wSelectedBorder = lipgloss.NewStyle().
-            Border(lipgloss.RoundedBorder()).
-            BorderForeground(lipgloss.Color("220"))
-
-    wNormalBorder = lipgloss.NewStyle().
-            Border(lipgloss.RoundedBorder()).
-            BorderForeground(lipgloss.Color("245"))
-
-    wGrayedBorder = lipgloss.NewStyle().
-            Border(lipgloss.RoundedBorder()).
-            BorderForeground(lipgloss.Color("240"))
-
-    wGreenDotStyle = lipgloss.NewStyle().
-            Foreground(lipgloss.Color("10"))
-
-    wRedDotStyle = lipgloss.NewStyle().
-            Foreground(lipgloss.Color("9"))
-
-    wLightningStyle = lipgloss.NewStyle().
-            Foreground(lipgloss.Color("135")).
-            Bold(true)
-
-    wDimStyle = lipgloss.NewStyle().
-            Foreground(lipgloss.Color("243"))
-
-    wGrayedStyle = lipgloss.NewStyle().
-            Foreground(lipgloss.Color("240"))
-
-    wFooterStyle = lipgloss.NewStyle().
-            Foreground(lipgloss.Color("243"))
-
-    wMonoStyle = lipgloss.NewStyle().
-            Foreground(lipgloss.Color("15"))
-
-    wWarningStyle = lipgloss.NewStyle().
-            Foreground(lipgloss.Color("196")).
-            Bold(true)
-
-    wActionStyle = lipgloss.NewStyle().
-            Foreground(lipgloss.Color("220")).
-            Bold(true)
-
-    // Outer box that wraps all tab content
-    wOuterBox = lipgloss.NewStyle().
-            Border(lipgloss.RoundedBorder()).
-            BorderForeground(lipgloss.Color("245"))
+                Background(lipgloss.Color("236")).Padding(0, 2)
+    wHeaderStyle    = lipgloss.NewStyle().Foreground(lipgloss.Color("15")).Bold(true)
+    wLabelStyle     = lipgloss.NewStyle().Foreground(lipgloss.Color("245"))
+    wValueStyle     = lipgloss.NewStyle().Foreground(lipgloss.Color("15"))
+    wGoodStyle      = lipgloss.NewStyle().Foreground(lipgloss.Color("15")).Bold(true)
+    wWarnStyle      = lipgloss.NewStyle().Foreground(lipgloss.Color("245"))
+    wSelectedBorder = lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(lipgloss.Color("220"))
+    wNormalBorder   = lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(lipgloss.Color("245"))
+    wGrayedBorder   = lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(lipgloss.Color("240"))
+    wGreenDotStyle  = lipgloss.NewStyle().Foreground(lipgloss.Color("10"))
+    wRedDotStyle    = lipgloss.NewStyle().Foreground(lipgloss.Color("9"))
+    wLightningStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("135")).Bold(true)
+    wBitcoinStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("214")).Bold(true)
+    wDimStyle       = lipgloss.NewStyle().Foreground(lipgloss.Color("243"))
+    wGrayedStyle    = lipgloss.NewStyle().Foreground(lipgloss.Color("240"))
+    wFooterStyle    = lipgloss.NewStyle().Foreground(lipgloss.Color("243"))
+    wMonoStyle      = lipgloss.NewStyle().Foreground(lipgloss.Color("15"))
+    wWarningStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("196")).Bold(true)
+    wActionStyle    = lipgloss.NewStyle().Foreground(lipgloss.Color("220")).Bold(true)
+    wOuterBox       = lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(lipgloss.Color("245"))
 )
 
-// Layout constants — 76 is divisible by 4 tabs
 const (
     wContentWidth = 76
     wBoxHeight    = 20
 )
-
-// ── Enums ────────────────────────────────────────────────
 
 type wTab int
 
@@ -127,28 +67,26 @@ type wSubview int
 
 const (
     svNone wSubview = iota
-    svLightning  // hidden Lightning detail screen
-    svZeus       // Zeus pairing detail
-    svSparrow    // Sparrow pairing detail
-    svMacaroon   // full macaroon view
-    svQR         // QR code view
-    svServiceMgr // service manager shell
-    svLogView    // log viewer shell
-    svWalletCreate // wallet creation flow
-    svLITInstall // LIT install flow
+    svLightning
+    svZeus
+    svSparrow
+    svMacaroon
+    svQR
+    svWalletCreate
+    svLITInstall
+    svSystemUpdate
+    svLogView
 )
 
-// Dashboard card positions for arrow navigation
 type cardPos int
 
 const (
-    cardServices  cardPos = iota // top-left
-    cardSystem                   // top-right
-    cardBitcoin                  // bottom-left
-    cardLightning                // bottom-right
+    cardServices  cardPos = iota
+    cardSystem
+    cardBitcoin
+    cardLightning
 )
 
-// Logs tab selection
 type logSelection int
 
 const (
@@ -158,94 +96,116 @@ const (
     logSelLIT
 )
 
-// ── Model ────────────────────────────────────────────────
+// svcAction is used when acting on services from within the card
+type svcAction int
+
+const (
+    svcActNone svcAction = iota
+)
 
 type Model struct {
     cfg          *config.AppConfig
     version      string
     activeTab    wTab
     subview      wSubview
-    dashCard     cardPos    // which card is selected on dashboard
+    dashCard     cardPos
+    cardActive   bool         // true when "inside" a card
+    svcCursor    int          // cursor within services card
     logSel       logSelection
-    pairingFocus int        // 0=zeus, 1=sparrow on pairing tab
+    pairingFocus int
     width        int
     height       int
-
-    // Signals to re-launch after shell exit
-    shellAction wSubview
+    shellAction  wSubview
 }
 
 func NewModel(cfg *config.AppConfig, version string) Model {
     return Model{
-        cfg:       cfg,
-        version:   version,
-        activeTab: tabDashboard,
-        subview:   svNone,
-        dashCard:  cardServices,
+        cfg: cfg, version: version,
+        activeTab: tabDashboard, subview: svNone,
+        dashCard: cardServices,
     }
 }
 
-// Show launches the welcome TUI. May re-launch after shell actions.
 func Show(cfg *config.AppConfig, version string) {
     for {
         m := NewModel(cfg, version)
         p := tea.NewProgram(m, tea.WithAltScreen())
-        result, err := p.Run()
-        if err != nil {
-            return
-        }
-
+        result, _ := p.Run()
         final := result.(Model)
 
         switch final.shellAction {
         case svWalletCreate:
             installer.RunWalletCreation(cfg.Network)
-            // Reload config after wallet creation
-            if updated, err := config.Load(); err == nil {
-                cfg = updated
+            if u, e := config.Load(); e == nil {
+                cfg = u
             }
-            continue // re-launch TUI
-
-        case svServiceMgr:
-            runServiceManager()
             continue
-
+        case svLITInstall:
+            installer.RunLITInstall(cfg)
+            if u, e := config.Load(); e == nil {
+                cfg = u
+            }
+            continue
+        case svSystemUpdate:
+            runSystemUpdate()
+            continue
         case svLogView:
             runLogViewer(final.logSel, cfg)
             continue
-
-        case svLITInstall:
-            installer.RunLITInstall(cfg)
-            if updated, err := config.Load(); err == nil {
-                cfg = updated
-            }
-            continue
-
         default:
-            return // q was pressed, exit to shell
+            return
         }
     }
 }
 
 func (m Model) Init() tea.Cmd { return nil }
 
+// svcCount returns how many services are shown
+func (m Model) svcCount() int {
+    n := 2 // tor + bitcoind
+    if m.cfg.HasLND() {
+        n++
+    }
+    if m.cfg.LITInstalled {
+        n++
+    }
+    return n
+}
+
+func (m Model) svcName(i int) string {
+    names := []string{"tor", "bitcoind"}
+    if m.cfg.HasLND() {
+        names = append(names, "lnd")
+    }
+    if m.cfg.LITInstalled {
+        names = append(names, "litd")
+    }
+    if i < len(names) {
+        return names[i]
+    }
+    return ""
+}
+
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
     switch msg := msg.(type) {
     case tea.WindowSizeMsg:
         m.width = msg.Width
         m.height = msg.Height
-        return m, nil
-
     case tea.KeyMsg:
         return m.handleKey(msg)
+    case svcActionDoneMsg:
+        // Service action completed, just re-render
+        return m, nil
     }
     return m, nil
 }
 
+type svcActionDoneMsg struct{}
+
 func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
     key := msg.String()
 
-    // Subview navigation
+    // Subviews
     if m.subview != svNone {
         switch key {
         case "q", "ctrl+c":
@@ -259,7 +219,7 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
             }
             return m, nil
         case "m":
-            if m.subview == svZeus || m.subview == svLightning {
+            if m.subview == svZeus {
                 m.subview = svMacaroon
                 return m, nil
             }
@@ -272,25 +232,20 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
         return m, nil
     }
 
-    // Main screen keys
+    // Inside a card
+    if m.cardActive {
+        return m.handleCardKey(key)
+    }
+
+    // Main navigation
     switch key {
     case "q", "ctrl+c":
         return m, tea.Quit
-
-    // Tab navigation
     case "tab":
-        if m.activeTab == tabSoftware {
-            m.activeTab = tabDashboard
-        } else {
-            m.activeTab++
-        }
+        m.activeTab = (m.activeTab + 1) % 4
         return m, nil
     case "shift+tab":
-        if m.activeTab == tabDashboard {
-            m.activeTab = tabSoftware
-        } else {
-            m.activeTab--
-        }
+        m.activeTab = (m.activeTab + 3) % 4
         return m, nil
     case "1":
         m.activeTab = tabDashboard
@@ -301,35 +256,80 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
     case "4":
         m.activeTab = tabSoftware
 
-    // Arrow navigation within tabs
     case "up", "k":
-        m = m.handleUp()
+        m = m.navUp()
     case "down", "j":
-        m = m.handleDown()
+        m = m.navDown()
     case "left", "h":
-        m = m.handleLeft()
+        m = m.navLeft()
     case "right", "l":
-        m = m.handleRight()
+        m = m.navRight()
 
-    // Enter — select current item
     case "enter":
         return m.handleEnter()
+    }
+    return m, nil
+}
+
+func (m Model) handleCardKey(key string) (tea.Model, tea.Cmd) {
+    switch key {
+    case "backspace":
+        m.cardActive = false
+        return m, nil
+    case "q":
+        return m, tea.Quit
+    }
+
+    if m.dashCard == cardServices {
+        switch key {
+        case "up", "k":
+            if m.svcCursor > 0 {
+                m.svcCursor--
+            }
+        case "down", "j":
+            if m.svcCursor < m.svcCount()-1 {
+                m.svcCursor++
+            }
+        case "r":
+            svc := m.svcName(m.svcCursor)
+            return m, func() tea.Msg {
+                exec.Command("systemctl", "restart", svc).Run()
+                return svcActionDoneMsg{}
+            }
+        case "s":
+            svc := m.svcName(m.svcCursor)
+            return m, func() tea.Msg {
+                exec.Command("systemctl", "stop", svc).Run()
+                return svcActionDoneMsg{}
+            }
+        case "a":
+            svc := m.svcName(m.svcCursor)
+            return m, func() tea.Msg {
+                exec.Command("systemctl", "start", svc).Run()
+                return svcActionDoneMsg{}
+            }
+        }
+    }
+
+    if m.dashCard == cardSystem {
+        switch key {
+        case "u":
+            m.shellAction = svSystemUpdate
+            return m, tea.Quit
+        }
     }
 
     return m, nil
 }
 
-func (m Model) handleUp() Model {
+func (m Model) navUp() Model {
     switch m.activeTab {
     case tabDashboard:
-        switch m.dashCard {
-        case cardBitcoin:
+        if m.dashCard == cardBitcoin {
             m.dashCard = cardServices
-        case cardLightning:
+        } else if m.dashCard == cardLightning {
             m.dashCard = cardSystem
         }
-    case tabPairing:
-        // only two items, no up needed
     case tabLogs:
         if m.logSel > 0 {
             m.logSel--
@@ -338,34 +338,32 @@ func (m Model) handleUp() Model {
     return m
 }
 
-func (m Model) handleDown() Model {
+func (m Model) navDown() Model {
     switch m.activeTab {
     case tabDashboard:
-        switch m.dashCard {
-        case cardServices:
+        if m.dashCard == cardServices {
             m.dashCard = cardBitcoin
-        case cardSystem:
+        } else if m.dashCard == cardSystem {
             m.dashCard = cardLightning
         }
     case tabLogs:
-        max := logSelLND
+        mx := logSelLND
         if m.cfg.LITInstalled {
-            max = logSelLIT
+            mx = logSelLIT
         }
-        if m.logSel < max {
+        if m.logSel < mx {
             m.logSel++
         }
     }
     return m
 }
 
-func (m Model) handleLeft() Model {
+func (m Model) navLeft() Model {
     switch m.activeTab {
     case tabDashboard:
-        switch m.dashCard {
-        case cardSystem:
+        if m.dashCard == cardSystem {
             m.dashCard = cardServices
-        case cardLightning:
+        } else if m.dashCard == cardLightning {
             m.dashCard = cardBitcoin
         }
     case tabPairing:
@@ -374,13 +372,12 @@ func (m Model) handleLeft() Model {
     return m
 }
 
-func (m Model) handleRight() Model {
+func (m Model) navRight() Model {
     switch m.activeTab {
     case tabDashboard:
-        switch m.dashCard {
-        case cardServices:
+        if m.dashCard == cardServices {
             m.dashCard = cardSystem
-        case cardBitcoin:
+        } else if m.dashCard == cardBitcoin {
             m.dashCard = cardLightning
         }
     case tabPairing:
@@ -394,47 +391,44 @@ func (m Model) handleEnter() (tea.Model, tea.Cmd) {
     case tabDashboard:
         switch m.dashCard {
         case cardServices:
-            m.shellAction = svServiceMgr
-            return m, tea.Quit
+            m.cardActive = true
+            m.svcCursor = 0
+            return m, nil
+        case cardSystem:
+            m.cardActive = true
+            return m, nil
         case cardLightning:
-            if m.cfg.HasLND() {
-                if !m.cfg.WalletExists() {
-                    m.shellAction = svWalletCreate
-                    return m, tea.Quit
-                }
-                m.subview = svLightning
+            if !m.cfg.HasLND() {
+                return m, nil
             }
+            if !m.cfg.WalletExists() {
+                m.shellAction = svWalletCreate
+                return m, tea.Quit
+            }
+            m.subview = svLightning
         }
-
     case tabPairing:
         if m.pairingFocus == 0 && m.cfg.HasLND() {
             m.subview = svZeus
         } else if m.pairingFocus == 1 {
             m.subview = svSparrow
         }
-
     case tabLogs:
         m.shellAction = svLogView
         return m, tea.Quit
-
     case tabSoftware:
         if m.cfg.HasLND() && m.cfg.WalletExists() && !m.cfg.LITInstalled {
             m.shellAction = svLITInstall
             return m, tea.Quit
         }
     }
-
     return m, nil
 }
-
-// ── Main View ────────────────────────────────────────────
 
 func (m Model) View() string {
     if m.width == 0 {
         return "Loading..."
     }
-
-    // Handle subviews
     switch m.subview {
     case svLightning:
         return m.viewLightning()
@@ -449,8 +443,6 @@ func (m Model) View() string {
     }
 
     bw := wMin(m.width-4, wContentWidth)
-
-    // Tab content
     var content string
     switch m.activeTab {
     case tabDashboard:
@@ -467,112 +459,124 @@ func (m Model) View() string {
         Render(fmt.Sprintf(" Virtual Private Node v%s ", m.version))
     tabs := m.viewTabs(bw)
     footer := m.viewFooter()
-
-    body := lipgloss.JoinVertical(lipgloss.Center,
-        "", title, "", tabs, "", content)
-
+    body := lipgloss.JoinVertical(lipgloss.Center, "", title, "", tabs, "", content)
     gap := m.height - lipgloss.Height(body) - 2
     if gap < 0 {
         gap = 0
     }
-
-    full := lipgloss.JoinVertical(lipgloss.Center,
-        body, strings.Repeat("\n", gap), footer)
-
-    return lipgloss.Place(m.width, m.height,
-        lipgloss.Center, lipgloss.Top, full)
+    full := lipgloss.JoinVertical(lipgloss.Center, body, strings.Repeat("\n", gap), footer)
+    return lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Top, full)
 }
 
-func (m Model) viewTabs(totalWidth int) string {
+func (m Model) viewTabs(tw int) string {
     tabs := []struct {
-        name string
-        id   wTab
-    }{
-        {"Dashboard", tabDashboard},
-        {"Pairing", tabPairing},
-        {"Logs", tabLogs},
-        {"Software", tabSoftware},
-    }
-    tw := totalWidth / len(tabs)
+        n string
+        t wTab
+    }{{"Dashboard", tabDashboard}, {"Pairing", tabPairing}, {"Logs", tabLogs}, {"Software", tabSoftware}}
+    w := tw / len(tabs)
     var out []string
     for _, t := range tabs {
-        if t.id == m.activeTab {
-            out = append(out, wActiveTabStyle.Width(tw).
-                Align(lipgloss.Center).Render(t.name))
+        if t.t == m.activeTab {
+            out = append(out, wActiveTabStyle.Width(w).Align(lipgloss.Center).Render(t.n))
         } else {
-            out = append(out, wInactiveTabStyle.Width(tw).
-                Align(lipgloss.Center).Render(t.name))
+            out = append(out, wInactiveTabStyle.Width(w).Align(lipgloss.Center).Render(t.n))
         }
     }
     return lipgloss.JoinHorizontal(lipgloss.Top, out...)
 }
 
 func (m Model) viewFooter() string {
-    var hint string
+    if m.cardActive {
+        if m.dashCard == cardServices {
+            return wFooterStyle.Render("  ↑↓ select • [r]estart [s]top [a]start • backspace back • q quit  ")
+        }
+        if m.dashCard == cardSystem {
+            return wFooterStyle.Render("  [u]pdate system • backspace back • q quit  ")
+        }
+    }
     switch m.activeTab {
     case tabDashboard:
-        hint = "↑↓←→ navigate • enter select • tab switch • q quit"
+        return wFooterStyle.Render("  ↑↓←→ navigate • enter select • tab switch • q quit  ")
     case tabPairing:
-        hint = "←→ select • enter open • tab switch • q quit"
+        return wFooterStyle.Render("  ←→ select • enter open • tab switch • q quit  ")
     case tabLogs:
-        hint = "↑↓ select • enter view • tab switch • q quit"
+        return wFooterStyle.Render("  ↑↓ select • enter view • tab switch • q quit  ")
     case tabSoftware:
-        hint = "enter install • tab switch • q quit"
+        return wFooterStyle.Render("  enter install • tab switch • q quit  ")
     }
-    return wFooterStyle.Render("  " + hint + "  ")
+    return ""
 }
 
-// ── Dashboard tab — four cards in 2x2 grid ───────────────
+// ── Dashboard — four product cards in 2x2 grid ──────────
 
 func (m Model) viewDashboard(bw int) string {
     halfW := (bw - 4) / 2
     cardH := wBoxHeight / 2
 
-    // Build four cards
-    svcCard := m.cardServices(halfW, cardH)
-    sysCard := m.cardSystem(halfW, cardH)
-    btcCard := m.cardBitcoin(halfW, cardH)
-    lnCard := m.cardLightning(halfW, cardH)
+    svc := m.cardServicesView(halfW, cardH)
+    sys := m.cardSystemView(halfW, cardH)
+    btc := m.cardBitcoinView(halfW, cardH)
+    ln := m.cardLightningView(halfW, cardH)
 
-    topRow := lipgloss.JoinHorizontal(lipgloss.Top, svcCard, "  ", sysCard)
-    botRow := lipgloss.JoinHorizontal(lipgloss.Top, btcCard, "  ", lnCard)
+    top := lipgloss.JoinHorizontal(lipgloss.Top, svc, "  ", sys)
+    bot := lipgloss.JoinHorizontal(lipgloss.Top, btc, "  ", ln)
 
-    grid := lipgloss.JoinVertical(lipgloss.Left, topRow, "", botRow)
-
-    return grid
+    return lipgloss.JoinVertical(lipgloss.Left, top, "", bot)
 }
 
-// cardBorder returns the appropriate border style for a card
-// based on whether it's selected, grayed, or normal.
-func (m Model) cardBorder(pos cardPos, enabled bool) lipgloss.Style {
+func (m Model) getBorder(pos cardPos, enabled bool) lipgloss.Style {
     if !enabled {
         return wGrayedBorder
     }
     if m.activeTab == tabDashboard && m.dashCard == pos {
+        if m.cardActive {
+            return wSelectedBorder
+        }
         return wSelectedBorder
     }
     return wNormalBorder
 }
 
-func (m Model) cardServices(w, h int) string {
+func (m Model) cardServicesView(w, h int) string {
     var lines []string
     lines = append(lines, wHeaderStyle.Render("Services"))
     lines = append(lines, "")
-    lines = append(lines, svcDot("tor"))
-    lines = append(lines, svcDot("bitcoind"))
+
+    names := []string{"tor", "bitcoind"}
     if m.cfg.HasLND() {
-        lines = append(lines, svcDot("lnd"))
+        names = append(names, "lnd")
     }
     if m.cfg.LITInstalled {
-        lines = append(lines, svcDot("litd"))
+        names = append(names, "litd")
+    }
+
+    for i, name := range names {
+        dot := wRedDotStyle.Render("●")
+        cmd := exec.Command("systemctl", "is-active", "--quiet", name)
+        if cmd.Run() == nil {
+            dot = wGreenDotStyle.Render("●")
+        }
+
+        prefix := "  "
+        style := wValueStyle
+        if m.cardActive && m.dashCard == cardServices && m.svcCursor == i {
+            prefix = "▸ "
+            style = wActionStyle
+        }
+        lines = append(lines, prefix+dot+" "+style.Render(name))
+    }
+
+    if m.cardActive && m.dashCard == cardServices {
+        lines = append(lines, "")
+        lines = append(lines, wDimStyle.Render("[r]estart [s]top [a]start"))
     }
 
     content := padLines(lines, h)
-    border := m.cardBorder(cardServices, true)
+    border := m.getBorder(cardServices, true)
     return border.Width(w).Padding(0, 1).Render(content)
 }
 
-func (m Model) cardSystem(w, h int) string {
+func (m Model) cardSystemView(w, h int) string {
     var lines []string
     lines = append(lines, wHeaderStyle.Render("System"))
     lines = append(lines, "")
@@ -586,23 +590,26 @@ func (m Model) cardSystem(w, h int) string {
         wValueStyle.Render(fmt.Sprintf("%s / %s (%s)", ramU, ramT, ramP)))
 
     btcSize := dirSize("/var/lib/bitcoin")
-    lines = append(lines, wLabelStyle.Render("Bitcoin: ")+
-        wValueStyle.Render(btcSize))
+    lines = append(lines, wLabelStyle.Render("Bitcoin: ")+wValueStyle.Render(btcSize))
 
     if m.cfg.HasLND() {
         lndSize := dirSize("/var/lib/lnd")
-        lines = append(lines, wLabelStyle.Render("LND: ")+
-            wValueStyle.Render(lndSize))
+        lines = append(lines, wLabelStyle.Render("LND: ")+wValueStyle.Render(lndSize))
+    }
+
+    if m.cardActive && m.dashCard == cardSystem {
+        lines = append(lines, "")
+        lines = append(lines, wActionStyle.Render("[u]pdate packages"))
     }
 
     content := padLines(lines, h)
-    border := m.cardBorder(cardSystem, true)
+    border := m.getBorder(cardSystem, true)
     return border.Width(w).Padding(0, 1).Render(content)
 }
 
-func (m Model) cardBitcoin(w, h int) string {
+func (m Model) cardBitcoinView(w, h int) string {
     var lines []string
-    lines = append(lines, wHeaderStyle.Render("Bitcoin"))
+    lines = append(lines, wBitcoinStyle.Render("₿ Bitcoin"))
     lines = append(lines, "")
 
     cmd := exec.Command("sudo", "-u", "bitcoin", "bitcoin-cli",
@@ -641,11 +648,11 @@ func (m Model) cardBitcoin(w, h int) string {
     }
 
     content := padLines(lines, h)
-    border := m.cardBorder(cardBitcoin, true)
+    border := m.getBorder(cardBitcoin, true)
     return border.Width(w).Padding(0, 1).Render(content)
 }
 
-func (m Model) cardLightning(w, h int) string {
+func (m Model) cardLightningView(w, h int) string {
     hasLND := m.cfg.HasLND()
 
     var lines []string
@@ -678,20 +685,19 @@ func (m Model) cardLightning(w, h int) string {
     }
 
     content := padLines(lines, h)
-    border := m.cardBorder(cardLightning, hasLND)
+    border := m.getBorder(cardLightning, hasLND)
     return border.Width(w).Padding(0, 1).Render(content)
 }
 
-// ── Lightning detail screen (hidden tab) ─────────────────
+// ── Lightning detail screen ──────────────────────────────
 
 func (m Model) viewLightning() string {
     bw := wMin(m.width-4, wContentWidth)
-
     var lines []string
+
     lines = append(lines, wLightningStyle.Render("⚡ Lightning Node Details"))
     lines = append(lines, "")
 
-    // Wallet info
     lines = append(lines, wHeaderStyle.Render("Wallet"))
     lines = append(lines, "")
 
@@ -703,19 +709,16 @@ func (m Model) viewLightning() string {
                 wGoodStyle.Render("enabled"))
         }
 
-        // Try to get balance from lncli
         balance := getLNDBalance(m.cfg)
         if balance != "" {
             lines = append(lines, "  "+wLabelStyle.Render("Balance: ")+
                 wValueStyle.Render(balance+" sats"))
         }
-
         chanCount := getLNDChannelCount(m.cfg)
         if chanCount != "" {
             lines = append(lines, "  "+wLabelStyle.Render("Channels: ")+
                 wValueStyle.Render(chanCount))
         }
-
         pubkey := getLNDPubkey(m.cfg)
         if pubkey != "" {
             lines = append(lines, "")
@@ -726,42 +729,39 @@ func (m Model) viewLightning() string {
         lines = append(lines, "  "+wWarningStyle.Render("Wallet not created"))
     }
 
-    // LIT info
     lines = append(lines, "")
     lines = append(lines, wHeaderStyle.Render("Lightning Terminal"))
     lines = append(lines, "")
 
     if m.cfg.LITInstalled {
-        litOnion := readOnion("/var/lib/tor/lnd-lit/hostname")
         lines = append(lines, "  "+wLabelStyle.Render("Status: ")+
             wGoodStyle.Render("installed"))
+
+        litOnion := readOnion("/var/lib/tor/lnd-lit/hostname")
         if litOnion != "" {
             lines = append(lines, "")
             lines = append(lines, "  "+wLabelStyle.Render("Tor URL:"))
             lines = append(lines, "  "+wMonoStyle.Render(
                 "https://"+litOnion+":8443"))
+            lines = append(lines, "")
+            lines = append(lines, "  "+wDimStyle.Render(
+                "Open in Tor Browser. Accept the self-signed certificate warning."))
         }
         if m.cfg.LITPassword != "" {
             lines = append(lines, "")
             lines = append(lines, "  "+wLabelStyle.Render("UI Password:"))
             lines = append(lines, "  "+wMonoStyle.Render(m.cfg.LITPassword))
         }
-        lines = append(lines, "")
-        lines = append(lines, "  "+wDimStyle.Render(
-            "Open the Tor URL in Tor Browser to access Terminal"))
     } else {
         lines = append(lines, "  "+wDimStyle.Render("Not installed"))
-        lines = append(lines, "  "+wDimStyle.Render(
-            "Install from the Software tab"))
+        lines = append(lines, "  "+wDimStyle.Render("Install from the Software tab"))
     }
 
     content := strings.Join(lines, "\n")
     box := wOuterBox.Width(bw).Padding(1, 2).Render(content)
-
     title := wTitleStyle.Width(bw).Align(lipgloss.Center).
         Render(" Lightning Details ")
-    footer := wFooterStyle.Render(
-        "  m macaroon • backspace back • q quit  ")
+    footer := wFooterStyle.Render("  backspace back • q quit  ")
 
     full := lipgloss.JoinVertical(lipgloss.Center,
         "", title, "", box, "", footer)
@@ -769,13 +769,13 @@ func (m Model) viewLightning() string {
         lipgloss.Center, lipgloss.Top, full)
 }
 
-// ── Pairing tab — two cards side by side ─────────────────
+// ── Pairing tab — side by side cards ─────────────────────
 
 func (m Model) viewPairing(bw int) string {
     halfW := (bw - 4) / 2
     cardH := wBoxHeight
 
-    // Zeus card
+    // Zeus
     var zeusLines []string
     if m.cfg.HasLND() {
         restOnion := readOnion("/var/lib/tor/lnd-rest/hostname")
@@ -784,75 +784,62 @@ func (m Model) viewPairing(bw int) string {
             status = wRedDotStyle.Render("●") + " waiting"
         }
         zeusLines = []string{
-            wLightningStyle.Render("⚡ Zeus Wallet"),
-            "",
-            wDimStyle.Render("LND REST over Tor"),
-            "",
-            status,
-            "",
+            wLightningStyle.Render("⚡ Zeus Wallet"), "",
+            wDimStyle.Render("LND REST over Tor"), "",
+            status, "",
             wActionStyle.Render("Select for setup ▸"),
         }
     } else {
         zeusLines = []string{
-            wGrayedStyle.Render("⚡ Zeus Wallet"),
-            "",
+            wGrayedStyle.Render("⚡ Zeus Wallet"), "",
             wGrayedStyle.Render("LND not installed"),
         }
     }
 
     zeusContent := padLines(zeusLines, cardH)
-    zeusBorder := wNormalBorder
+    zBorder := wNormalBorder
     if m.pairingFocus == 0 {
-        if m.cfg.HasLND() {
-            zeusBorder = wSelectedBorder
-        } else {
-            zeusBorder = wGrayedBorder
+        zBorder = wSelectedBorder
+        if !m.cfg.HasLND() {
+            zBorder = wGrayedBorder
         }
     }
-    zeusCard := zeusBorder.Width(halfW).Padding(1, 2).Render(zeusContent)
+    zeusCard := zBorder.Width(halfW).Padding(1, 2).Render(zeusContent)
 
-    // Sparrow card
+    // Sparrow
     btcRPC := readOnion("/var/lib/tor/bitcoin-rpc/hostname")
-    sparrowStatus := wGreenDotStyle.Render("●") + " ready"
+    sStatus := wGreenDotStyle.Render("●") + " ready"
     if btcRPC == "" {
-        sparrowStatus = wRedDotStyle.Render("●") + " waiting"
+        sStatus = wRedDotStyle.Render("●") + " waiting"
     }
     sparrowLines := []string{
-        wHeaderStyle.Render("Sparrow Wallet"),
-        "",
-        wDimStyle.Render("Bitcoin Core RPC / Tor"),
-        "",
-        sparrowStatus,
-        "",
+        wHeaderStyle.Render("Sparrow Wallet"), "",
+        wDimStyle.Render("Bitcoin Core RPC / Tor"), "",
+        sStatus, "",
         wActionStyle.Render("Select for setup ▸"),
     }
-
     sparrowContent := padLines(sparrowLines, cardH)
-    sparrowBorder := wNormalBorder
+    sBorder := wNormalBorder
     if m.pairingFocus == 1 {
-        sparrowBorder = wSelectedBorder
+        sBorder = wSelectedBorder
     }
-    sparrowCard := sparrowBorder.Width(halfW).Padding(1, 2).
-        Render(sparrowContent)
+    sparrowCard := sBorder.Width(halfW).Padding(1, 2).Render(sparrowContent)
 
-    return lipgloss.JoinHorizontal(lipgloss.Top,
-        zeusCard, "  ", sparrowCard)
+    return lipgloss.JoinHorizontal(lipgloss.Top, zeusCard, "  ", sparrowCard)
 }
 
 // ── Zeus detail screen ───────────────────────────────────
 
 func (m Model) viewZeus() string {
     bw := wMin(m.width-4, wContentWidth)
-
     var lines []string
-    lines = append(lines, wLightningStyle.Render(
-        "⚡ Zeus Wallet — LND REST over Tor"))
+
+    lines = append(lines, wLightningStyle.Render("⚡ Zeus Wallet — LND REST over Tor"))
     lines = append(lines, "")
 
     restOnion := readOnion("/var/lib/tor/lnd-rest/hostname")
     if restOnion == "" {
-        lines = append(lines, wWarnStyle.Render(
-            "LND REST onion not available. Wait for Tor."))
+        lines = append(lines, wWarnStyle.Render("LND REST onion not available."))
     } else {
         lines = append(lines, wHeaderStyle.Render("Connection Details"))
         lines = append(lines, "")
@@ -884,16 +871,12 @@ func (m Model) viewZeus() string {
 
     lines = append(lines, "")
     lines = append(lines, wDimStyle.Render("Steps:"))
-    lines = append(lines, wDimStyle.Render(
-        "1. Install Zeus, enable Tor in settings"))
-    lines = append(lines, wDimStyle.Render(
-        "2. Scan QR or add node manually"))
-    lines = append(lines, wDimStyle.Render(
-        "3. Paste host, port, and macaroon"))
+    lines = append(lines, wDimStyle.Render("1. Install Zeus, enable Tor"))
+    lines = append(lines, wDimStyle.Render("2. Scan QR or add manually"))
+    lines = append(lines, wDimStyle.Render("3. Paste host, port, macaroon"))
 
     content := strings.Join(lines, "\n")
     box := wOuterBox.Width(bw).Padding(1, 2).Render(content)
-
     title := wTitleStyle.Width(bw).Align(lipgloss.Center).
         Render(" Zeus Wallet Setup ")
     footer := wFooterStyle.Render(
@@ -909,19 +892,20 @@ func (m Model) viewZeus() string {
 
 func (m Model) viewSparrow() string {
     bw := wMin(m.width-4, wContentWidth)
-
     var lines []string
+
     lines = append(lines, wHeaderStyle.Render(
         "Sparrow Wallet — Bitcoin Core RPC over Tor"))
     lines = append(lines, "")
     lines = append(lines, wWarningStyle.Render(
-        "WARNING: Cookie changes on restart. Reconnect after any restart."))
+        "WARNING: Cookie changes on restart."))
+    lines = append(lines, wWarningStyle.Render(
+        "Reconnect Sparrow after any restart."))
     lines = append(lines, "")
 
     btcRPC := readOnion("/var/lib/tor/bitcoin-rpc/hostname")
     if btcRPC == "" {
-        lines = append(lines, wWarnStyle.Render(
-            "Bitcoin RPC onion not available."))
+        lines = append(lines, wWarnStyle.Render("Bitcoin RPC onion not available."))
     } else {
         port := "8332"
         if !m.cfg.IsMainnet() {
@@ -950,20 +934,14 @@ func (m Model) viewSparrow() string {
 
     lines = append(lines, "")
     lines = append(lines, wDimStyle.Render("Steps:"))
-    lines = append(lines, wDimStyle.Render(
-        "1. In Sparrow: File → Preferences → Server"))
-    lines = append(lines, wDimStyle.Render(
-        "2. Select Bitcoin Core tab"))
-    lines = append(lines, wDimStyle.Render(
-        "3. Enter URL, port, user, and password"))
-    lines = append(lines, wDimStyle.Render(
-        "4. Test Connection"))
-    lines = append(lines, wDimStyle.Render(
-        "5. Sparrow needs Tor locally (SOCKS5 localhost:9050)"))
+    lines = append(lines, wDimStyle.Render("1. Sparrow → Preferences → Server"))
+    lines = append(lines, wDimStyle.Render("2. Bitcoin Core tab"))
+    lines = append(lines, wDimStyle.Render("3. Enter URL, port, user, password"))
+    lines = append(lines, wDimStyle.Render("4. Test Connection"))
+    lines = append(lines, wDimStyle.Render("5. Tor locally: SOCKS5 localhost:9050"))
 
     content := strings.Join(lines, "\n")
     box := wOuterBox.Width(bw).Padding(1, 2).Render(content)
-
     title := wTitleStyle.Width(bw).Align(lipgloss.Center).
         Render(" Sparrow Wallet Setup ")
     footer := wFooterStyle.Render("  backspace back • q quit  ")
@@ -974,21 +952,17 @@ func (m Model) viewSparrow() string {
         lipgloss.Center, lipgloss.Top, full)
 }
 
-// ── Macaroon full view ───────────────────────────────────
+// ── Macaroon view ────────────────────────────────────────
 
 func (m Model) viewMacaroon() string {
     mac := readMacaroonHex(m.cfg)
     if mac == "" {
         mac = "Macaroon not available."
     }
-
     title := wLightningStyle.Render("⚡ Admin Macaroon (hex)")
-    hint := wDimStyle.Render(
-        "Select and copy the text below. Press backspace to go back.")
-
+    hint := wDimStyle.Render("Select and copy. Press backspace to go back.")
     content := lipgloss.JoinVertical(lipgloss.Left,
         "", title, "", hint, "", mac, "")
-
     return lipgloss.Place(m.width, m.height,
         lipgloss.Center, lipgloss.Center, content)
 }
@@ -998,7 +972,6 @@ func (m Model) viewMacaroon() string {
 func (m Model) viewQR() string {
     restOnion := readOnion("/var/lib/tor/lnd-rest/hostname")
     mac := readMacaroonHex(m.cfg)
-
     if restOnion == "" || mac == "" {
         c := wWarnStyle.Render("QR not available.")
         return lipgloss.Place(m.width, m.height,
@@ -1012,31 +985,25 @@ func (m Model) viewQR() string {
     var lines []string
     lines = append(lines, wLightningStyle.Render("⚡ Zeus QR Code"))
     lines = append(lines, "")
-    lines = append(lines, wDimStyle.Render(
-        "You may need to zoom out to see the full QR code."))
-    lines = append(lines, wDimStyle.Render(
-        "macOS: Cmd+Minus  |  Linux: Ctrl+Minus"))
+    lines = append(lines, wDimStyle.Render("Zoom out to see full QR: Cmd+Minus / Ctrl+Minus"))
     lines = append(lines, "")
     if qr != "" {
         lines = append(lines, qr)
     } else {
         lines = append(lines, wWarnStyle.Render("Could not generate QR."))
     }
-    lines = append(lines, "")
-    lines = append(lines, wFooterStyle.Render(
-        "backspace back • q quit"))
+    lines = append(lines, wFooterStyle.Render("backspace back • q quit"))
 
     content := lipgloss.JoinVertical(lipgloss.Left, lines...)
     return lipgloss.Place(m.width, m.height,
         lipgloss.Center, lipgloss.Top, content)
 }
 
-// ── Logs tab — selectable service list ───────────────────
+// ── Logs tab — TUI-based log viewer ──────────────────────
 
 func (m Model) viewLogs(bw int) string {
     var lines []string
-    lines = append(lines, wHeaderStyle.Render(
-        "Select a service to view logs"))
+    lines = append(lines, wHeaderStyle.Render("Select a service to view logs"))
     lines = append(lines, "")
 
     services := []struct {
@@ -1070,8 +1037,8 @@ func (m Model) viewLogs(bw int) string {
     }
 
     lines = append(lines, "")
-    lines = append(lines, wDimStyle.Render(
-        "Press Enter to view logs in terminal"))
+    lines = append(lines, wDimStyle.Render("Press Enter to view logs"))
+    lines = append(lines, wDimStyle.Render("Press b in log viewer to return"))
 
     content := padLines(lines, wBoxHeight)
     return wOuterBox.Width(bw).Padding(1, 2).Render(content)
@@ -1084,120 +1051,79 @@ func (m Model) viewSoftware(bw int) string {
 
     lines = append(lines, wHeaderStyle.Render("Lightning Terminal (LIT)"))
     lines = append(lines, "")
-    lines = append(lines, wDimStyle.Render(
-        "Browser-based interface for managing"))
-    lines = append(lines, wDimStyle.Render(
-        "channel liquidity. Bundles Loop, Pool,"))
-    lines = append(lines, wDimStyle.Render(
-        "Faraday, and Terminal UI."))
+    lines = append(lines, wDimStyle.Render("Browser-based interface for managing"))
+    lines = append(lines, wDimStyle.Render("channel liquidity. Includes Loop, Pool,"))
+    lines = append(lines, wDimStyle.Render("Faraday, and Terminal UI."))
     lines = append(lines, "")
     lines = append(lines, wLabelStyle.Render("Version: ")+
         wValueStyle.Render("v"+installer.LitVersionStr()))
     lines = append(lines, "")
 
     if m.cfg.LITInstalled {
-        lines = append(lines, wGreenDotStyle.Render("●")+
-            " "+wGoodStyle.Render("Installed"))
+        lines = append(lines, wGreenDotStyle.Render("●")+" "+
+            wGoodStyle.Render("Installed"))
         lines = append(lines, "")
         lines = append(lines, wDimStyle.Render(
-            "Access via Lightning tab on Dashboard"))
+            "Access via Lightning card on Dashboard"))
     } else if !m.cfg.HasLND() {
-        lines = append(lines, wGrayedStyle.Render(
-            "Requires LND installation"))
+        lines = append(lines, wGrayedStyle.Render("Requires LND installation"))
     } else if !m.cfg.WalletExists() {
         lines = append(lines, wGrayedStyle.Render(
             "Requires LND wallet — create from Dashboard"))
     } else {
-        lines = append(lines, wRedDotStyle.Render("●")+
-            " "+wDimStyle.Render("Not installed"))
+        lines = append(lines, wRedDotStyle.Render("●")+" "+
+            wDimStyle.Render("Not installed"))
         lines = append(lines, "")
-        lines = append(lines, wActionStyle.Render(
-            "Press Enter to install ▸"))
+        lines = append(lines, wActionStyle.Render("Press Enter to install ▸"))
     }
 
     content := padLines(lines, wBoxHeight)
     return wOuterBox.Width(bw).Padding(1, 2).Render(content)
 }
 
-// ── Shell actions (run outside bubbletea) ────────────────
+// ── Shell actions ────────────────────────────────────────
 
-// runServiceManager shows an interactive service manager in the shell.
-func runServiceManager() {
+func runSystemUpdate() {
     fmt.Print("\033[2J\033[H")
     fmt.Println()
     fmt.Println("  ═══════════════════════════════════════════")
-    fmt.Println("    Service Manager")
+    fmt.Println("    System Update")
     fmt.Println("  ═══════════════════════════════════════════")
     fmt.Println()
+    fmt.Println("  Running apt update && apt upgrade...")
+    fmt.Println("  This may take a few minutes.")
+    fmt.Println()
 
-    services := []string{"tor", "bitcoind", "lnd", "litd"}
-    reader := strings.NewReader("")
-    _ = reader
+    cmd := exec.Command("apt-get", "update")
+    cmd.Stdout = os.Stdout
+    cmd.Stderr = os.Stderr
+    cmd.Run()
 
-    for {
-        // Show status
-        for i, svc := range services {
-            status := wRedDotStyle.Render("●") + " stopped"
-            cmd := exec.Command("systemctl", "is-active", "--quiet", svc)
-            if cmd.Run() == nil {
-                status = wGreenDotStyle.Render("●") + " running"
-            }
-            fmt.Printf("  %d. %-12s %s\n", i+1, svc, status)
-        }
+    cmd = exec.Command("apt-get", "upgrade", "-y")
+    cmd.Stdout = os.Stdout
+    cmd.Stderr = os.Stderr
+    cmd.Run()
 
+    fmt.Println()
+    fmt.Println("  ✓ Update complete")
+
+    // Check if reboot needed
+    if _, err := os.Stat("/var/run/reboot-required"); err == nil {
         fmt.Println()
-        fmt.Print("  Service [1-4] or [b]ack: ")
-        var choice string
-        fmt.Scanln(&choice)
-
-        if choice == "b" || choice == "B" || choice == "" {
-            return
+        fmt.Println("  ⚠ Reboot required for kernel update.")
+        fmt.Print("  Reboot now? [y/N]: ")
+        var answer string
+        fmt.Scanln(&answer)
+        if strings.ToLower(answer) == "y" {
+            exec.Command("reboot").Run()
         }
-
-        var idx int
-        fmt.Sscanf(choice, "%d", &idx)
-        if idx < 1 || idx > len(services) {
-            fmt.Println("  Invalid selection")
-            continue
-        }
-
-        svc := services[idx-1]
-        fmt.Printf("\n  %s — [r]estart [s]top [a]start [b]ack: ", svc)
-        var action string
-        fmt.Scanln(&action)
-
-        switch strings.ToLower(action) {
-        case "r":
-            fmt.Printf("  Restarting %s...\n", svc)
-            cmd := exec.Command("systemctl", "restart", svc)
-            if out, err := cmd.CombinedOutput(); err != nil {
-                fmt.Printf("  Error: %s %s\n", err, out)
-            } else {
-                fmt.Printf("  ✓ %s restarted\n", svc)
-            }
-        case "s":
-            fmt.Printf("  Stopping %s...\n", svc)
-            cmd := exec.Command("systemctl", "stop", svc)
-            if out, err := cmd.CombinedOutput(); err != nil {
-                fmt.Printf("  Error: %s %s\n", err, out)
-            } else {
-                fmt.Printf("  ✓ %s stopped\n", svc)
-            }
-        case "a":
-            fmt.Printf("  Starting %s...\n", svc)
-            cmd := exec.Command("systemctl", "start", svc)
-            if out, err := cmd.CombinedOutput(); err != nil {
-                fmt.Printf("  Error: %s %s\n", err, out)
-            } else {
-                fmt.Printf("  ✓ %s started\n", svc)
-            }
-        }
-
-        fmt.Println()
     }
+
+    fmt.Println()
+    fmt.Print("  Press Enter to return to dashboard...")
+    fmt.Scanln()
 }
 
-// runLogViewer shows journal logs for the selected service.
 func runLogViewer(sel logSelection, cfg *config.AppConfig) {
     svcMap := map[logSelection]string{
         logSelTor:     "tor",
@@ -1205,27 +1131,22 @@ func runLogViewer(sel logSelection, cfg *config.AppConfig) {
         logSelLND:     "lnd",
         logSelLIT:     "litd",
     }
-
     svc := svcMap[sel]
 
     fmt.Print("\033[2J\033[H")
     fmt.Println()
     fmt.Printf("  ═══════════════════════════════════════════\n")
-    fmt.Printf("    %s Logs\n", svc)
+    fmt.Printf("    %s Logs (last 100 lines)\n", svc)
     fmt.Printf("  ═══════════════════════════════════════════\n")
     fmt.Println()
-    fmt.Println("  Showing last 50 lines. Press Ctrl+C to stop live view.")
-    fmt.Println("  Press Enter after Ctrl+C to return to dashboard.")
-    fmt.Println()
 
-    // Show last 50 lines then follow
+    // Show last 100 lines statically (no -f follow mode)
     cmd := exec.Command("journalctl", "-u", svc,
-        "-n", "50", "--no-pager", "-f")
+        "-n", "100", "--no-pager")
     cmd.Stdout = os.Stdout
     cmd.Stderr = os.Stderr
     cmd.Run()
 
-    // Wait for Enter to go back
     fmt.Println()
     fmt.Print("  Press Enter to return to dashboard...")
     fmt.Scanln()
@@ -1298,8 +1219,7 @@ func hexToBase64URL(hexStr string) string {
 
 func getLNDBalance(cfg *config.AppConfig) string {
     cmd := exec.Command("sudo", "-u", "bitcoin", "lncli",
-        "--lnddir=/var/lib/lnd",
-        "--network="+cfg.Network,
+        "--lnddir=/var/lib/lnd", "--network="+cfg.Network,
         "walletbalance")
     out, err := cmd.CombinedOutput()
     if err != nil {
@@ -1310,8 +1230,7 @@ func getLNDBalance(cfg *config.AppConfig) string {
 
 func getLNDChannelCount(cfg *config.AppConfig) string {
     cmd := exec.Command("sudo", "-u", "bitcoin", "lncli",
-        "--lnddir=/var/lib/lnd",
-        "--network="+cfg.Network,
+        "--lnddir=/var/lib/lnd", "--network="+cfg.Network,
         "getinfo")
     out, err := cmd.CombinedOutput()
     if err != nil {
@@ -1322,8 +1241,7 @@ func getLNDChannelCount(cfg *config.AppConfig) string {
 
 func getLNDPubkey(cfg *config.AppConfig) string {
     cmd := exec.Command("sudo", "-u", "bitcoin", "lncli",
-        "--lnddir=/var/lib/lnd",
-        "--network="+cfg.Network,
+        "--lnddir=/var/lib/lnd", "--network="+cfg.Network,
         "getinfo")
     out, err := cmd.CombinedOutput()
     if err != nil {
@@ -1334,24 +1252,12 @@ func getLNDPubkey(cfg *config.AppConfig) string {
 
 // ── Generic helpers ──────────────────────────────────────
 
-func svcDot(name string) string {
-    cmd := exec.Command("systemctl", "is-active", "--quiet", name)
-    if cmd.Run() == nil {
-        return "  " + wGreenDotStyle.Render("●") + " " +
-            wValueStyle.Render(name)
-    }
-    return "  " + wRedDotStyle.Render("●") + " " +
-        wDimStyle.Render(name)
-}
-
-// padLines pads a slice of lines to exactly targetHeight by
-// adding empty lines. Truncates if over.
-func padLines(lines []string, targetHeight int) string {
-    for len(lines) < targetHeight {
+func padLines(lines []string, target int) string {
+    for len(lines) < target {
         lines = append(lines, "")
     }
-    if len(lines) > targetHeight {
-        lines = lines[:targetHeight]
+    if len(lines) > target {
+        lines = lines[:target]
     }
     return strings.Join(lines, "\n")
 }
@@ -1369,8 +1275,7 @@ func readMacaroonHex(cfg *config.AppConfig) string {
     if cfg.IsMainnet() {
         network = "mainnet"
     }
-    path := fmt.Sprintf(
-        "/var/lib/lnd/data/chain/bitcoin/%s/admin.macaroon", network)
+    path := fmt.Sprintf("/var/lib/lnd/data/chain/bitcoin/%s/admin.macaroon", network)
     data, err := os.ReadFile(path)
     if err != nil {
         return ""

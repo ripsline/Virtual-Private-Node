@@ -12,24 +12,20 @@ import (
 func checkOS() error {
     data, err := os.ReadFile("/etc/os-release")
     if err != nil {
-        return fmt.Errorf("cannot read /etc/os-release — is this Linux?")
+        return fmt.Errorf("cannot read /etc/os-release")
     }
-
     if !strings.Contains(string(data), "ID=debian") {
-        return fmt.Errorf("unsupported OS — Virtual Private Node requires Debian 12+")
+        return fmt.Errorf("requires Debian 12+")
     }
-
     return nil
 }
 
-// createSystemUser creates the system user that runs bitcoind and lnd.
-// This is a non-login system user separate from the ripsline admin user.
+// createSystemUser creates the non-login system user that runs
+// bitcoind, lnd, and litd services.
 func createSystemUser(username string) error {
     if _, err := user.Lookup(username); err == nil {
-        fmt.Printf("    User '%s' already exists, skipping\n", username)
         return nil
     }
-
     cmd := exec.Command("adduser",
         "--system", "--group",
         "--home", "/var/lib/bitcoin",
@@ -38,12 +34,10 @@ func createSystemUser(username string) error {
     if output, err := cmd.CombinedOutput(); err != nil {
         return fmt.Errorf("%s: %s", err, output)
     }
-
     return nil
 }
 
-// createDirs creates the FHS-compliant directory structure.
-// Config files go in /etc, data goes in /var/lib.
+// createDirs creates FHS-compliant directory structure.
 func createDirs(username string, cfg *installConfig) error {
     dirs := []struct {
         path  string
@@ -54,7 +48,6 @@ func createDirs(username string, cfg *installConfig) error {
         {"/var/lib/bitcoin", username + ":" + username, 0750},
     }
 
-    // LND directories only if LND is being installed
     if cfg.components == "bitcoin+lnd" {
         dirs = append(dirs,
             struct {
@@ -82,13 +75,12 @@ func createDirs(username string, cfg *installConfig) error {
             return fmt.Errorf("chmod %s: %w", d.path, err)
         }
     }
-
     return nil
 }
 
 // disableIPv6 prevents IPv6 traffic that could bypass Tor.
 func disableIPv6() error {
-    content := `# Virtual Private Node — disable IPv6 to prevent Tor bypass
+    content := `# Virtual Private Node — disable IPv6
 net.ipv6.conf.all.disable_ipv6 = 1
 net.ipv6.conf.default.disable_ipv6 = 1
 net.ipv6.conf.lo.disable_ipv6 = 1
@@ -96,27 +88,20 @@ net.ipv6.conf.lo.disable_ipv6 = 1
     if err := os.WriteFile("/etc/sysctl.d/99-disable-ipv6.conf", []byte(content), 0644); err != nil {
         return err
     }
-
     cmd := exec.Command("sysctl", "--system")
-    cmd.Stdout = nil // suppress verbose output
+    cmd.Stdout = nil
     cmd.Stderr = nil
-    if err := cmd.Run(); err != nil {
-        return fmt.Errorf("sysctl --system: %w", err)
-    }
-
-    return nil
+    return cmd.Run()
 }
 
-// configureFirewall sets up UFW with minimal open ports.
-// Only SSH is always open. Port 9735 opens only for LND hybrid mode.
+// configureFirewall sets up UFW. Only SSH is always open.
+// Port 9735 opens only for LND hybrid P2P mode.
 func configureFirewall(cfg *installConfig) error {
-    // Install UFW if missing
     cmd := exec.Command("apt-get", "install", "-y", "-qq", "ufw")
     if output, err := cmd.CombinedOutput(); err != nil {
         return fmt.Errorf("install ufw: %s: %s", err, output)
     }
 
-    // Disable IPv6 in UFW
     ufwDefault, err := os.ReadFile("/etc/default/ufw")
     if err == nil {
         content := strings.ReplaceAll(string(ufwDefault), "IPV6=yes", "IPV6=no")
@@ -129,7 +114,6 @@ func configureFirewall(cfg *installConfig) error {
         {"ufw", "allow", fmt.Sprintf("%d/tcp", cfg.sshPort)},
     }
 
-    // Only open 9735 for LND hybrid mode
     if cfg.components == "bitcoin+lnd" && cfg.p2pMode == "hybrid" {
         commands = append(commands, []string{"ufw", "allow", "9735/tcp"})
     }
@@ -142,6 +126,51 @@ func configureFirewall(cfg *installConfig) error {
             return fmt.Errorf("%v: %s: %s", args, err, output)
         }
     }
-
     return nil
+}
+
+// installUnattendedUpgrades installs and configures automatic
+// security updates for the Debian system.
+func installUnattendedUpgrades() error {
+    cmd := exec.Command("apt-get", "install", "-y", "-qq",
+        "unattended-upgrades", "apt-listchanges")
+    if output, err := cmd.CombinedOutput(); err != nil {
+        return fmt.Errorf("install: %s: %s", err, output)
+    }
+    return nil
+}
+
+// configureUnattendedUpgrades writes the config for auto security
+// updates with auto-reboot at 4:00 AM UTC when needed.
+func configureUnattendedUpgrades() error {
+    // Enable auto-updates
+    autoConf := `APT::Periodic::Update-Package-Lists "1";
+APT::Periodic::Unattended-Upgrade "1";
+APT::Periodic::AutocleanInterval "7";
+`
+    if err := os.WriteFile("/etc/apt/apt.conf.d/20auto-upgrades",
+        []byte(autoConf), 0644); err != nil {
+        return err
+    }
+
+    // Configure what to upgrade and auto-reboot
+    upgradeConf := `// Virtual Private Node — Unattended Upgrades
+//
+// Only install security updates automatically.
+// Auto-reboot at 4:00 AM UTC if kernel update requires it.
+
+Unattended-Upgrade::Allowed-Origins {
+    "${distro_id}:${distro_codename}-security";
+};
+
+// Auto-reboot if required, at 4 AM UTC
+Unattended-Upgrade::Automatic-Reboot "true";
+Unattended-Upgrade::Automatic-Reboot-Time "04:00";
+
+// Remove unused kernel packages after update
+Unattended-Upgrade::Remove-Unused-Kernel-Packages "true";
+Unattended-Upgrade::Remove-Unused-Dependencies "true";
+`
+    return os.WriteFile("/etc/apt/apt.conf.d/50unattended-upgrades",
+        []byte(upgradeConf), 0644)
 }
