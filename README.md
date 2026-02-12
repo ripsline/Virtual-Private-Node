@@ -85,6 +85,10 @@ chmod 755 /usr/local/bin/rlvpn
 
 # Auto-launch on ripsline login
 cat > /home/ripsline/.bash_profile << 'EOF'
+# Source .bashrc for environment variables and shell functions
+[ -f ~/.bashrc ] && source ~/.bashrc
+
+# Virtual Private Node — auto-launch
 if [ -n "$SSH_CONNECTION" ] && [ -t 0 ]; then
     sudo /usr/local/bin/rlvpn
 fi
