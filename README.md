@@ -21,8 +21,10 @@ and `systemctl`. No wrappers, no abstractions.
 ### Requirements
 
 - Fresh Debian 12+ VPS
-- Root access
-- Minimum: 1 vCPU, 2 GB RAM, 50 GB SSD
+- 2 vCPU, 4 GB RAM, 90+ GB SSD
+
+- Mynymbox affiliate link with exact specs:
+https://client.mynymbox.io/store/custom/vps-2-4-90-nl?aff=8
 
 ### Quick Start
 
@@ -42,16 +44,16 @@ node installer starts automatically.
 
 ~~~bash
 sudo apt update
-sudo apt install -y git wget
+sudo apt install -y git wget sudo
 ~~~
 
 #### 2. Install Go
 
 ~~~bash
 cd /tmp
-wget https://go.dev/dl/go1.22.5.linux-amd64.tar.gz
+wget https://go.dev/dl/go1.25.6.linux-amd64.tar.gz
 sudo rm -rf /usr/local/go
-sudo tar -C /usr/local -xzf go1.22.5.linux-amd64.tar.gz
+sudo tar -C /usr/local -xzf go1.25.6.linux-amd64.tar.gz
 echo 'export PATH=$PATH:/usr/local/go/bin' >> ~/.profile
 source ~/.profile
 go version
