@@ -1,6 +1,3 @@
-// Package config manages the persistent node configuration.
-// Written once at install time, updated when software is added.
-// Read on every login to display the correct dashboard state.
 package config
 
 import (
@@ -11,16 +8,17 @@ import (
 const configDir = "/etc/rlvpn"
 const configPath = "/etc/rlvpn/config.json"
 
-// AppConfig stores install choices and software state.
 type AppConfig struct {
-    Network      string `json:"network"`
-    Components   string `json:"components"`
-    PruneSize    int    `json:"prune_size"`
-    P2PMode      string `json:"p2p_mode"`
-    AutoUnlock   bool   `json:"auto_unlock"`
-    SSHPort      int    `json:"ssh_port"`
-    LITInstalled bool   `json:"lit_installed"`
-    LITPassword  string `json:"lit_password,omitempty"`
+    Network              string `json:"network"`
+    Components           string `json:"components"`
+    PruneSize            int    `json:"prune_size"`
+    P2PMode              string `json:"p2p_mode"`
+    AutoUnlock           bool   `json:"auto_unlock"`
+    SSHPort              int    `json:"ssh_port"`
+    LITInstalled         bool   `json:"lit_installed"`
+    LITPassword          string `json:"lit_password,omitempty"`
+    SyncthingInstalled   bool   `json:"syncthing_installed"`
+    SyncthingPassword    string `json:"syncthing_password,omitempty"`
 }
 
 func Default() *AppConfig {
@@ -64,7 +62,6 @@ func (c *AppConfig) IsMainnet() bool {
     return c.Network == "mainnet"
 }
 
-// WalletExists checks if the LND wallet database file exists.
 func (c *AppConfig) WalletExists() bool {
     network := c.Network
     if c.IsMainnet() {

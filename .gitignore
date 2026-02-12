@@ -24,7 +24,7 @@ rlvpn-linux-*
 Thumbs.db
 
 # Test
-.important.json
+important.json
 *.test
 *.out
 coverage.txt

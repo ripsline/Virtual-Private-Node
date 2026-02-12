@@ -74,6 +74,7 @@ const (
     svQR
     svWalletCreate
     svLITInstall
+    svSyncthingInstall
     svSystemUpdate
     svLogView
 )
@@ -94,6 +95,7 @@ const (
     logSelBitcoin
     logSelLND
     logSelLIT
+    logSelSyncthing
 )
 
 // svcAction is used when acting on services from within the card
@@ -111,6 +113,7 @@ type Model struct {
     dashCard     cardPos
     cardActive   bool         // true when "inside" a card
     svcCursor    int          // cursor within services card
+    svcConfirm   string       // "r", "s", or "a" when confirming an action
     logSel       logSelection
     pairingFocus int
     width        int
@@ -146,6 +149,12 @@ func Show(cfg *config.AppConfig, version string) {
                 cfg = u
             }
             continue
+        case svSyncthingInstall:
+            installer.RunSyncthingInstall(cfg)
+            if u, e := config.Load(); e == nil {
+                cfg = u
+            }
+            continue
         case svSystemUpdate:
             runSystemUpdate()
             continue
@@ -169,6 +178,9 @@ func (m Model) svcCount() int {
     if m.cfg.LITInstalled {
         n++
     }
+    if m.cfg.SyncthingInstalled {
+        n++
+    }
     return n
 }
 
@@ -179,6 +191,9 @@ func (m Model) svcName(i int) string {
     }
     if m.cfg.LITInstalled {
         names = append(names, "litd")
+    }
+    if m.cfg.SyncthingInstalled {
+        names = append(names, "syncthing")
     }
     if i < len(names) {
         return names[i]
@@ -281,6 +296,23 @@ func (m Model) handleCardKey(key string) (tea.Model, tea.Cmd) {
     }
 
     if m.dashCard == cardServices {
+        // If confirming an action, handle y/n
+        if m.svcConfirm != "" {
+            switch key {
+            case "y":
+                svc := m.svcName(m.svcCursor)
+                action := m.svcConfirm
+                m.svcConfirm = ""
+                return m, func() tea.Msg {
+                    exec.Command("systemctl", action, svc).Run()
+                    return svcActionDoneMsg{}
+                }
+            default:
+                m.svcConfirm = ""
+                return m, nil
+            }
+        }
+
         switch key {
         case "up", "k":
             if m.svcCursor > 0 {
@@ -291,23 +323,14 @@ func (m Model) handleCardKey(key string) (tea.Model, tea.Cmd) {
                 m.svcCursor++
             }
         case "r":
-            svc := m.svcName(m.svcCursor)
-            return m, func() tea.Msg {
-                exec.Command("systemctl", "restart", svc).Run()
-                return svcActionDoneMsg{}
-            }
+            m.svcConfirm = "restart"
+            return m, nil
         case "s":
-            svc := m.svcName(m.svcCursor)
-            return m, func() tea.Msg {
-                exec.Command("systemctl", "stop", svc).Run()
-                return svcActionDoneMsg{}
-            }
+            m.svcConfirm = "stop"
+            return m, nil
         case "a":
-            svc := m.svcName(m.svcCursor)
-            return m, func() tea.Msg {
-                exec.Command("systemctl", "start", svc).Run()
-                return svcActionDoneMsg{}
-            }
+            m.svcConfirm = "start"
+            return m, nil
         }
     }
 
@@ -350,6 +373,9 @@ func (m Model) navDown() Model {
         mx := logSelLND
         if m.cfg.LITInstalled {
             mx = logSelLIT
+        }
+        if m.cfg.SyncthingInstalled {
+            mx = logSelSyncthing
         }
         if m.logSel < mx {
             m.logSel++
@@ -417,9 +443,18 @@ func (m Model) handleEnter() (tea.Model, tea.Cmd) {
         m.shellAction = svLogView
         return m, tea.Quit
     case tabSoftware:
-        if m.cfg.HasLND() && m.cfg.WalletExists() && !m.cfg.LITInstalled {
-            m.shellAction = svLITInstall
-            return m, tea.Quit
+        if m.pairingFocus == 0 {
+            // Syncthing (left card)
+            if m.cfg.HasLND() && m.cfg.WalletExists() && !m.cfg.SyncthingInstalled {
+                m.shellAction = svSyncthingInstall
+                return m, tea.Quit
+            }
+        } else {
+            // LIT (right card)
+            if m.cfg.HasLND() && m.cfg.WalletExists() && !m.cfg.LITInstalled {
+                m.shellAction = svLITInstall
+                return m, tea.Quit
+            }
         }
     }
     return m, nil
@@ -568,7 +603,13 @@ func (m Model) cardServicesView(w, h int) string {
 
     if m.cardActive && m.dashCard == cardServices {
         lines = append(lines, "")
-        lines = append(lines, wDimStyle.Render("[r]estart [s]top [a]start"))
+        if m.svcConfirm != "" {
+            svc := m.svcName(m.svcCursor)
+            lines = append(lines, wWarningStyle.Render(
+                fmt.Sprintf("%s %s? [y/n]", m.svcConfirm, svc)))
+        } else {
+            lines = append(lines, wDimStyle.Render("[r]estart [s]top [a]start"))
+        }
     }
 
     content := padLines(lines, h)
@@ -740,12 +781,19 @@ func (m Model) viewLightning() string {
         litOnion := readOnion("/var/lib/tor/lnd-lit/hostname")
         if litOnion != "" {
             lines = append(lines, "")
-            lines = append(lines, "  "+wLabelStyle.Render("Tor URL:"))
-            lines = append(lines, "  "+wMonoStyle.Render(
-                "https://"+litOnion+":8443"))
+            lines = append(lines, "  "+wLabelStyle.Render("Address: ")+
+                wMonoStyle.Render(litOnion))
+            lines = append(lines, "  "+wLabelStyle.Render("Port: ")+
+                wMonoStyle.Render("8443"))
             lines = append(lines, "")
             lines = append(lines, "  "+wDimStyle.Render(
-                "Open in Tor Browser. Accept the self-signed certificate warning."))
+                "In Tor Browser: https://ADDRESS:PORT"))
+            lines = append(lines, "  "+wDimStyle.Render(
+                "Your browser will show a security warning."))
+            lines = append(lines, "  "+wDimStyle.Render(
+                "This is expected — click Advanced → Accept Risk and Continue."))
+            lines = append(lines, "  "+wDimStyle.Render(
+                "The connection is encrypted by Tor."))
         }
         if m.cfg.LITPassword != "" {
             lines = append(lines, "")
@@ -983,10 +1031,7 @@ func (m Model) viewQR() string {
     qr := renderQRCode(uri)
 
     var lines []string
-    lines = append(lines, wLightningStyle.Render("⚡ Zeus QR Code"))
-    lines = append(lines, "")
-    lines = append(lines, wDimStyle.Render("Zoom out to see full QR: Cmd+Minus / Ctrl+Minus"))
-    lines = append(lines, "")
+    lines = append(lines, wDimStyle.Render("Zoom out: Cmd+Minus / Ctrl+Minus"))
     if qr != "" {
         lines = append(lines, qr)
     } else {
@@ -1026,6 +1071,13 @@ func (m Model) viewLogs(bw int) string {
         }{"Lightning Terminal", logSelLIT})
     }
 
+    if m.cfg.SyncthingInstalled {
+        services = append(services, struct {
+            name string
+            sel  logSelection
+        }{"Syncthing", logSelSyncthing})
+    }
+
     for _, svc := range services {
         prefix := "  "
         style := wValueStyle
@@ -1047,38 +1099,102 @@ func (m Model) viewLogs(bw int) string {
 // ── Software tab ─────────────────────────────────────────
 
 func (m Model) viewSoftware(bw int) string {
-    var lines []string
+    halfW := (bw - 4) / 2
+    cardH := wBoxHeight
 
-    lines = append(lines, wHeaderStyle.Render("Lightning Terminal (LIT)"))
-    lines = append(lines, "")
-    lines = append(lines, wDimStyle.Render("Browser-based interface for managing"))
-    lines = append(lines, wDimStyle.Render("channel liquidity. Includes Loop, Pool,"))
-    lines = append(lines, wDimStyle.Render("Faraday, and Terminal UI."))
-    lines = append(lines, "")
-    lines = append(lines, wLabelStyle.Render("Version: ")+
-        wValueStyle.Render("v"+installer.LitVersionStr()))
-    lines = append(lines, "")
+    // Syncthing card (left)
+    var syncLines []string
+    syncLines = append(syncLines, wHeaderStyle.Render("Syncthing"))
+    syncLines = append(syncLines, "")
+    syncLines = append(syncLines, wDimStyle.Render("File sync between your"))
+    syncLines = append(syncLines, wDimStyle.Render("node and local devices."))
+    syncLines = append(syncLines, wDimStyle.Render("Auto-backup LND channels."))
+    syncLines = append(syncLines, "")
 
-    if m.cfg.LITInstalled {
-        lines = append(lines, wGreenDotStyle.Render("●")+" "+
+    if m.cfg.SyncthingInstalled {
+        syncLines = append(syncLines, wGreenDotStyle.Render("●")+" "+
             wGoodStyle.Render("Installed"))
-        lines = append(lines, "")
-        lines = append(lines, wDimStyle.Render(
-            "Access via Lightning card on Dashboard"))
+        syncLines = append(syncLines, "")
+
+        syncOnion := readOnion("/var/lib/tor/syncthing/hostname")
+        if syncOnion != "" {
+            syncLines = append(syncLines, wLabelStyle.Render("Address:"))
+            syncLines = append(syncLines, "  "+wMonoStyle.Render(syncOnion))
+            syncLines = append(syncLines, wLabelStyle.Render("Port: ")+
+                wMonoStyle.Render("8384"))
+        }
+        if m.cfg.SyncthingPassword != "" {
+            syncLines = append(syncLines, "")
+            syncLines = append(syncLines, wLabelStyle.Render("User: ")+
+                wMonoStyle.Render("admin"))
+            syncLines = append(syncLines, wLabelStyle.Render("Pass: ")+
+                wMonoStyle.Render(m.cfg.SyncthingPassword))
+        }
+        syncLines = append(syncLines, "")
+        syncLines = append(syncLines, wDimStyle.Render("Open in Tor Browser"))
+        syncLines = append(syncLines, wDimStyle.Render("http://ADDRESS:8384"))
     } else if !m.cfg.HasLND() {
-        lines = append(lines, wGrayedStyle.Render("Requires LND installation"))
+        syncLines = append(syncLines, wGrayedStyle.Render("Requires LND"))
     } else if !m.cfg.WalletExists() {
-        lines = append(lines, wGrayedStyle.Render(
-            "Requires LND wallet — create from Dashboard"))
+        syncLines = append(syncLines, wGrayedStyle.Render("Requires LND wallet"))
     } else {
-        lines = append(lines, wRedDotStyle.Render("●")+" "+
+        syncLines = append(syncLines, wRedDotStyle.Render("●")+" "+
             wDimStyle.Render("Not installed"))
-        lines = append(lines, "")
-        lines = append(lines, wActionStyle.Render("Press Enter to install ▸"))
+        syncLines = append(syncLines, "")
+        syncLines = append(syncLines, wActionStyle.Render("Select to install ▸"))
     }
 
-    content := padLines(lines, wBoxHeight)
-    return wOuterBox.Width(bw).Padding(1, 2).Render(content)
+    syncContent := padLines(syncLines, cardH)
+    sBorder := wNormalBorder
+    if m.pairingFocus == 0 {
+        if m.cfg.HasLND() && m.cfg.WalletExists() {
+            sBorder = wSelectedBorder
+        } else {
+            sBorder = wGrayedBorder
+        }
+    }
+    syncCard := sBorder.Width(halfW).Padding(1, 2).Render(syncContent)
+
+    // LIT card (right)
+    var litLines []string
+    litLines = append(litLines, wHeaderStyle.Render("Lightning Terminal"))
+    litLines = append(litLines, "")
+    litLines = append(litLines, wDimStyle.Render("Browser UI for managing"))
+    litLines = append(litLines, wDimStyle.Render("channel liquidity. Loop,"))
+    litLines = append(litLines, wDimStyle.Render("Pool, Faraday, Terminal."))
+    litLines = append(litLines, "")
+    litLines = append(litLines, wLabelStyle.Render("Version: ")+
+        wValueStyle.Render("v"+installer.LitVersionStr()))
+    litLines = append(litLines, "")
+
+    if m.cfg.LITInstalled {
+        litLines = append(litLines, wGreenDotStyle.Render("●")+" "+
+            wGoodStyle.Render("Installed"))
+        litLines = append(litLines, "")
+        litLines = append(litLines, wDimStyle.Render("See Lightning tab"))
+    } else if !m.cfg.HasLND() {
+        litLines = append(litLines, wGrayedStyle.Render("Requires LND"))
+    } else if !m.cfg.WalletExists() {
+        litLines = append(litLines, wGrayedStyle.Render("Requires LND wallet"))
+    } else {
+        litLines = append(litLines, wRedDotStyle.Render("●")+" "+
+            wDimStyle.Render("Not installed"))
+        litLines = append(litLines, "")
+        litLines = append(litLines, wActionStyle.Render("Select to install ▸"))
+    }
+
+    litContent := padLines(litLines, cardH)
+    lBorder := wNormalBorder
+    if m.pairingFocus == 1 {
+        if m.cfg.HasLND() && m.cfg.WalletExists() {
+            lBorder = wSelectedBorder
+        } else {
+            lBorder = wGrayedBorder
+        }
+    }
+    litCard := lBorder.Width(halfW).Padding(1, 2).Render(litContent)
+
+    return lipgloss.JoinHorizontal(lipgloss.Top, syncCard, "  ", litCard)
 }
 
 // ── Shell actions ────────────────────────────────────────
@@ -1130,6 +1246,7 @@ func runLogViewer(sel logSelection, cfg *config.AppConfig) {
         logSelBitcoin: "bitcoind",
         logSelLND:     "lnd",
         logSelLIT:     "litd",
+        logSelSyncthing: "syncthing",
     }
     svc := svcMap[sel]
 

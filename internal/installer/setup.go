@@ -15,7 +15,7 @@ import (
 )
 
 const (
-    bitcoinVersion = "29.2"
+    bitcoinVersion = "29.3"
     lndVersion     = "0.20.0-beta"
     litVersion     = "0.16.0-alpha"
     systemUser     = "bitcoin"
@@ -273,12 +273,16 @@ func buildSteps(cfg *installConfig) []installStep {
         {name: "Creating directories", fn: func() error { return createDirs(systemUser, cfg) }},
         {name: "Disabling IPv6", fn: disableIPv6},
         {name: "Configuring firewall", fn: func() error { return configureFirewall(cfg) }},
+        {name: "Installing GPG", fn: ensureGPG},
+        {name: "Importing Bitcoin Core signing keys", fn: importBitcoinCoreKeys},
         {name: "Installing Tor", fn: installTor},
         {name: "Configuring Tor", fn: func() error { return writeTorConfig(cfg) }},
         {name: "Adding user to debian-tor group", fn: func() error { return addUserToTorGroup(systemUser) }},
         {name: "Starting Tor", fn: restartTor},
         {name: "Downloading Bitcoin Core " + bitcoinVersion, fn: func() error { return downloadBitcoin(bitcoinVersion) }},
-        {name: "Verifying Bitcoin Core", fn: func() error { return verifyBitcoin(bitcoinVersion) }},
+        {name: "Downloading Bitcoin Core signatures", fn: func() error { return downloadBitcoinSigFile(bitcoinVersion) }},
+        {name: "Verifying Bitcoin Core signatures (2/5)", fn: func() error { return verifyBitcoinCoreSigs(2) }},
+        {name: "Verifying Bitcoin Core checksum", fn: func() error { return verifyBitcoin(bitcoinVersion) }},
         {name: "Installing Bitcoin Core", fn: func() error { return extractAndInstallBitcoin(bitcoinVersion) }},
         {name: "Configuring Bitcoin Core", fn: func() error { return writeBitcoinConfig(cfg) }},
         {name: "Creating bitcoind service", fn: func() error { return writeBitcoindService(systemUser) }},
@@ -288,8 +292,10 @@ func buildSteps(cfg *installConfig) []installStep {
     }
     if cfg.components == "bitcoin+lnd" {
         steps = append(steps,
+            installStep{name: "Importing LND signing key", fn: importLNDKey},
             installStep{name: "Downloading LND " + lndVersion, fn: func() error { return downloadLND(lndVersion) }},
-            installStep{name: "Verifying LND", fn: func() error { return verifyLND(lndVersion) }},
+            installStep{name: "Verifying LND signature", fn: func() error { return verifyLNDSig(lndVersion) }},
+            installStep{name: "Verifying LND checksum", fn: func() error { return verifyLND(lndVersion) }},
             installStep{name: "Installing LND", fn: func() error { return extractAndInstallLND(lndVersion) }},
             installStep{name: "Configuring LND", fn: func() error { return writeLNDConfig(cfg) }},
             installStep{name: "Creating LND service", fn: func() error { return writeLNDServiceInitial(systemUser) }},
@@ -407,9 +413,12 @@ func RunLITInstall(cfg *config.AppConfig) error {
     litPassword := hex.EncodeToString(passBytes)
 
     steps := []installStep{
+        {name: "Importing LIT signing key", fn: importLITKey},
         {name: "Downloading Lightning Terminal " + litVersion,
             fn: func() error { return downloadLIT(litVersion) }},
-        {name: "Verifying Lightning Terminal",
+        {name: "Verifying LIT signature",
+            fn: func() error { return verifyLITSig(litVersion) }},
+        {name: "Verifying LIT checksum",
             fn: func() error { return verifyLIT(litVersion) }},
         {name: "Installing Lightning Terminal",
             fn: func() error { return extractAndInstallLIT(litVersion) }},
@@ -481,33 +490,44 @@ func readFileOrDefault(path, def string) string {
 }
 
 func setupShellEnvironment(cfg *installConfig) error {
-    networkFlag := ""
-    if cfg.network.Name != "mainnet" {
-        networkFlag = fmt.Sprintf("\nexport LNCLI_NETWORK=%s", cfg.network.LNCLINetwork)
+    // Bitcoin-cli needs the network flag for testnet4
+    btcNetFlag := ""
+    if cfg.network.Name == "testnet4" {
+        btcNetFlag = "\n        -testnet4 \\"
     }
+
+    // LND wrapper with all flags baked in (env vars don't
+    // survive sudo, so we pass flags directly)
     lndBlock := ""
     if cfg.components == "bitcoin+lnd" {
+        lndNetFlag := ""
+        if cfg.network.Name != "mainnet" {
+            lndNetFlag = fmt.Sprintf("\n        --network=%s \\",
+                cfg.network.LNCLINetwork)
+        }
+
         lndBlock = fmt.Sprintf(`
-export LNCLI_LNDDIR=/var/lib/lnd%s
-export LNCLI_MACAROONPATH=/var/lib/lnd/data/chain/bitcoin/%s/admin.macaroon
-export LNCLI_TLSCERTPATH=/var/lib/lnd/tls.cert
-`, networkFlag, cfg.network.LNCLINetwork)
+lncli() {
+    sudo -u bitcoin /usr/local/bin/lncli \
+        --lnddir=/var/lib/lnd \%s
+        --macaroonpath=/var/lib/lnd/data/chain/bitcoin/%s/admin.macaroon \
+        --tlscertpath=/var/lib/lnd/tls.cert \
+        "$@"
+}
+export -f lncli
+`, lndNetFlag, cfg.network.LNCLINetwork)
     }
+
     content := fmt.Sprintf(`
 # ── Virtual Private Node ──────────────────────
 bitcoin-cli() {
     sudo -u bitcoin /usr/local/bin/bitcoin-cli \
         -datadir=/var/lib/bitcoin \
-        -conf=/etc/bitcoin/bitcoin.conf \
+        -conf=/etc/bitcoin/bitcoin.conf \%s
         "$@"
 }
 export -f bitcoin-cli
-%s
-lncli() {
-    sudo -u bitcoin /usr/local/bin/lncli "$@"
-}
-export -f lncli
-`, lndBlock)
+%s`, btcNetFlag, lndBlock)
 
     f, err := os.OpenFile("/home/ripsline/.bashrc",
         os.O_APPEND|os.O_WRONLY|os.O_CREATE, 0644)

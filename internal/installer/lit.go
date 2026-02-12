@@ -128,6 +128,9 @@ loop-mode=disable
 pool-mode=disable
 taproot-assets-mode=disable
 
+# Disable autopilot (not needed for basic Terminal UI)
+autopilot.disable=true
+
 httpslisten=127.0.0.1:8443
 `, uiPassword, cfg.Network, macaroonPath)
 

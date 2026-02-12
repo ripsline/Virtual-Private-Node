@@ -82,6 +82,9 @@ echo "  ✓ Installed rlvpn to /usr/local/bin/"
 # ── Auto-launch on ripsline login ───────────────────────────
 
 cat > /home/$ADMIN_USER/.bash_profile << 'BASHEOF'
+# Source .bashrc for environment variables and shell functions
+[ -f ~/.bashrc ] && source ~/.bashrc
+
 # Virtual Private Node — auto-launch
 if [ -n "$SSH_CONNECTION" ] && [ -t 0 ]; then
     sudo /usr/local/bin/rlvpn
