@@ -9,13 +9,20 @@ and `systemctl`. No wrappers, no abstractions.
 ### What it installs
 
 - **Tor** — all connections routed through Tor
-- **Bitcoin Core 29.2** — pruned, configurable (10/25/50 GB)
+- **Bitcoin Core 29.3** — pruned, configurable (10/25/50 GB)
 - **LND 0.20.0-beta** (optional) — Lightning with Tor hidden services
+- **Unattended security upgrades** — auto-patching with reboot at 4 AM UTC
+
+### Additional software (from the dashboard)
+
+- **Lightning Terminal v0.16.0-alpha** — browser UI for channel management
+- **Syncthing** — file sync with automatic LND channel backup
 
 ### Requirements
 
-- Fresh Debian 12+ Server
-- 2 vCPU, 4 GB RAM, 90+ GB SSD
+- Fresh Debian 12+ VPS
+- Root access
+- Minimum: 1 vCPU, 2 GB RAM, 50 GB SSD
 
 ### Quick Start
 
@@ -34,20 +41,17 @@ node installer starts automatically.
 #### 1. Install Dependencies
 
 ~~~bash
-su -
-~~~
-~~~bash
-apt update
-apt install -y sudo git wget
+sudo apt update
+sudo apt install -y git wget
 ~~~
 
 #### 2. Install Go
 
 ~~~bash
 cd /tmp
-wget https://go.dev/dl/go1.25.6.linux-amd64.tar.gz
+wget https://go.dev/dl/go1.22.5.linux-amd64.tar.gz
 sudo rm -rf /usr/local/go
-sudo tar -C /usr/local -xzf go1.25.6.linux-amd64.tar.gz
+sudo tar -C /usr/local -xzf go1.22.5.linux-amd64.tar.gz
 echo 'export PATH=$PATH:/usr/local/go/bin' >> ~/.profile
 source ~/.profile
 go version
@@ -83,12 +87,9 @@ chmod 440 /etc/sudoers.d/ripsline
 cp ./rlvpn /usr/local/bin/rlvpn
 chmod 755 /usr/local/bin/rlvpn
 
-# Auto-launch on ripsline login
+# Auto-launch on ripsline login (source .bashrc first)
 cat > /home/ripsline/.bash_profile << 'EOF'
-# Source .bashrc for environment variables and shell functions
 [ -f ~/.bashrc ] && source ~/.bashrc
-
-# Virtual Private Node — auto-launch
 if [ -n "$SSH_CONNECTION" ] && [ -t 0 ]; then
     sudo /usr/local/bin/rlvpn
 fi
@@ -96,13 +97,40 @@ EOF
 chown ripsline:ripsline /home/ripsline/.bash_profile
 ~~~
 
-Save the printed password, then open a new terminal and connect:
+Save the printed password, then open a new terminal:
 
 ~~~bash
 ssh ripsline@YOUR_SERVER_IP
 ~~~
 
 The installer starts automatically.
+
+#### 5. Enable Unattended Security Upgrades (manual)
+
+The automated installer configures this automatically. If building
+from source, enable it manually:
+
+~~~bash
+sudo apt install -y unattended-upgrades apt-listchanges
+
+# Enable auto-updates
+cat << 'EOF' | sudo tee /etc/apt/apt.conf.d/20auto-upgrades
+APT::Periodic::Update-Package-Lists "1";
+APT::Periodic::Unattended-Upgrade "1";
+APT::Periodic::AutocleanInterval "7";
+EOF
+
+# Configure security-only updates with auto-reboot at 4 AM
+cat << 'EOF' | sudo tee /etc/apt/apt.conf.d/50unattended-upgrades
+Unattended-Upgrade::Allowed-Origins {
+    "${distro_id}:${distro_codename}-security";
+};
+Unattended-Upgrade::Automatic-Reboot "true";
+Unattended-Upgrade::Automatic-Reboot-Time "04:00";
+Unattended-Upgrade::Remove-Unused-Kernel-Packages "true";
+Unattended-Upgrade::Remove-Unused-Dependencies "true";
+EOF
+~~~
 
 ### What the installer asks
 
@@ -113,16 +141,17 @@ The installer starts automatically.
 | Prune size | 10 GB, 25 GB, or 50 GB |
 | LND P2P mode | Tor only or Hybrid (Tor + clearnet) |
 | SSH port | 22 or custom |
-| LND wallet | Created via `lncli create` |
-| Auto-unlock | Store password for unattended restarts |
 
-### Post-install
+### Post-install Dashboard
 
-Every SSH login as `ripsline` opens a dashboard with three tabs:
+Every SSH login as `ripsline` opens a dashboard with four tabs:
 
-- **Dashboard** — service status, disk/RAM usage, sync progress
-- **Pairing** — Zeus and Sparrow wallet connection details
-- **Logs** — live journalctl output for Tor, Bitcoin Core, and LND
+- **Dashboard** — four product cards: Services (start/stop/restart),
+  System (disk, RAM, update), Bitcoin (sync status), Lightning
+  (wallet creation, node details)
+- **Pairing** — Zeus and Sparrow wallet connection setup with QR code
+- **Logs** — select a service to view journal logs
+- **Software** — install Lightning Terminal and Syncthing
 
 Press `q` to drop to a shell:
 
@@ -141,91 +170,108 @@ lncli listchannels
 # Services
 sudo systemctl status bitcoind
 sudo systemctl status lnd
-sudo systemctl status tor@default
-sudo journalctl -u lnd -f
+sudo journalctl -u lnd -n 50 --no-pager
 ~~~
 
-### Connecting wallets
+### Software Verification
+
+All software is verified with GPG signatures and SHA256 checksums:
+
+- **Bitcoin Core** — 5 trusted builder keys imported from
+  [bitcoin-core/guix.sigs](https://github.com/bitcoin-core/guix.sigs).
+  Requires 2 out of 5 valid signatures. Hard abort if fewer than 2.
+- **LND** — Roasbeef's signing key verified against known fingerprint.
+- **Lightning Terminal** — ViktorT-11's signing key from Ubuntu keyserver.
+
+Verification failure is a hard stop — the installer will not proceed
+with unverified software.
+
+### Connecting Wallets
 
 #### Zeus (Lightning — LND REST over Tor)
 
-1. Download & Verify Zeus Mobile
-2. Advanced Set-Up
-3. Create or connect a wallet
-4. Wallet interface dropdown → LND(REST)
-5. Paste the Server address, REST Port, and Macaroon
+1. Install Zeus and enable Tor in settings
+2. Open the **Pairing** tab, select Zeus, press `m` for macaroon
+3. Add node → Manual setup → paste host, port, and macaroon
 
 #### Sparrow (On-chain — Bitcoin Core RPC over Tor)
 
-1. Open the **Pairing** tab for your RPC URL, port, and credentials
-2. In Sparrow Wallet: Sparrow → Settings → Server → Bitcoin Core
-3. Enter the URL, port, user (`__cookie__`), and password
-4. Test Connection
+1. Open the **Pairing** tab, select Sparrow
+2. In Sparrow: Preferences → Server → Bitcoin Core
+3. Enter URL, port, user (`__cookie__`), and password
+4. Set SOCKS5 proxy to `localhost:9050`
+5. Sparrow needs Tor running on your local machine
+
+Note: the cookie password changes when Bitcoin Core restarts.
+
+### Additional Software
+
+#### Lightning Terminal (LIT)
+
+Browser-based interface for channel management. Installed from the
+Software tab. Accessed via Tor Browser at the onion address shown
+in the Lightning detail screen. Self-signed certificate warning is
+expected — the connection is encrypted by Tor.
+
+#### Syncthing
+
+File synchronization between your node and local devices.
+Automatically backs up LND channel state (channel.backup) to a
+sync folder. Install from the Software tab, then pair your local
+Syncthing instance through the web UI (accessed via Tor Browser).
 
 ### Architecture
 
 ~~~
-User SSH → ripsline@VPS → rlvpn (dashboard)
+User SSH → ripsline@VPS → rlvpn dashboard
                              press q → shell with bitcoin-cli, lncli
 
 Services (systemd, run as bitcoin user):
-  tor.service      → SOCKS proxy (9050), control port (9051)
-  bitcoind.service → pruned node, Tor-routed
-  lnd.service      → Lightning, Tor hidden services
+  tor.service              → SOCKS proxy (9050), control port (9051)
+  bitcoind.service         → pruned node, Tor-routed
+  lnd.service              → Lightning, Tor hidden services
+  litd.service             → Lightning Terminal web UI
+  syncthing.service        → file sync with channel backup
+  lnd-backup-watch.path    → watches channel.backup for changes
 ~~~
 
-### Directory layout
+### Directory Layout
 
 | Path | Contents |
 |---|---|
-| `/etc/bitcoin/bitcoin.conf` | Bitcoin Core configuration |
-| `/etc/lnd/lnd.conf` | LND configuration |
-| `/etc/rlvpn/config.json` | Installer choices (network, components) |
-| `/var/lib/bitcoin/` | Blockchain data |
-| `/var/lib/lnd/` | LND data, wallet, macaroons |
-| `/usr/local/bin/rlvpn` | Installer binary |
-| `/usr/local/bin/bitcoind` | Bitcoin Core daemon |
-| `/usr/local/bin/lnd` | LND daemon |
-| `/usr/local/bin/lncli` | LND CLI |
+| /etc/bitcoin/bitcoin.conf | Bitcoin Core configuration |
+| /etc/lnd/lnd.conf | LND configuration |
+| /etc/lit/lit.conf | Lightning Terminal configuration |
+| /etc/syncthing/ | Syncthing configuration |
+| /etc/rlvpn/config.json | Install choices and credentials |
+| /var/lib/bitcoin/ | Blockchain data |
+| /var/lib/lnd/ | LND data and wallet |
+| /var/lib/lit/ | Lightning Terminal data |
+| /var/lib/syncthing/ | Syncthing data and backup folder |
+| /var/lib/syncthing/lnd-backup/ | Auto-synced channel.backup |
 
 ### Security
 
-- All outbound connections routed through Tor (SOCKS5 on port 9050)
-- IPv6 disabled at kernel level to prevent Tor bypass
-- Stream isolation enabled (separate Tor circuit per connection)
-- UFW firewall: only SSH open (+ 9735 for hybrid P2P mode)
-- Bitcoin Core RPC: cookie authentication, localhost only
-- LND gRPC and REST: Tor hidden services only, never clearnet
+- All connections through Tor (SOCKS5 port 9050)
+- IPv6 disabled to prevent Tor bypass
+- Stream isolation (separate circuit per connection)
+- UFW firewall: SSH only (+ 9735 for hybrid P2P)
 - Root SSH disabled after bootstrap
-- Passwordless sudo for `ripsline` user
-- Services run as dedicated `bitcoin` system user
-
-### Tor hidden services
-
-The installer creates static Tor hidden services for:
-
-| Service | Port | Use case |
-|---|---|---|
-| Bitcoin RPC | 8332 / 48332 | Sparrow Wallet connection |
-| Bitcoin P2P | 8333 / 48333 | Static peer address |
-| LND gRPC | 10009 | Wallet apps over Tor |
-| LND REST | 8080 | Zeus, wallet apps over Tor |
-
-Onion addresses are displayed after installation and on every login.
+- Passwordless sudo for ripsline
+- Services run as dedicated bitcoin system user
+- Cookie authentication for Bitcoin Core RPC
+- GPG signature verification for all software
+- Unattended security upgrades with auto-reboot
+- LND channel backup auto-synced via Syncthing
 
 ### Plugins
 
-This node is a base layer. Additional software can be installed
-on top:
+This is a base layer. Additional software can be built on top:
 
 - **[electrum-go](https://github.com/ripsline/electrum-go)** — forward-
-  indexing electrum server (beta available)
+  indexing electrum style server (beta software - run in testnet and provide feedback)
 
-- **[lnvoice](https://github.com/ripsline/lnvoice)** — voice
-  control for LND (beta coming soon)
-
-Plugins use `lncli` and `bitcoin-cli` directly. No proprietary
-APIs or custom interfaces.
+Plugins use `lncli` and `bitcoin-cli` directly.
 
 ## License
 
