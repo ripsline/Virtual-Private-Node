@@ -43,8 +43,8 @@ node installer starts automatically.
 #### 1. Install Dependencies
 
 ~~~bash
-sudo apt update
-sudo apt install -y git wget sudo
+apt update
+apt install -y git wget sudo
 ~~~
 
 #### 2. Install Go
