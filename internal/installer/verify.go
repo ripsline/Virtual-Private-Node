@@ -186,11 +186,18 @@ func verifyBitcoinCoreSigs(minValid int) error {
 }
 
 // verifyLNDSig verifies the LND manifest signature.
+// verifyLNDSig verifies the LND manifest GPG signature.
+// GPG checks the file content against the signature — the
+// filename on disk doesn't need to match the original.
 func verifyLNDSig(version string) error {
     manifestFile := "/tmp/manifest.txt"
     sigFile := fmt.Sprintf("/tmp/manifest-roasbeef-v%s.sig", version)
 
-    // Download the signature file
+    if _, err := os.Stat(manifestFile); err != nil {
+        return fmt.Errorf("LND manifest not found at %s", manifestFile)
+    }
+
+    // Download the detached signature file
     sigURL := fmt.Sprintf(
         "https://github.com/lightningnetwork/lnd/releases/download/v%s/manifest-roasbeef-v%s.sig",
         version, version)
@@ -199,6 +206,8 @@ func verifyLNDSig(version string) error {
     }
     defer os.Remove(sigFile)
 
+    // GPG verifies the content of manifestFile against sigFile.
+    // The actual filename doesn't matter — only the bytes.
     cmd := exec.Command("gpg", "--batch", "--verify",
         "--status-fd", "1", sigFile, manifestFile)
     output, err := cmd.CombinedOutput()
@@ -214,11 +223,18 @@ func verifyLNDSig(version string) error {
 }
 
 // verifyLITSig verifies the LIT manifest signature.
+// verifyLITSig verifies the LIT manifest GPG signature.
+// The manifest is saved as lit-manifest.txt but GPG only
+// checks file content, not filename, so no rename needed.
 func verifyLITSig(version string) error {
     manifestFile := "/tmp/lit-manifest.txt"
     sigFile := fmt.Sprintf("/tmp/manifest-ViktorT-11-v%s.sig", version)
 
-    // Download the signature file
+    if _, err := os.Stat(manifestFile); err != nil {
+        return fmt.Errorf("LIT manifest not found at %s", manifestFile)
+    }
+
+    // Download the detached signature file
     sigURL := fmt.Sprintf(
         "https://github.com/lightninglabs/lightning-terminal/releases/download/v%s/manifest-ViktorT-11-v%s.sig",
         version, version)
@@ -227,14 +243,9 @@ func verifyLITSig(version string) error {
     }
     defer os.Remove(sigFile)
 
-    // Rename manifest to match expected name
-    manifestSrc := "/tmp/lit-manifest.txt"
-    manifestDst := fmt.Sprintf("/tmp/manifest-v%s.txt", version)
-    os.Rename(manifestSrc, manifestDst)
-    defer os.Rename(manifestDst, manifestSrc)
-
+    // GPG verifies content, not filename — no rename needed
     cmd := exec.Command("gpg", "--batch", "--verify",
-        "--status-fd", "1", sigFile, manifestDst)
+        "--status-fd", "1", sigFile, manifestFile)
     output, err := cmd.CombinedOutput()
     if err != nil {
         return fmt.Errorf("LIT signature verification failed: %s", output)
