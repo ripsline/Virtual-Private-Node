@@ -188,7 +188,7 @@ func (m tuiModel) View() string {
     if m.width == 0 {
         return "Loading..."
     }
-    bw := minInt(m.width-4, tuiContentWidth)
+    bw := min(m.width-4, tuiContentWidth)
     title := tuiTitleStyle.Width(bw).Align(lipgloss.Center).
         Render(fmt.Sprintf(" Virtual Private Node v%s ", m.version))
     var content string
