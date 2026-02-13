@@ -401,6 +401,16 @@ func (m Model) handleCardKey(key string) (tea.Model, tea.Cmd) {
         return m, nil
     case "q":
         return m, tea.Quit
+    case "tab":
+        m.activeTab = (m.activeTab + 1) % 4
+        m.cardActive = false
+        m.svcConfirm = ""
+        return m, nil
+    case "shift+tab":
+        m.activeTab = (m.activeTab + 3) % 4
+        m.cardActive = false
+        m.svcConfirm = ""
+        return m, nil
     }
 
     if m.dashCard == cardServices {
@@ -1249,7 +1259,7 @@ func runSystemUpdate() {
 
     fmt.Println("\n  ✓ Update complete")
     if _, err := os.Stat("/var/run/reboot-required"); err == nil {
-        fmt.Println("\n  ⚠ Reboot required.")
+        fmt.Println("\n  ⚠️ Reboot required.")
         fmt.Print("  Reboot now? [y/N]: ")
         var ans string
         fmt.Scanln(&ans)
@@ -1259,6 +1269,7 @@ func runSystemUpdate() {
     }
     fmt.Print("\n  Press Enter to return...")
     fmt.Scanln()
+    fmt.Print("\033[2J\033[H")
 }
 
 func runLogViewer(sel logSelection, cfg *config.AppConfig) {
@@ -1280,6 +1291,7 @@ func runLogViewer(sel logSelection, cfg *config.AppConfig) {
 
     fmt.Print("\n  Press Enter to return...")
     fmt.Scanln()
+    fmt.Print("\033[2J\033[H")
 }
 
 // ── QR / Base64 ──────────────────────────────────────────
