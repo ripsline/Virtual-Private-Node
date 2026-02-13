@@ -111,7 +111,9 @@ tor.streamisolation=true
     if err := os.WriteFile("/etc/lnd/lnd.conf", []byte(content), 0640); err != nil {
         return err
     }
-    exec.Command("chown", "root:"+systemUser, "/etc/lnd/lnd.conf").Run()
+    if output, err := exec.Command("chown", "root:"+systemUser, "/etc/lnd/lnd.conf").CombinedOutput(); err != nil {
+        return fmt.Errorf("chown lnd.conf: %s: %s", err, output)
+    }
     return nil
 }
 

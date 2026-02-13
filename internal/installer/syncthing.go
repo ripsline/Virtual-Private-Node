@@ -116,7 +116,33 @@ func configureSyncthingAuth(password string) error {
     if err := os.WriteFile(configPath, []byte(content), 0640); err != nil {
         return err
     }
-    exec.Command("chown", systemUser+":"+systemUser, configPath).Run()
+    if output, err := exec.Command("chown", systemUser+":"+systemUser,
+        configPath).CombinedOutput(); err != nil {
+        return fmt.Errorf("chown syncthing config: %s: %s", err, output)
+    }
+
+    // Verify the config was written correctly
+    verify, err := os.ReadFile(configPath)
+    if err != nil {
+        return fmt.Errorf("verify syncthing config: %w", err)
+    }
+    verifyStr := string(verify)
+    checks := []struct {
+        contains string
+        desc     string
+    }{
+        {"<address>127.0.0.1:8384</address>", "GUI bind address"},
+        {"<user>admin</user>", "GUI username"},
+        {fmt.Sprintf("<password>%s</password>", password), "GUI password"},
+    }
+    for _, c := range checks {
+        if !strings.Contains(verifyStr, c.contains) {
+            return fmt.Errorf(
+                "syncthing config verification failed: %s not set",
+                c.desc)
+        }
+    }
+
     return nil
 }
 

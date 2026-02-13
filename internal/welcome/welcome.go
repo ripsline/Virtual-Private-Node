@@ -4,6 +4,7 @@ import (
     "context"
     "encoding/base64"
     "encoding/hex"
+    "encoding/json"
     "fmt"
     "os"
     "os/exec"
@@ -106,6 +107,19 @@ const (
 
 type svcActionDoneMsg struct{}
 
+type statusMsg struct {
+    services map[string]bool
+    diskTotal, diskUsed, diskPct string
+    ramTotal, ramUsed, ramPct   string
+    btcSize, lndSize            string
+    btcBlocks, btcHeaders       string
+    btcProgress                 string
+    btcSynced                   bool
+    btcResponding               bool
+}
+
+type tickMsg time.Time
+
 // ── Model ────────────────────────────────────────────────
 
 type Model struct {
@@ -123,6 +137,7 @@ type Model struct {
     width        int
     height       int
     shellAction  wSubview
+    status       *statusMsg
 }
 
 func NewModel(cfg *config.AppConfig, version string) Model {
@@ -172,7 +187,75 @@ func Show(cfg *config.AppConfig, version string) {
     }
 }
 
-func (m Model) Init() tea.Cmd { return nil }
+func (m Model) Init() tea.Cmd {
+    return tea.Batch(
+        fetchStatus(m.cfg),
+        tickEvery(5*time.Second),
+    )
+}
+
+func tickEvery(d time.Duration) tea.Cmd {
+    return tea.Tick(d, func(t time.Time) tea.Msg {
+        return tickMsg(t)
+    })
+}
+
+func fetchStatus(cfg *config.AppConfig) tea.Cmd {
+    return func() tea.Msg {
+        s := statusMsg{services: make(map[string]bool)}
+
+        names := []string{"tor", "bitcoind"}
+        if cfg.HasLND() {
+            names = append(names, "lnd")
+        }
+        if cfg.LITInstalled {
+            names = append(names, "litd")
+        }
+        if cfg.SyncthingInstalled {
+            names = append(names, "syncthing")
+        }
+        for _, name := range names {
+            err := exec.Command("systemctl", "is-active",
+                "--quiet", name).Run()
+            s.services[name] = err == nil
+        }
+
+        s.diskTotal, s.diskUsed, s.diskPct = diskUsage("/")
+        s.ramTotal, s.ramUsed, s.ramPct = memUsage()
+        s.btcSize = dirSize("/var/lib/bitcoin")
+        if cfg.HasLND() {
+            s.lndSize = dirSize("/var/lib/lnd")
+        }
+
+        ctx, cancel := context.WithTimeout(
+            context.Background(), 5*time.Second)
+        defer cancel()
+        cmd := exec.CommandContext(ctx, "sudo", "-u", "bitcoin",
+            "bitcoin-cli", "-datadir=/var/lib/bitcoin",
+            "-conf=/etc/bitcoin/bitcoin.conf",
+            "getblockchaininfo")
+        output, err := cmd.CombinedOutput()
+        if err == nil {
+            s.btcResponding = true
+            info := string(output)
+            s.btcBlocks = extractJSON(info, "blocks")
+            s.btcHeaders = extractJSON(info, "headers")
+            s.btcSynced = !strings.Contains(info,
+                `"initialblockdownload": true`)
+            progress := extractJSON(info,
+                "verificationprogress")
+            if progress != "" {
+                pct, e := strconv.ParseFloat(progress, 64)
+                if e == nil {
+                    s.btcProgress = fmt.Sprintf(
+                        "%.2f%%", pct*100)
+                }
+            }
+        }
+
+        return s
+    }
+}
 
 func (m Model) svcCount() int {
     n := 2
@@ -215,7 +298,15 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
     case tea.KeyMsg:
         return m.handleKey(msg)
     case svcActionDoneMsg:
+        return m, fetchStatus(m.cfg)
+    case statusMsg:
+        m.status = &msg
         return m, nil
+    case tickMsg:
+        return m, tea.Batch(
+            fetchStatus(m.cfg),
+            tickEvery(5*time.Second),
+        )
     }
     return m, nil
 }
@@ -272,9 +363,13 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
         return m, tea.Quit
     case "tab":
         m.activeTab = (m.activeTab + 1) % 4
+        m.cardActive = false
+        m.svcConfirm = ""
         return m, nil
     case "shift+tab":
         m.activeTab = (m.activeTab + 3) % 4
+        m.cardActive = false
+        m.svcConfirm = ""
         return m, nil
     case "1":
         m.activeTab = tabDashboard
@@ -498,7 +593,7 @@ func (m Model) View() string {
         return m.viewFullURL()
     }
 
-    bw := wMin(m.width-4, wContentWidth)
+    bw := min(m.width-4, wContentWidth)
     var content string
     switch m.activeTab {
     case tabDashboard:
@@ -623,13 +718,15 @@ func (m Model) cardServicesView(w, h int) string {
 
     for i, name := range names {
         dot := wRedDotStyle.Render("●")
-        cmd := exec.Command("systemctl", "is-active", "--quiet", name)
-        if cmd.Run() == nil {
-            dot = wGreenDotStyle.Render("●")
+        if m.status != nil {
+            if active, ok := m.status.services[name]; ok && active {
+                dot = wGreenDotStyle.Render("●")
+            }
         }
         prefix := "  "
         style := wValueStyle
-        if m.cardActive && m.dashCard == cardServices && m.svcCursor == i {
+        if m.cardActive && m.dashCard == cardServices &&
+            m.svcCursor == i {
             prefix = "▸ "
             style = wActionStyle
         }
@@ -641,14 +738,16 @@ func (m Model) cardServicesView(w, h int) string {
         if m.svcConfirm != "" {
             svc := m.svcName(m.svcCursor)
             lines = append(lines, wWarningStyle.Render(
-                fmt.Sprintf("%s %s? [y/n]", m.svcConfirm, svc)))
+                fmt.Sprintf("%s %s? [y/n]",
+                    m.svcConfirm, svc)))
         } else {
-            lines = append(lines, wDimStyle.Render("[r]estart [s]top [a]start"))
+            lines = append(lines,
+                wDimStyle.Render("[r]estart [s]top [a]start"))
         }
     }
 
-    return m.getBorder(cardServices, true).Width(w).Padding(0, 1).
-        Render(padLines(lines, h))
+    return m.getBorder(cardServices, true).Width(w).
+        Padding(0, 1).Render(padLines(lines, h))
 }
 
 func (m Model) cardSystemView(w, h int) string {
@@ -656,26 +755,35 @@ func (m Model) cardSystemView(w, h int) string {
     lines = append(lines, wHeaderStyle.Render("System"))
     lines = append(lines, "")
 
-    total, used, pct := diskUsage("/")
-    lines = append(lines, wLabelStyle.Render("Disk: ")+
-        wValueStyle.Render(fmt.Sprintf("%s / %s (%s)", used, total, pct)))
-    ramT, ramU, ramP := memUsage()
-    lines = append(lines, wLabelStyle.Render("RAM:  ")+
-        wValueStyle.Render(fmt.Sprintf("%s / %s (%s)", ramU, ramT, ramP)))
-    btcSize := dirSize("/var/lib/bitcoin")
-    lines = append(lines, wLabelStyle.Render("Bitcoin: ")+wValueStyle.Render(btcSize))
-    if m.cfg.HasLND() {
-        lndSize := dirSize("/var/lib/lnd")
-        lines = append(lines, wLabelStyle.Render("LND: ")+wValueStyle.Render(lndSize))
+    if m.status != nil {
+        lines = append(lines, wLabelStyle.Render("Disk: ")+
+            wValueStyle.Render(fmt.Sprintf("%s / %s (%s)",
+                m.status.diskUsed, m.status.diskTotal,
+                m.status.diskPct)))
+        lines = append(lines, wLabelStyle.Render("RAM:  ")+
+            wValueStyle.Render(fmt.Sprintf("%s / %s (%s)",
+                m.status.ramUsed, m.status.ramTotal,
+                m.status.ramPct)))
+        lines = append(lines,
+            wLabelStyle.Render("Bitcoin: ")+
+                wValueStyle.Render(m.status.btcSize))
+        if m.cfg.HasLND() {
+            lines = append(lines,
+                wLabelStyle.Render("LND: ")+
+                    wValueStyle.Render(m.status.lndSize))
+        }
+    } else {
+        lines = append(lines, wDimStyle.Render("Loading..."))
     }
 
     if m.cardActive && m.dashCard == cardSystem {
         lines = append(lines, "")
-        lines = append(lines, wActionStyle.Render("[u]pdate packages"))
+        lines = append(lines,
+            wActionStyle.Render("[u]pdate packages"))
     }
 
-    return m.getBorder(cardSystem, true).Width(w).Padding(0, 1).
-        Render(padLines(lines, h))
+    return m.getBorder(cardSystem, true).Width(w).
+        Padding(0, 1).Render(padLines(lines, h))
 }
 
 func (m Model) cardBitcoinView(w, h int) string {
@@ -683,43 +791,36 @@ func (m Model) cardBitcoinView(w, h int) string {
     lines = append(lines, wBitcoinStyle.Render("₿ Bitcoin"))
     lines = append(lines, "")
 
-    ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-    defer cancel()
-    cmd := exec.CommandContext(ctx, "sudo", "-u", "bitcoin", "bitcoin-cli",
-        "-datadir=/var/lib/bitcoin", "-conf=/etc/bitcoin/bitcoin.conf",
-        "getblockchaininfo")
-    output, err := cmd.CombinedOutput()
-    if err != nil {
+    if m.status == nil {
+        lines = append(lines, wDimStyle.Render("Loading..."))
+    } else if !m.status.btcResponding {
         lines = append(lines, wWarnStyle.Render("Not responding"))
     } else {
-        info := string(output)
-        blocks := extractJSON(info, "blocks")
-        headers := extractJSON(info, "headers")
-        ibd := strings.Contains(info, `"initialblockdownload": true`)
-        if ibd {
-            lines = append(lines, wLabelStyle.Render("Sync: ")+
-                wWarnStyle.Render("⟳ syncing"))
+        if m.status.btcSynced {
+            lines = append(lines,
+                wLabelStyle.Render("Sync: ")+
+                    wGoodStyle.Render("✓ synced"))
         } else {
-            lines = append(lines, wLabelStyle.Render("Sync: ")+
-                wGoodStyle.Render("✓ synced"))
+            lines = append(lines,
+                wLabelStyle.Render("Sync: ")+
+                    wWarnStyle.Render("⟳ syncing"))
         }
-        lines = append(lines, wLabelStyle.Render("Height: ")+
-            wValueStyle.Render(blocks+" / "+headers))
-
-        progress := extractJSON(info, "verificationprogress")
-        if progress != "" {
-            pct, e := strconv.ParseFloat(progress, 64)
-            if e == nil {
-                lines = append(lines, wLabelStyle.Render("Progress: ")+
-                    wValueStyle.Render(fmt.Sprintf("%.2f%%", pct*100)))
-            }
+        lines = append(lines,
+            wLabelStyle.Render("Height: ")+
+                wValueStyle.Render(m.status.btcBlocks+
+                    " / "+m.status.btcHeaders))
+        if m.status.btcProgress != "" {
+            lines = append(lines,
+                wLabelStyle.Render("Progress: ")+
+                    wValueStyle.Render(m.status.btcProgress))
         }
-        lines = append(lines, wLabelStyle.Render("Network: ")+
-            wValueStyle.Render(m.cfg.Network))
+        lines = append(lines,
+            wLabelStyle.Render("Network: ")+
+                wValueStyle.Render(m.cfg.Network))
     }
 
-    return m.getBorder(cardBitcoin, true).Width(w).Padding(0, 1).
-        Render(padLines(lines, h))
+    return m.getBorder(cardBitcoin, true).Width(w).
+        Padding(0, 1).Render(padLines(lines, h))
 }
 
 func (m Model) cardLightningView(w, h int) string {
@@ -757,7 +858,7 @@ func (m Model) cardLightningView(w, h int) string {
 // ── Lightning detail ─────────────────────────────────────
 
 func (m Model) viewLightning() string {
-    bw := wMin(m.width-4, wContentWidth)
+    bw := min(m.width-4, wContentWidth)
     var lines []string
     lines = append(lines, wLightningStyle.Render("⚡ Lightning Node Details"))
     lines = append(lines, "")
@@ -818,7 +919,7 @@ func (m Model) viewLightning() string {
             lines = append(lines, "  "+wMonoStyle.Render(m.cfg.LITPassword))
         }
     } else {
-        lines = append(lines, "  "+wDimStyle.Render("Not installed — use Additional Software tab"))
+        lines = append(lines, "  "+wDimStyle.Render("Not installed — use Add-ons tab"))
     }
 
     content := strings.Join(lines, "\n")
@@ -903,7 +1004,7 @@ func (m Model) viewPairing(bw int) string {
 // ── Zeus / Sparrow / Macaroon / QR screens ───────────────
 
 func (m Model) viewZeus() string {
-    bw := wMin(m.width-4, wContentWidth)
+    bw := min(m.width-4, wContentWidth)
     var lines []string
     lines = append(lines, wLightningStyle.Render("⚡ Zeus Wallet — LND REST over Tor"))
     lines = append(lines, "")
@@ -919,7 +1020,7 @@ func (m Model) viewZeus() string {
         lines = append(lines, "")
         mac := readMacaroonHex(m.cfg)
         if mac != "" {
-            preview := mac[:wMin(40, len(mac))] + "..."
+            preview := mac[:min(40, len(mac))] + "..."
             lines = append(lines, "  "+wLabelStyle.Render("Macaroon:"))
             lines = append(lines, "  "+wMonoStyle.Render(preview))
             lines = append(lines, "")
@@ -939,7 +1040,7 @@ func (m Model) viewZeus() string {
 }
 
 func (m Model) viewSparrow() string {
-    bw := wMin(m.width-4, wContentWidth)
+    bw := min(m.width-4, wContentWidth)
     var lines []string
     lines = append(lines, wHeaderStyle.Render("Sparrow — Bitcoin Core RPC over Tor"))
     lines = append(lines, "")
@@ -1137,7 +1238,10 @@ func runSystemUpdate() {
     fmt.Println("  Running apt update && apt upgrade...")
     fmt.Println()
 
-    exec.Command("apt-get", "update").Run()
+    updateCmd := exec.Command("apt-get", "update")
+    updateCmd.Stdout = os.Stdout
+    updateCmd.Stderr = os.Stderr
+    updateCmd.Run()
     cmd := exec.Command("apt-get", "upgrade", "-y")
     cmd.Stdout = os.Stdout
     cmd.Stderr = os.Stderr
@@ -1358,33 +1462,25 @@ func fmtKB(kb int) string {
 }
 
 func extractJSON(j, key string) string {
-    s := fmt.Sprintf(`"%s":`, key)
-    idx := strings.Index(j, s)
-    if idx == -1 {
-        s = fmt.Sprintf(`"%s" :`, key)
-        idx = strings.Index(j, s)
-        if idx == -1 {
-            return ""
+    var m map[string]interface{}
+    if err := json.Unmarshal([]byte(j), &m); err != nil {
+        return ""
+    }
+    v, ok := m[key]
+    if !ok {
+        return ""
+    }
+    switch val := v.(type) {
+    case string:
+        return val
+    case float64:
+        if val == float64(int64(val)) {
+            return fmt.Sprintf("%d", int64(val))
         }
+        return fmt.Sprintf("%f", val)
+    case bool:
+        return fmt.Sprintf("%t", val)
+    default:
+        return fmt.Sprintf("%v", val)
     }
-    rest := strings.TrimSpace(j[idx+len(s):])
-    if strings.HasPrefix(rest, `"`) {
-        end := strings.Index(rest[1:], `"`)
-        if end == -1 {
-            return ""
-        }
-        return rest[1 : end+1]
-    }
-    end := strings.IndexAny(rest, ",}\n")
-    if end == -1 {
-        return strings.TrimSpace(rest)
-    }
-    return strings.TrimSpace(rest[:end])
-}
-
-func wMin(a, b int) int {
-    if a < b {
-        return a
-    }
-    return b
 }

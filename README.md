@@ -229,6 +229,7 @@ Services (systemd, run as bitcoin user):
 - IPv6 disabled to prevent Tor bypass
 - Stream isolation (separate circuit per connection)
 - UFW firewall: SSH only (+ 9735 for hybrid P2P)
+- Fail2ban: SSH brute-force protection (5 attempts, 10-minute ban)
 - Root SSH disabled after bootstrap
 - Passwordless sudo for ripsline
 - Services run as dedicated bitcoin system user

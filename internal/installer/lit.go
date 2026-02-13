@@ -101,7 +101,9 @@ func enableRPCMiddleware() error {
     if err := os.WriteFile("/etc/lnd/lnd.conf", []byte(content), 0640); err != nil {
         return err
     }
-    exec.Command("chown", "root:"+systemUser, "/etc/lnd/lnd.conf").Run()
+    if output, err := exec.Command("chown", "root:"+systemUser, "/etc/lnd/lnd.conf").CombinedOutput(); err != nil {
+        return fmt.Errorf("chown lnd.conf: %s: %s", err, output)
+    }
     return nil
 }
 
@@ -135,7 +137,9 @@ httpslisten=127.0.0.1:8443
     if err := os.WriteFile("/etc/lit/lit.conf", []byte(content), 0640); err != nil {
         return err
     }
-    exec.Command("chown", "root:"+systemUser, "/etc/lit/lit.conf").Run()
+    if output, err := exec.Command("chown", "root:"+systemUser, "/etc/lit/lit.conf").CombinedOutput(); err != nil {
+        return fmt.Errorf("chown lit.conf: %s: %s", err, output)
+    }
     return nil
 }
 

@@ -174,3 +174,41 @@ Unattended-Upgrade::Remove-Unused-Dependencies "true";
     return os.WriteFile("/etc/apt/apt.conf.d/50unattended-upgrades",
         []byte(upgradeConf), 0644)
 }
+
+func installFail2ban() error {
+    cmd := exec.Command("apt-get", "install", "-y", "-qq", "fail2ban")
+    if output, err := cmd.CombinedOutput(); err != nil {
+        return fmt.Errorf("install fail2ban: %s: %s", err, output)
+    }
+    return nil
+}
+
+func configureFail2ban() error {
+    content := `# Virtual Private Node — Fail2ban
+#
+# Bans IPs after 5 failed SSH attempts for 10 minutes.
+# Uses systemd journal backend (default on Debian 12+).
+
+[sshd]
+enabled = true
+mode = aggressive
+port = ssh
+maxretry = 5
+findtime = 600
+bantime = 600
+`
+    if err := os.WriteFile("/etc/fail2ban/jail.local",
+        []byte(content), 0644); err != nil {
+        return err
+    }
+    for _, args := range [][]string{
+        {"systemctl", "enable", "fail2ban"},
+        {"systemctl", "restart", "fail2ban"},
+    } {
+        cmd := exec.Command(args[0], args[1:]...)
+        if output, err := cmd.CombinedOutput(); err != nil {
+            return fmt.Errorf("%v: %s: %s", args, err, output)
+        }
+    }
+    return nil
+}
