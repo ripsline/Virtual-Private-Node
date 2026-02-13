@@ -53,17 +53,7 @@ func extractAndInstallBitcoin(version string) error {
 
 func writeBitcoinConfig(cfg *installConfig) error {
     pruneMB := cfg.pruneSize * 1000
-    content := fmt.Sprintf(`# Virtual Private Node — Bitcoin Core
-server=1
-%s
-prune=%d
-dbcache=512
-maxmempool=300
-disablewallet=1
-proxy=127.0.0.1:9050
-listen=1
-listenonion=1
-`, cfg.network.Name, cfg.network.BitcoinFlag, pruneMB)
+    var content string
 
     if cfg.network.Name == "testnet4" {
         content = fmt.Sprintf(`# Virtual Private Node — Bitcoin Core

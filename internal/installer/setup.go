@@ -33,7 +33,6 @@ type installConfig struct {
     pruneSize  int
     p2pMode    string
     publicIPv4 string
-    sshPort    int
 }
 
 func NeedsInstall() bool {
@@ -133,7 +132,7 @@ func (m installModel) View() string {
     if m.width == 0 {
         return "Loading..."
     }
-    bw := minInt(m.width-4, 76)
+    bw := min(m.width-4, 76)
     title := progTitleStyle.Width(bw).Align(lipgloss.Center).
         Render(fmt.Sprintf(" Virtual Private Node v%s ", m.version))
     var lines []string
@@ -224,7 +223,7 @@ func (m infoBoxModel) View() string {
     if m.width == 0 {
         return "Loading..."
     }
-    box := setupBoxStyle.Width(minInt(m.width-8, 70)).Render(m.content)
+    box := setupBoxStyle.Width(min(m.width-8, 70)).Render(m.content)
     return lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center, box)
 }
 func showInfoBox(content string) {
@@ -261,7 +260,7 @@ func (m confirmBoxModel) View() string {
     if m.width == 0 {
         return "Loading..."
     }
-    box := setupBoxStyle.Width(minInt(m.width-8, 70)).Render(m.content)
+    box := setupBoxStyle.Width(min(m.width-8, 70)).Render(m.content)
     return lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center, box)
 }
 func showConfirmBox(content string) bool {
@@ -321,6 +320,8 @@ func buildSteps(cfg *installConfig) []installStep {
         {name: "Starting Bitcoin Core", fn: startBitcoind},
         {name: "Installing unattended-upgrades", fn: installUnattendedUpgrades},
         {name: "Configuring auto-security-updates", fn: configureUnattendedUpgrades},
+        {name: "Installing fail2ban", fn: installFail2ban},
+        {name: "Configuring fail2ban", fn: configureFail2ban},
     }
     if cfg.components == "bitcoin+lnd" {
         steps = append(steps,
@@ -584,11 +585,4 @@ export -f bitcoin-cli
     defer f.Close()
     _, err = f.WriteString(content)
     return err
-}
-
-func minInt(a, b int) int {
-    if a < b {
-        return a
-    }
-    return b
 }

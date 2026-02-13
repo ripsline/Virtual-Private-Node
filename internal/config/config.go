@@ -14,7 +14,6 @@ type AppConfig struct {
     PruneSize          int    `json:"prune_size"`
     P2PMode            string `json:"p2p_mode"`
     AutoUnlock         bool   `json:"auto_unlock"`
-    SSHPort            int    `json:"ssh_port"`
     LITInstalled       bool   `json:"lit_installed"`
     LITPassword        string `json:"lit_password,omitempty"`
     SyncthingInstalled bool   `json:"syncthing_installed"`
