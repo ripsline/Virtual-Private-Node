@@ -466,8 +466,12 @@ func (m Model) navUp() Model {
             m.dashCard = cardSystem
         }
     case tabLogs:
-        if m.logSel > 0 {
-            m.logSel--
+        avail := m.availableLogs()
+        for i, sel := range avail {
+            if sel == m.logSel && i > 0 {
+                m.logSel = avail[i-1]
+                break
+            }
         }
     }
     return m
@@ -482,15 +486,12 @@ func (m Model) navDown() Model {
             m.dashCard = cardLightning
         }
     case tabLogs:
-        mx := logSelLND
-        if m.cfg.LITInstalled {
-            mx = logSelLIT
-        }
-        if m.cfg.SyncthingInstalled {
-            mx = logSelSyncthing
-        }
-        if m.logSel < mx {
-            m.logSel++
+        avail := m.availableLogs()
+        for i, sel := range avail {
+            if sel == m.logSel && i+1 < len(avail) {
+                m.logSel = avail[i+1]
+                break
+            }
         }
     }
     return m
@@ -1150,6 +1151,20 @@ func (m Model) viewLogs(bw int) string {
     lines = append(lines, wDimStyle.Render("Enter to view • b to return"))
 
     return wOuterBox.Width(bw).Padding(1, 2).Render(padLines(lines, wBoxHeight))
+}
+
+func (m Model) availableLogs() []logSelection {
+    avail := []logSelection{logSelTor, logSelBitcoin}
+    if m.cfg.HasLND() {
+        avail = append(avail, logSelLND)
+    }
+    if m.cfg.LITInstalled {
+        avail = append(avail, logSelLIT)
+    }
+    if m.cfg.SyncthingInstalled {
+        avail = append(avail, logSelSyncthing)
+    }
+    return avail
 }
 
 // ── Software tab ─────────────────────────────────────────
