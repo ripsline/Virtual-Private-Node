@@ -80,14 +80,14 @@ WantedBy=multi-user.target
 }
 
 func configureSyncthingAuth(password string) error {
-    // Ensure config directory is writable
-    exec.Command("chown", systemUser+":"+systemUser, "/etc/syncthing").Run()
+    exec.Command("chown", systemUser+":"+systemUser,
+        "/etc/syncthing").Run()
 
-    // Generate default config
     cmd := exec.Command("sudo", "-u", systemUser, "syncthing",
         "generate", "--home=/etc/syncthing")
     if output, err := cmd.CombinedOutput(); err != nil {
-        return fmt.Errorf("syncthing generate: %s: %s", err, output)
+        return fmt.Errorf("syncthing generate: %s: %s",
+            err, output)
     }
 
     configPath := "/etc/syncthing/config.xml"
@@ -97,31 +97,39 @@ func configureSyncthingAuth(password string) error {
     }
 
     content := string(data)
+
+    // Bind to localhost only
     content = strings.Replace(content,
         "<address>0.0.0.0:8384</address>",
         "<address>127.0.0.1:8384</address>", 1)
-    // Allow access via Tor onion address (skip host header check)
+
+    // Allow access via Tor onion address
     content = strings.Replace(content,
         "<insecureSkipHostcheck>false</insecureSkipHostcheck>",
         "<insecureSkipHostcheck>true</insecureSkipHostcheck>", 1)
-    content = strings.Replace(content,
-        "<user></user>",
-        "<user>admin</user>", 1)
-    if strings.Contains(content, "<password></password>") {
-        content = strings.Replace(content,
-            "<password></password>",
-            fmt.Sprintf("<password>%s</password>", password), 1)
-    }
 
-    if err := os.WriteFile(configPath, []byte(content), 0640); err != nil {
+    // Inject user and password into the <gui> block.
+    // The generated config has no user/password tags,
+    // so we insert them after <address>.
+    addrTag := "<address>127.0.0.1:8384</address>"
+    injection := fmt.Sprintf(
+        "%s\n        <user>admin</user>\n"+
+            "        <password>%s</password>",
+        addrTag, password)
+    content = strings.Replace(content, addrTag, injection, 1)
+
+    if err := os.WriteFile(configPath,
+        []byte(content), 0640); err != nil {
         return err
     }
-    if output, err := exec.Command("chown", systemUser+":"+systemUser,
+    if output, err := exec.Command("chown",
+        systemUser+":"+systemUser,
         configPath).CombinedOutput(); err != nil {
-        return fmt.Errorf("chown syncthing config: %s: %s", err, output)
+        return fmt.Errorf("chown syncthing config: %s: %s",
+            err, output)
     }
 
-    // Verify the config was written correctly
+    // Verify
     verify, err := os.ReadFile(configPath)
     if err != nil {
         return fmt.Errorf("verify syncthing config: %w", err)
@@ -131,15 +139,17 @@ func configureSyncthingAuth(password string) error {
         contains string
         desc     string
     }{
-        {"<address>127.0.0.1:8384</address>", "GUI bind address"},
+        {"<address>127.0.0.1:8384</address>",
+            "GUI bind address"},
         {"<user>admin</user>", "GUI username"},
-        {fmt.Sprintf("<password>%s</password>", password), "GUI password"},
+        {fmt.Sprintf("<password>%s</password>", password),
+            "GUI password"},
     }
     for _, c := range checks {
         if !strings.Contains(verifyStr, c.contains) {
             return fmt.Errorf(
-                "syncthing config verification failed: %s not set",
-                c.desc)
+                "syncthing config verification failed: "+
+                    "%s not set", c.desc)
         }
     }
 
