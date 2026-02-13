@@ -103,18 +103,16 @@ func configureSyncthingAuth(password string) error {
         "<address>0.0.0.0:8384</address>",
         "<address>127.0.0.1:8384</address>", 1)
 
-    // Allow access via Tor onion address
-    content = strings.Replace(content,
-        "<insecureSkipHostcheck>false</insecureSkipHostcheck>",
-        "<insecureSkipHostcheck>true</insecureSkipHostcheck>", 1)
-
-    // Inject user and password into the <gui> block.
-    // The generated config has no user/password tags,
-    // so we insert them after <address>.
+    // Inject user, password, and insecureSkipHostcheck
+    // into the <gui> block after <address>.
+    // The generated config may not have these tags,
+    // so we inject them rather than replacing.
     addrTag := "<address>127.0.0.1:8384</address>"
     injection := fmt.Sprintf(
         "%s\n        <user>admin</user>\n"+
-            "        <password>%s</password>",
+            "        <password>%s</password>\n"+
+            "        <insecureSkipHostcheck>true"+
+            "</insecureSkipHostcheck>",
         addrTag, password)
     content = strings.Replace(content, addrTag, injection, 1)
 
@@ -144,6 +142,8 @@ func configureSyncthingAuth(password string) error {
         {"<user>admin</user>", "GUI username"},
         {fmt.Sprintf("<password>%s</password>", password),
             "GUI password"},
+        {"<insecureSkipHostcheck>true</insecureSkipHostcheck>",
+            "host check skip for Tor"},
     }
     for _, c := range checks {
         if !strings.Contains(verifyStr, c.contains) {
