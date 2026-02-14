@@ -1253,28 +1253,14 @@ func (m Model) viewSoftware(bw int) string {
     litLines = append(litLines,
         wDimStyle.Render("liquidity management."))
     litLines = append(litLines, "")
-    litLines = append(litLines,
-        wLabelStyle.Render("Version: ")+
-            wValueStyle.Render("v"+installer.LitVersionStr()))
-    litLines = append(litLines, "")
-
     if m.cfg.LITInstalled {
         litLines = append(litLines,
             wGreenDotStyle.Render("●")+" "+
                 wGoodStyle.Render("Installed"))
+        litLines = append(litLines,
+            wLabelStyle.Render("Version: ")+
+                wValueStyle.Render("v"+installer.LitVersionStr()))
         litLines = append(litLines, "")
-
-        litOnion := readOnion("/var/lib/tor/lnd-lit/hostname")
-        if litOnion != "" {
-            litLines = append(litLines,
-                wLabelStyle.Render("Address:"))
-            litLines = append(litLines,
-                "  "+wMonoStyle.Render(litOnion))
-            litLines = append(litLines,
-                wLabelStyle.Render("Port: ")+
-                    wMonoStyle.Render("8443"))
-            litLines = append(litLines, "")
-        }
         if m.cfg.LITPassword != "" {
             litLines = append(litLines,
                 wLabelStyle.Render("Password:"))
@@ -1285,7 +1271,13 @@ func (m Model) viewSoftware(bw int) string {
         litLines = append(litLines,
             wDimStyle.Render("Open in Tor Browser."))
         litLines = append(litLines,
-            wDimStyle.Render("Accept the security warning."))
+            wDimStyle.Render("Your browser will show a"))
+        litLines = append(litLines,
+            wDimStyle.Render("security warning. Click"))
+        litLines = append(litLines,
+            wDimStyle.Render("Advanced → Accept Risk."))
+        litLines = append(litLines,
+            wDimStyle.Render("Connection is encrypted by Tor."))
         litLines = append(litLines, "")
         litLines = append(litLines,
             wActionStyle.Render("Select for full URL ▸"))
