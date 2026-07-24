@@ -221,8 +221,18 @@ func configureSyncthingAuth(password string) error {
 // schema assumption broke; refusing to start converts a silent
 // leak into a loud install failure.
 func verifySyncthingConfig() error {
-	// (a) binary version
+	// (a) binary version. Probed through runuser as the service
+	//     user, exactly like `generate` above: not for privilege
+	//     but for environment. Syncthing v2 panics during
+	//     package init when $HOME is undefined
+	//     (lib/locations.userHomeDir), exiting 2 before any
+	//     argument is parsed, and the root helper that runs this
+	//     step is a socket-activated systemd service, which sets
+	//     no $HOME. runuser sets $HOME from the passwd entry, so
+	//     the probe works in any environment that can run the
+	//     daemon itself.
 	verOut, err := system.RunContext(10*time.Second,
+		"runuser", "-u", systemUser, "--",
 		"/usr/local/bin/syncthing", "--version")
 	if err != nil {
 		return fmt.Errorf("syncthing --version: %w", err)
