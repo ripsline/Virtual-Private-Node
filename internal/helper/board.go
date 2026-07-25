@@ -16,7 +16,7 @@ import (
 
 // ── The staging board ────────────────────────────────────
 //
-// /etc/vpn/state holds one file per privileged FACT the TUI
+// /var/lib/vpn/state holds one file per privileged FACT the TUI
 // needs to display or use: onion hostnames, the staged bitcoind
 // RPC password, copies of LND's TLS certificate and admin
 // macaroon, Syncthing's API key and device ID, and the observed

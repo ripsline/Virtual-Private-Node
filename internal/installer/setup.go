@@ -307,7 +307,15 @@ func RunInstall(opts InstallOptions) error {
 	}
 
 	if opts.Unattended {
-		printConnectInstructions()
+		// The console-only end state (reachable only with
+		// --allow-console-only) has no working ssh line to
+		// print — say what IS true instead. Same condition the
+		// strand guard evaluated, minus the consent flag.
+		if strandsBox(len(dec.Keys), dec.Obs.PasswordAuth, false) {
+			printConsoleOnlyInstructions()
+		} else {
+			printConnectInstructions()
+		}
 		return nil
 	}
 	// The done screen offered a real choice (live-run fix):

@@ -10,10 +10,10 @@
 //   - the client the TUI uses to request privileged operations
 //     over the helper's unix socket (client.go);
 //   - the staging-board reader and writer: the root-written
-//     files under /etc/vpn/state that carry privileged facts
-//     (onion hostnames, staged credentials) to the admin user
-//     without any privileged code running on the read path
-//     (board.go).
+//     files under /var/lib/vpn/state that carry privileged
+//     facts (onion hostnames, staged credentials) to the
+//     admin user without any privileged code running on the
+//     read path (board.go).
 //
 // The package deliberately does NOT import the installer: the
 // installer imports this package to write board files, and the
@@ -61,9 +61,13 @@ type Request struct {
 // Event is one response line from the helper. Two kinds:
 //
 //   - "step": progress from a streaming verb. Index is the
-//     0-based position in the verb's fixed step list; Err is
-//     non-empty if that step failed (a failed step is always
-//     followed by an error terminator).
+//     0-based position in the verb's fixed step list. The
+//     helper emits a step event on COMPLETION only — a step
+//     that fails produces no step event; the failure arrives
+//     as the error terminator. Err is reserved wire surface
+//     for a per-step error report: the helper never sets it
+//     today, and clients treat a non-empty Err as fatal if
+//     one ever appears.
 //   - "end": the terminator. Exactly one per connection. OK
 //     with an optional Result payload, or an Error message.
 type Event struct {

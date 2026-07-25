@@ -31,7 +31,8 @@ import (
 //
 // Button row is dynamic based on which URI types LND
 // advertises:
-//   - 0 URIs:     (no buttons) + warning text
+//   - 0 URIs:     (no buttons) + status text (sync-aware:
+//     expected during chain sync, a warning once synced)
 //   - clearnet:   [ Show QR (Clearnet) ] [ Copy URIs ]
 //   - tor:        [ Show QR (Tor) ] [ Copy URIs ]
 //   - both:       [ Show QR (Clearnet) ] [ Show QR (Tor) ] [ Copy URIs ]
@@ -338,13 +339,26 @@ func (s *NodeInfoScreen) View(w, h int) string {
 	// view where the terminal can display them
 	// cleanly and the user can select with native
 	// mouse selection. Here we either explain how to
-	// access them or warn that none are advertised.
+	// access them or explain why none are advertised.
+	// Sync-aware: LND advertises URIs only once its
+	// chain backend is synced, so during initial
+	// block download an empty list is the expected
+	// state, not a misconfiguration — the warning is
+	// reserved for a synced node.
 	if len(status.lndURIs) == 0 {
-		p.warn(
-			"No URIs advertised by LND — configure")
-		p.warn(
-			"listen addresses to make your node")
-		p.warn("reachable.")
+		if !status.lndSyncedChain {
+			p.dim(
+				"No URIs advertised yet — LND starts")
+			p.dim(
+				"advertising addresses once the chain")
+			p.dim("finishes syncing.")
+		} else {
+			p.warn(
+				"No URIs advertised by LND — configure")
+			p.warn(
+				"listen addresses to make your node")
+			p.warn("reachable.")
+		}
 	} else {
 		p.dim(
 			"Press Copy URIs to view your node URIs")

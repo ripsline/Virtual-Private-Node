@@ -263,8 +263,8 @@ func torWrapper() string {
 // os.IsNotExist in the error for callers that treat a missing
 // file as empty. Like every wrapper above, it requires the
 // process to already be root: the unprivileged read path for
-// privileged facts is the staging board (/etc/vpn/state), not a
-// privileged copy staged on demand.
+// privileged facts is the staging board (/var/lib/vpn/state),
+// not a privileged copy staged on demand.
 func SudoReadFile(path string) ([]byte, error) {
 	if os.Geteuid() == 0 {
 		return os.ReadFile(path)

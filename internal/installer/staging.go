@@ -3,7 +3,7 @@
 package installer
 
 // Staging-board writers. Each function refreshes ONE fact under
-// /etc/vpn/state from current reality, running as root (the
+// /var/lib/vpn/state from current reality, running as root (the
 // installer during `vpn install`, the helper afterwards). The
 // helper's freshness matrix (internal/helperd/matrix.go) maps
 // operations to the facts they invalidate and calls these; the
