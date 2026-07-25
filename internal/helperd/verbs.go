@@ -119,6 +119,21 @@ func verbServiceAction(_ *verbCtx, params json.RawMessage) (any, error) {
 					"-u %s", p.Unit, p.Action, p.Unit)
 		}
 	}
+	// LND rewrites its TLS certificate during startup when its
+	// parameters changed or the certificate nears expiry
+	// (tlsautorefresh in lnd.conf), so a start or restart of
+	// the lnd unit can invalidate the staged certificate copy
+	// the console reads. Re-stage it so the board keeps
+	// matching the certificate LND actually serves. The
+	// freshness matrix carries this as service-action's entry;
+	// the unit condition lives here because whether the
+	// invalidation happened depends on a verb parameter, which
+	// the verb-keyed table cannot express alone.
+	if p.Unit == "lnd" && p.Action != "stop" {
+		if err := restage(helper.VerbServiceAction); err != nil {
+			return nil, err
+		}
+	}
 	return nil, nil
 }
 

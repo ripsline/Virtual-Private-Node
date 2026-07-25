@@ -191,8 +191,19 @@ healthcheck.diskspace.interval=12h
 	return system.SudoRun("chown", "root:"+systemUser, paths.LNDConf)
 }
 
-func writeLNDServiceInitial(username string) error {
-	content := fmt.Sprintf(`[Unit]
+// lndServiceUnit renders the LND systemd unit. withUnlock adds
+// LND's --wallet-unlock-password-file flag, pointing at the
+// root-staged password file, so the wallet unlocks without an
+// operator on every service start. Everything else about the
+// two variants is identical by construction — they come from
+// this one template. Pure — unit-tested.
+func lndServiceUnit(username string, withUnlock bool) string {
+	unlockFlag := ""
+	if withUnlock {
+		unlockFlag = " --wallet-unlock-password-file=" +
+			paths.LNDWalletPassword
+	}
+	return fmt.Sprintf(`[Unit]
 Description=LND Lightning Network Daemon
 After=bitcoind.service tor.service
 Wants=bitcoind.service
@@ -201,7 +212,7 @@ Wants=bitcoind.service
 Type=simple
 User=%s
 Group=%s
-ExecStart=/usr/local/bin/lnd --configfile=/etc/lnd/lnd.conf
+ExecStart=/usr/local/bin/lnd --configfile=/etc/lnd/lnd.conf%s
 Restart=on-failure
 RestartSec=30
 TimeoutStopSec=300
@@ -211,10 +222,50 @@ NoNewPrivileges=true
 
 [Install]
 WantedBy=multi-user.target
-`, username, username)
-	return system.SudoWriteFile(paths.LNDService, []byte(content), 0644)
+`, username, username, unlockFlag)
 }
 
+// writeLNDService writes the LND unit in the requested variant.
+func writeLNDService(username string, withUnlock bool) error {
+	return system.SudoWriteFile(paths.LNDService,
+		[]byte(lndServiceUnit(username, withUnlock)), 0644)
+}
+
+// writeLNDServiceFromConfig writes the LND unit that matches the
+// node's RECORDED state: the unlock variant when the config says
+// auto-unlock is enabled AND the wallet password file is actually
+// present, the plain variant otherwise. An install pass does not
+// only run on fresh boxes — on a reinstall or a migration the
+// auto_unlock answer and the password file both carry over, and
+// unconditionally writing the plain unit there disarmed
+// auto-unlock at the next service restart while the config still
+// claimed it enabled. Requiring the file too is deliberate: a
+// unit pointing at a missing password file would keep LND from
+// starting at all.
+func writeLNDServiceFromConfig(cfg *config.AppConfig, username string) error {
+	withUnlock := cfg.AutoUnlock && walletPasswordFileExists()
+	if cfg.AutoUnlock && !withUnlock {
+		logger.Install(
+			"auto_unlock is enabled in the config but %s is "+
+				"missing — writing the LND unit without the unlock "+
+				"flag; re-enable auto-unlock from the node console",
+			paths.LNDWalletPassword)
+	}
+	return writeLNDService(username, withUnlock)
+}
+
+func walletPasswordFileExists() bool {
+	_, err := os.Stat(paths.LNDWalletPassword)
+	return err == nil
+}
+
+// startLND enables and starts LND. `systemctl restart` rather
+// than `start`, deliberately: start is a no-op on a service that
+// is already running, and an install pass can run on a box where
+// LND already runs under a PREVIOUS unit and config (reinstall,
+// migration). Restart makes the unit and config this run just
+// wrote the ones actually in effect; on a fresh box the two
+// commands are equivalent.
 func startLND() error {
 	if err := system.SudoRun("systemctl", "daemon-reload"); err != nil {
 		return err
@@ -222,7 +273,7 @@ func startLND() error {
 	if err := system.SudoRun("systemctl", "enable", "lnd"); err != nil {
 		return err
 	}
-	return system.SudoRun("systemctl", "start", "lnd")
+	return system.SudoRun("systemctl", "restart", "lnd")
 }
 
 func setupAutoUnlock(password string) error {
@@ -257,28 +308,7 @@ func setupAutoUnlock(password string) error {
 		return fmt.Errorf("move wallet password: %w", err)
 	}
 
-	content := fmt.Sprintf(`[Unit]
-Description=LND Lightning Network Daemon
-After=bitcoind.service tor.service
-Wants=bitcoind.service
-
-[Service]
-Type=simple
-User=%s
-Group=%s
-ExecStart=/usr/local/bin/lnd --configfile=/etc/lnd/lnd.conf --wallet-unlock-password-file=/var/lib/lnd/wallet_password
-Restart=on-failure
-RestartSec=30
-TimeoutStopSec=300
-PrivateTmp=true
-ProtectSystem=full
-NoNewPrivileges=true
-
-[Install]
-WantedBy=multi-user.target
-`, systemUser, systemUser)
-
-	if err := system.SudoWriteFile(paths.LNDService, []byte(content), 0644); err != nil {
+	if err := writeLNDService(systemUser, true); err != nil {
 		return err
 	}
 	if err := system.SudoRun("systemctl", "daemon-reload"); err != nil {
@@ -301,7 +331,7 @@ WantedBy=multi-user.target
 // disagreed. With removal last, any failure leaves the file in
 // place and the operation honestly failed; a retry converges.
 func disableAutoUnlock() error {
-	if err := writeLNDServiceInitial(systemUser); err != nil {
+	if err := writeLNDService(systemUser, false); err != nil {
 		return fmt.Errorf("rewrite service: %w", err)
 	}
 	if err := system.SudoRun(

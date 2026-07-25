@@ -3,6 +3,7 @@
 package lndrpc
 
 import (
+	"fmt"
 	"testing"
 )
 
@@ -81,4 +82,43 @@ func TestNilClientSafety(t *testing.T) {
 	if _, err := c.OpenChannel("a", 100000, false, false, nil, false, 0); err == nil {
 		t.Error("should error")
 	}
+}
+
+// The staged-certificate self-heal keys off this classifier: a
+// TLS verification failure means the board copy may be stale; a
+// down service or a locked wallet must not trigger a re-stage.
+func TestIsCertificateError(t *testing.T) {
+	certErrs := []string{
+		"rpc error: code = Unavailable desc = connection error: " +
+			"desc = \"transport: authentication handshake failed: " +
+			"tls: failed to verify certificate: x509: " +
+			"certificate signed by unknown authority\"",
+		"x509: certificate is valid for 127.0.0.1, not ::1",
+		"tls: bad certificate",
+	}
+	for _, msg := range certErrs {
+		if !isCertificateError(errFromString(msg)) {
+			t.Errorf("not classified as certificate error: %q", msg)
+		}
+	}
+	otherErrs := []string{
+		"rpc error: code = Unavailable desc = connection refused",
+		"rpc error: code = Unimplemented desc = unknown service " +
+			"lnrpc.Lightning",
+		"wallet locked, unlock it to enable full RPC access",
+		"context deadline exceeded",
+	}
+	for _, msg := range otherErrs {
+		if isCertificateError(errFromString(msg)) {
+			t.Errorf("wrongly classified as certificate error: %q",
+				msg)
+		}
+	}
+	if isCertificateError(nil) {
+		t.Error("nil classified as certificate error")
+	}
+}
+
+func errFromString(msg string) error {
+	return fmt.Errorf("%s", msg)
 }

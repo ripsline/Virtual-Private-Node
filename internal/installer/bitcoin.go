@@ -153,6 +153,13 @@ WantedBy=multi-user.target
 	return system.SudoWriteFile(paths.BitcoindService, []byte(content), 0644)
 }
 
+// startBitcoind enables and starts Bitcoin Core. `systemctl
+// restart` rather than `start`, deliberately: start is a no-op
+// on a service that is already running, and an install pass can
+// run on a box where bitcoind already runs under a PREVIOUS
+// unit and config (reinstall, migration). Restart makes the
+// unit and config this run just wrote the ones actually in
+// effect; on a fresh box the two commands are equivalent.
 func startBitcoind() error {
 	if err := system.SudoRun("systemctl", "daemon-reload"); err != nil {
 		return err
@@ -160,5 +167,5 @@ func startBitcoind() error {
 	if err := system.SudoRun("systemctl", "enable", "bitcoind"); err != nil {
 		return err
 	}
-	return system.SudoRun("systemctl", "start", "bitcoind")
+	return system.SudoRun("systemctl", "restart", "bitcoind")
 }

@@ -21,9 +21,12 @@ import (
 // documentation that can drift from it.
 //
 // Reading the matrix: a verb not listed here invalidates no
-// staged fact (a service restart changes no credential; a
-// package upgrade changes no onion address). The unit tests in
-// matrix_test.go walk every cell: every listed fact has a
+// staged fact (a package upgrade changes no onion address). One
+// entry is conditional: service-action invalidates the staged
+// LND TLS certificate only when the unit acted on is lnd — the
+// handler applies the entry under that condition, because the
+// verb-keyed table cannot see verb parameters. The unit tests
+// in matrix_test.go walk every cell: every listed fact has a
 // stager, every stager is reachable from a verb or the
 // installer's staging step, and the sets match this table
 // exactly.
@@ -97,6 +100,15 @@ var freshnessMatrix = map[string][]string{
 	// state; the staged observation must follow it.
 	helper.VerbRebuildSSHConfig: {
 		paths.StateSSHPasswordAuth,
+	},
+	// An lnd start or restart can regenerate the TLS
+	// certificate (tlsautorefresh detects parameter changes and
+	// approaching expiry at startup), so the staged copy must
+	// follow. CONDITIONAL: the handler applies this entry only
+	// when the unit acted on is lnd and the action is not stop
+	// — no other unit changes a staged fact.
+	helper.VerbServiceAction: {
+		paths.StateLNDTLSCert,
 	},
 }
 

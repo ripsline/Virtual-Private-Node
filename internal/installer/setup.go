@@ -628,7 +628,7 @@ func buildInstallSteps(
 				if err := writeLNDConfig(cfg, ""); err != nil {
 					return err
 				}
-				return writeLNDServiceInitial(systemUser)
+				return writeLNDServiceFromConfig(cfg, systemUser)
 			}},
 		{Key: "tor.lnd", Name: "Configuring Tor for LND",
 			Fn: func() error {

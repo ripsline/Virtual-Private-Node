@@ -43,6 +43,12 @@ var expectedMatrix = map[string][]string{
 	helper.VerbRebuildSSHConfig: {
 		paths.StateSSHPasswordAuth,
 	},
+	// Applied by the handler only for the lnd unit (start or
+	// restart): LND can regenerate its TLS certificate during
+	// startup, so the staged copy must follow.
+	helper.VerbServiceAction: {
+		paths.StateLNDTLSCert,
+	},
 }
 
 func TestFreshnessMatrixMatchesRuledTable(t *testing.T) {
