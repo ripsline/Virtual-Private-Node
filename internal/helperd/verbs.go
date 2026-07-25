@@ -25,12 +25,15 @@ import (
 // matrix in matrix.go drives that last part — handlers call
 // restage(verb) rather than remembering individual files).
 //
-// Deadlines bound how long one verb may hold the serialized
-// queue. They are sized to the operation's legitimate worst
-// case — bitcoind alone is allowed 10 minutes to stop, a
-// package upgrade can take most of half an hour over Tor — so
-// a wedged operation fails loudly instead of blocking an
-// urgent service restart forever.
+// Deadlines bound the connection's socket I/O for one verb.
+// They are sized to the operation's legitimate worst case —
+// bitcoind alone is allowed 10 minutes to stop, a package
+// upgrade can take most of half an hour over Tor. A deadline
+// alone cannot cut short a wedged SUBPROCESS (nothing does
+// socket I/O while one runs); the bounds there live with the
+// subprocesses themselves — download timeouts and retry caps
+// (system.doDownload), apt's Acquire timeout configuration,
+// and systemd's per-unit stop timeouts.
 
 type verbDef struct {
 	deadline time.Duration

@@ -274,11 +274,16 @@ func (s *server) handleConn(c *net.UnixConn) (exitAfter bool) {
 		return false
 	}
 
-	// One absolute deadline bounds the verb's execution and
-	// every response write: a wedged operation cannot hold the
-	// serialized queue past its budget. Deadlines are per verb
-	// (a package upgrade legitimately needs half an hour; a
-	// password change does not).
+	// One absolute deadline bounds this connection's SOCKET
+	// I/O — every remaining read and every response write. It
+	// does NOT reach into the verb's subprocesses: nothing is
+	// waiting on the socket while a privileged command runs, so
+	// a wedged subprocess is bounded by its own limits — the
+	// download timeouts and retry caps in system.doDownload,
+	// apt's Acquire timeout configuration, systemd's per-unit
+	// stop timeouts — not by this deadline. Deadlines are per
+	// verb (a package upgrade legitimately needs half an hour;
+	// a password change does not).
 	if err := c.SetDeadline(time.Now().Add(def.deadline)); err != nil {
 		auditErr(req.Verb, `{"event":"error","detail":"arm verb deadline: %v"}`, err)
 		return false

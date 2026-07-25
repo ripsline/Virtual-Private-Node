@@ -192,7 +192,9 @@ func Download(url, dest string) error {
 }
 
 // DownloadRequireTor fetches a URL and fails if torsocks is not available.
-// Retries up to 3 times to handle intermittent Tor DNS resolution failures.
+// Retries up to 3 times to handle intermittent Tor DNS resolution failures
+// (each attempt carries its own tool-level bounds too — see doDownload —
+// so the total is bounded either way).
 func DownloadRequireTor(url, dest string) error {
 	var lastErr error
 	for attempt := 0; attempt < 3; attempt++ {
@@ -207,21 +209,46 @@ func DownloadRequireTor(url, dest string) error {
 	return lastErr
 }
 
+// doDownload runs one fetch with explicit time and retry bounds.
+// The bounds exist for the helper's sake: verb-reachable
+// downloads (self-update, the Syncthing install) run
+// synchronously inside the serialized root helper, and the
+// helper's per-operation deadline bounds only its socket I/O —
+// a subprocess must bound itself. Left at their defaults the
+// tools do not: wget retries up to 20 times with a 900 second
+// read timeout, and curl has no overall cap at all once
+// connected.
+//
+//   - wget: --timeout applies per phase (DNS, connect, read),
+//     so a black-holed transfer dies within a minute instead of
+//     hanging; --tries bounds attempts while still absorbing
+//     transient failures — a single Tor exit-side resolution
+//     failure is common enough that a single-shot fetch
+//     abandons runs a retry would have saved.
+//   - curl (fallback): --connect-timeout bounds setup and
+//     --max-time caps the whole transfer, sized generously for
+//     a large release download over a slow Tor circuit.
 func doDownload(url, dest string, requireTor bool) error {
 	wrapper := torWrapper()
 	if requireTor && wrapper == "" {
 		return fmt.Errorf("torsocks not available — cannot download over Tor")
 	}
 	if _, err := exec.LookPath("wget"); err == nil {
+		wgetArgs := []string{"--timeout=60", "--tries=3",
+			"-q", "-O", dest, url}
 		if wrapper != "" {
-			return Run(wrapper, "wget", "-q", "-O", dest, url)
+			return Run(wrapper, append([]string{"wget"},
+				wgetArgs...)...)
 		}
-		return Run("wget", "-q", "-O", dest, url)
+		return Run("wget", wgetArgs...)
 	}
+	curlArgs := []string{"-sL", "--connect-timeout", "60",
+		"--max-time", "1800", "-o", dest, url}
 	if wrapper != "" {
-		return Run(wrapper, "curl", "-sL", "-o", dest, url)
+		return Run(wrapper, append([]string{"curl"},
+			curlArgs...)...)
 	}
-	return Run("curl", "-sL", "-o", dest, url)
+	return Run("curl", curlArgs...)
 }
 
 // torWrapper returns "torsocks" if available, empty string otherwise.
