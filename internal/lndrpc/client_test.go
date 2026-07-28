@@ -3,8 +3,8 @@
 package lndrpc
 
 import (
-	"fmt"
 	"testing"
+	"time"
 )
 
 func TestNodeInfoFields(t *testing.T) {
@@ -84,50 +84,89 @@ func TestNilClientSafety(t *testing.T) {
 	}
 }
 
-// The staged-certificate self-heal keys off this classifier: a
-// TLS verification failure means the board copy may be stale; a
-// down service or a locked wallet must not trigger a re-stage.
-func TestIsCertificateError(t *testing.T) {
-	certErrs := []string{
+// The RPC error classifier routes failures: transport loss
+// reconnects, credential rejection reconnects under the
+// re-stage limiter's damping (both land at the dial-time
+// repair, which re-stages the LND credentials when they were
+// the problem); in-progress states and application answers
+// over a working connection do neither. The dial-time repair
+// itself deliberately has NO classifier — it keys on the
+// absence of a successful test call, because enumerating
+// heal-worthy failure texts is a whitelist and a whitelist
+// misses.
+func TestClassifyRPCError(t *testing.T) {
+	transport := []string{
+		"rpc error: code = Unavailable desc = connection refused",
+		// A TLS verification failure against a stale staged
+		// certificate surfaces with code Unavailable — the
+		// reconnect routes it to the dial-time repair.
 		"rpc error: code = Unavailable desc = connection error: " +
 			"desc = \"transport: authentication handshake failed: " +
 			"tls: failed to verify certificate: x509: " +
 			"certificate signed by unknown authority\"",
-		"x509: certificate is valid for 127.0.0.1, not ::1",
-		"tls: bad certificate",
-	}
-	for _, msg := range certErrs {
-		if !isCertificateError(errFromString(msg)) {
-			t.Errorf("not classified as certificate error: %q", msg)
-		}
-	}
-	otherErrs := []string{
-		"rpc error: code = Unavailable desc = connection refused",
-		// Observed in production when the client dialed LND by
-		// the name localhost on a box with IPv6 disabled: the
-		// name resolved to ::1 and the kernel refused the
-		// address. An address-family failure, not a stale
-		// certificate — a re-stage must never fire on it.
+		// Observed in production when an old build dialed LND by
+		// the name localhost on a box with IPv6 disabled. The
+		// client now dials by literal address so this shape
+		// should not recur, but if an address-family failure
+		// ever does, reconnecting is the right response to it.
 		"rpc error: code = Unavailable desc = connection error: " +
 			"desc = \"transport: Error while dialing: dial tcp " +
 			"[::1]:10009: connect: cannot assign requested " +
 			"address\"",
-		"rpc error: code = Unimplemented desc = unknown service " +
-			"lnrpc.Lightning",
-		"wallet locked, unlock it to enable full RPC access",
-		"context deadline exceeded",
 	}
-	for _, msg := range otherErrs {
-		if isCertificateError(errFromString(msg)) {
-			t.Errorf("wrongly classified as certificate error: %q",
-				msg)
+	for _, msg := range transport {
+		if classifyRPCError(msg) != rpcErrTransport {
+			t.Errorf("not classified transport: %q", msg)
 		}
 	}
-	if isCertificateError(nil) {
-		t.Error("nil classified as certificate error")
+	credential := []string{
+		// A stale staged macaroon fails closed HERE. This class
+		// was treated as terminal before, which made macaroon
+		// staleness permanent for the process's lifetime.
+		"rpc error: code = Unauthenticated desc = verification " +
+			"failed: signature mismatch after caveat verification",
+		"rpc error: code = PermissionDenied desc = permission " +
+			"denied",
+	}
+	for _, msg := range credential {
+		if classifyRPCError(msg) != rpcErrCredential {
+			t.Errorf("not classified credential: %q", msg)
+		}
+	}
+	other := []string{
+		// In-progress states: reconnecting cannot help and
+		// would churn the connection.
+		"context deadline exceeded",
+		"rpc error: code = DeadlineExceeded desc = deadline",
+		"the RPC server is still starting up",
+		"chain notifier RPC is still syncing, not yet ready",
+		// Application answers over a working connection.
+		"rpc error: code = InvalidArgument desc = invalid " +
+			"payment request",
+		"insufficient funds available to construct transaction",
+	}
+	for _, msg := range other {
+		if classifyRPCError(msg) != rpcErrOther {
+			t.Errorf("wrongly classified: %q", msg)
+		}
 	}
 }
 
-func errFromString(msg string) error {
-	return fmt.Errorf("%s", msg)
+// The re-stage limiter is process-wide and bounds the heal to
+// one request per interval — with the heal keyed on any failed
+// test call, this is what keeps a long outage cheap.
+func TestRestageDue(t *testing.T) {
+	now := time.Unix(1_800_000_000, 0)
+	if !restageDue(time.Time{}, now) {
+		t.Error("first request should be due")
+	}
+	if restageDue(now.Add(-credRestageInterval+time.Second), now) {
+		t.Error("due inside the interval")
+	}
+	if !restageDue(now.Add(-credRestageInterval), now) {
+		t.Error("not due at exactly the interval")
+	}
+	if !restageDue(now.Add(-time.Hour), now) {
+		t.Error("not due long after the interval")
+	}
 }

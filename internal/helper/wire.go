@@ -44,6 +44,16 @@ const (
 	VerbRebuildSSHConfig     = "rebuild-ssh-config"
 	VerbRebuildTorConfig     = "rebuild-tor-config"
 
+	// Read-only verbs: no parameters, no mutation, a typed
+	// result. They exist for display facts the TUI needs
+	// at human cadence (screen entry) whose truth lives in
+	// root-readable places and can change outside any
+	// operation of ours — keeping a copy of such a fact
+	// would risk rendering it confidently wrong, so no copy
+	// exists and the screens ask here instead.
+	VerbReadNodeAddresses = "read-node-addresses"
+	VerbReadSSHAuth       = "read-ssh-auth"
+
 	// Streaming verbs: step progress events precede the
 	// terminator, and feed the TUI's step renderer.
 	VerbPackageUpdate    = "package-update"
@@ -165,6 +175,30 @@ type SelfUpdateParams struct {
 // for the operator's config.
 type SyncthingInstallResult struct {
 	Password string `json:"password"`
+}
+
+// NodeAddressesResult is the read-node-addresses answer: the
+// node's Tor hidden-service hostnames and its Syncthing device
+// ID, read from their sources at the moment of the request. An
+// empty field means that service is not configured on this box
+// (its hostname file does not exist) — the screen renders the
+// feature unavailable rather than showing an address nobody
+// can reach.
+type NodeAddressesResult struct {
+	BitcoinP2POnion   string `json:"bitcoin_p2p_onion"`
+	LNDGRPCOnion      string `json:"lnd_grpc_onion"`
+	LNDRESTOnion      string `json:"lnd_rest_onion"`
+	SyncthingOnion    string `json:"syncthing_onion"`
+	SyncthingDeviceID string `json:"syncthing_device_id"`
+}
+
+// SSHAuthResult is the read-ssh-auth answer: whether sshd's
+// EFFECTIVE configuration permits password authentication for
+// the admin user, asked of sshd itself at request time. This
+// answer gates removing the last SSH key, so callers treat a
+// verb error as "unavailable" and refuse the risky action.
+type SSHAuthResult struct {
+	PasswordAuthEnabled bool `json:"password_auth_enabled"`
 }
 
 // ── Version gate (shared by both sides) ──────────────────

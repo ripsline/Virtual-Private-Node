@@ -21,12 +21,6 @@ import (
 // into agreement.
 
 var expectedMatrix = map[string][]string{
-	helper.VerbRebuildTorConfig: {
-		paths.StateOnionBitcoinP2P,
-		paths.StateOnionLNDGRPC,
-		paths.StateOnionLNDREST,
-		paths.StateOnionSyncthing,
-	},
 	helper.VerbStageLNDCredentials: {
 		paths.StateLNDTLSCert,
 		paths.StateLNDMacaroon,
@@ -37,11 +31,6 @@ var expectedMatrix = map[string][]string{
 	},
 	helper.VerbSyncthingInstall: {
 		paths.StateSyncthingAPIKey,
-		paths.StateSyncthingDevID,
-		paths.StateOnionSyncthing,
-	},
-	helper.VerbRebuildSSHConfig: {
-		paths.StateSSHPasswordAuth,
 	},
 	// Applied by the handler only for the lnd unit (start or
 	// restart): LND can regenerate its TLS certificate during
@@ -49,6 +38,10 @@ var expectedMatrix = map[string][]string{
 	helper.VerbServiceAction: {
 		paths.StateLNDTLSCert,
 	},
+	// Deliberately absent: rebuild-tor-config and
+	// rebuild-ssh-config no longer touch any board fact —
+	// onion addresses and the password-auth answer are
+	// live-read (no copy exists to go stale).
 }
 
 func TestFreshnessMatrixMatchesRuledTable(t *testing.T) {
@@ -75,22 +68,23 @@ func TestFreshnessMatrixMatchesRuledTable(t *testing.T) {
 	}
 }
 
+// expectedBoardFiles restates the complete board INDEPENDENTLY
+// of paths.go and matrix.go: the machine-cadence credential
+// facts, and nothing else. Display facts (onion addresses, the
+// Syncthing device ID, the SSH password-auth answer) are
+// deliberately NOT here — they are live-read, with no copy.
+var expectedBoardFiles = map[string]bool{
+	paths.StateBitcoindRPCPass: true,
+	paths.StateLNDTLSCert:      true,
+	paths.StateLNDMacaroon:     true,
+	paths.StateSyncthingAPIKey: true,
+}
+
 // Every fact in the matrix must have a stager, every verb in
 // the matrix must exist on the verb menu, and every stager key
 // must be a real board path.
 func TestFreshnessMatrixIsClosed(t *testing.T) {
-	boardFiles := map[string]bool{
-		paths.StateBitcoindRPCPass: true,
-		paths.StateLNDTLSCert:      true,
-		paths.StateLNDMacaroon:     true,
-		paths.StateOnionBitcoinP2P: true,
-		paths.StateOnionLNDGRPC:    true,
-		paths.StateOnionLNDREST:    true,
-		paths.StateOnionSyncthing:  true,
-		paths.StateSyncthingAPIKey: true,
-		paths.StateSyncthingDevID:  true,
-		paths.StateSSHPasswordAuth: true,
-	}
+	boardFiles := expectedBoardFiles
 	for verb, files := range freshnessMatrix {
 		if _, ok := verbs[verb]; !ok {
 			t.Errorf("matrix verb %s is not on the verb menu", verb)
@@ -116,6 +110,75 @@ func TestFreshnessMatrixIsClosed(t *testing.T) {
 func TestRestageUnknownVerbIsNoop(t *testing.T) {
 	if err := restage("no-such-verb"); err != nil {
 		t.Errorf("unknown verb should re-stage nothing: %v", err)
+	}
+}
+
+// ── Freshness-declaration tests ──────────────────────────
+//
+// The rule: every board fact declares exactly one freshness
+// story, and the live-read facts are pinned to menu verbs.
+// Adding board fact number five without deciding how it stays
+// fresh — or retiring a read verb without replacing the story
+// it serves — fails here.
+
+func TestEveryBoardFactDeclaresFreshness(t *testing.T) {
+	for f := range expectedBoardFiles {
+		story, ok := freshness[f]
+		if !ok {
+			t.Errorf("%s has no freshness declaration — how "+
+				"does this fact stay fresh? Declare watched, "+
+				"healed, live-read, or static-by-decision in "+
+				"matrix.go", f)
+			continue
+		}
+		switch story {
+		case freshWatched, freshHealed, freshStatic:
+		case freshLiveRead:
+			t.Errorf("%s declares live-read but has a board "+
+				"file — a live-read fact keeps no copy", f)
+		default:
+			t.Errorf("%s declares unknown story %q", f, story)
+		}
+	}
+	for f := range freshness {
+		if !expectedBoardFiles[f] {
+			t.Errorf("freshness declares %s, which is not a "+
+				"board file — update BOTH deliberately", f)
+		}
+	}
+	for f := range stagers {
+		if _, ok := freshness[f]; !ok {
+			t.Errorf("stager registered for %s without a "+
+				"freshness declaration", f)
+		}
+	}
+}
+
+// The watched and healed stories both depend on a stager
+// existing (the path unit and the self-heal each end in a
+// re-stage); a declaration without the mechanism is a lie.
+func TestFreshnessStoriesHaveTheirMechanism(t *testing.T) {
+	for f, story := range freshness {
+		if story == freshWatched || story == freshHealed {
+			if _, ok := stagers[f]; !ok {
+				t.Errorf("%s declares %s but has no stager",
+					f, story)
+			}
+		}
+	}
+}
+
+// Live-read facts are served by verbs that must exist on the
+// menu.
+func TestLiveReadFactsServedByMenuVerbs(t *testing.T) {
+	if len(liveReadFacts) == 0 {
+		t.Fatal("no live-read facts declared")
+	}
+	for fact, verb := range liveReadFacts {
+		if _, ok := verbs[verb]; !ok {
+			t.Errorf("live-read fact %q names verb %s, which "+
+				"is not on the menu", fact, verb)
+		}
 	}
 }
 

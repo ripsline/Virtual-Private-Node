@@ -6,6 +6,7 @@ import (
 	tea "charm.land/bubbletea/v2"
 
 	"github.com/virtualprivatenode/vpn/internal/config"
+	"github.com/virtualprivatenode/vpn/internal/helper"
 	"github.com/virtualprivatenode/vpn/internal/lndrpc"
 	"github.com/virtualprivatenode/vpn/internal/logger"
 	"github.com/virtualprivatenode/vpn/internal/theme"
@@ -105,6 +106,19 @@ type latestVersionMsg string
 // Used to refresh stale data without replacing the screen
 // or its in-progress state.
 type tabActivatedMsg struct{}
+
+// nodeAddressesMsg carries the live-read display facts (onion
+// hostnames, the Syncthing device ID) fetched at screen entry
+// through the helper's read-node-addresses operation. tab
+// names the screen that asked, so Update can route the answer
+// back to it. No screen caches these beyond its own lifetime —
+// the facts have no board copy, and re-entering a screen asks
+// again.
+type nodeAddressesMsg struct {
+	tab   tabKind
+	addrs helper.NodeAddressesResult
+	err   error
+}
 
 type syncthingPairedMsg struct {
 	deviceID string

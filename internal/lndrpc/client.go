@@ -22,7 +22,6 @@ import (
 	"crypto/x509"
 	"encoding/hex"
 	"fmt"
-	"strings"
 	"sync"
 	"time"
 
@@ -70,15 +69,22 @@ func (c *Client) connect() error {
 
 // dial establishes the connection; the caller holds c.mu.
 //
-// allowHeal enables the staged-certificate self-heal: LND can
-// regenerate its TLS certificate OUTSIDE any helper operation —
-// an automatic restart after a crash, a reboot, a config change
-// applied by a reinstall — and the staged board copy then no
-// longer matches the certificate LND serves. That staleness
-// reliably surfaces exactly here, as a TLS verification failure
-// on the test call. On one, the client asks the helper to
-// re-stage the LND credentials (rate-limited process-wide) and
-// dials again once with the refreshed board copy.
+// allowHeal enables the staged-credential self-heal: LND can
+// regenerate its TLS certificate OUTSIDE any helper operation
+// (an automatic restart after a crash, a reboot, a config
+// change applied by a reinstall), and its macaroon can be
+// recreated the same way — and the staged board copies then no
+// longer match what LND accepts. That staleness reliably
+// surfaces exactly here, as a failed test call. The heal keys
+// on the ABSENCE OF SUCCESS, not on recognizing the failure's
+// text: enumerating the failure messages worth healing is a
+// whitelist, and a whitelist misses (a dial error this client
+// once produced was worded in a way no pattern anticipated).
+// On any test-call failure, the client asks the helper to
+// re-stage the LND credentials — rate-limited process-wide, so
+// failures with nothing to heal (LND down, wallet locked) cost
+// at most one re-stage per interval — and dials again ONCE
+// with the refreshed board copies.
 func (c *Client) dial(allowHeal bool) error {
 	// Read the staged TLS cert copy (fail-noisy: a missing
 	// staged fact names itself and points at the journal).
@@ -130,10 +136,10 @@ func (c *Client) dial(allowHeal bool) error {
 		logger.Status("LND gRPC connected and ready")
 		return nil
 	}
-	if allowHeal && isCertificateError(err) &&
-		requestCredentialRestage() {
-		logger.Status("LND gRPC: staged TLS certificate looks "+
-			"stale (%v) — re-staged, reconnecting", err)
+	if allowHeal && requestCredentialRestage() {
+		logger.Status("LND gRPC test call failed (%v) — staged "+
+			"credentials re-staged in case they were stale, "+
+			"reconnecting once", err)
 		c.conn.Close()
 		c.conn = nil
 		c.lightning = nil
@@ -143,43 +149,49 @@ func (c *Client) dial(allowHeal bool) error {
 	return nil
 }
 
-// isCertificateError reports whether a gRPC connect error looks
-// like a TLS certificate verification failure (as opposed to a
-// down service, a locked wallet, or a plain timeout). Matching
-// on the error text is unavoidable — grpc flattens the tls/x509
-// error chain into a string. Pure — unit-tested.
-func isCertificateError(err error) bool {
-	if err == nil {
-		return false
-	}
-	msg := err.Error()
-	return strings.Contains(msg, "x509") ||
-		strings.Contains(msg, "certificate")
-}
-
-// Certificate self-heal state: at most one re-stage request per
-// interval, process-wide — a wrong classification must not turn
-// every reconnect poll into helper traffic.
+// Credential self-heal state: at most one re-stage request per
+// interval, PROCESS-WIDE — with the heal keyed on any failed
+// test call, this limiter is what keeps a long LND outage from
+// turning every reconnect poll into helper traffic and journal
+// noise.
 var (
-	certRestageMu sync.Mutex
-	certRestageAt time.Time
+	credRestageMu sync.Mutex
+	credRestageAt time.Time
 )
 
-const certRestageInterval = 5 * time.Minute
+const credRestageInterval = 5 * time.Minute
+
+// restageDue reports whether enough time has passed since the
+// last re-stage request for another one. Pure — unit-tested.
+func restageDue(last, now time.Time) bool {
+	return last.IsZero() || now.Sub(last) >= credRestageInterval
+}
+
+// credRestageWorthwhile reports whether a re-stage request made
+// now would pass the limiter, WITHOUT consuming it. The
+// credential-rejection path in handleError checks this before
+// reconnecting: when no repair can happen, no reconnect can
+// help, and staying quiet caps a permanently rejected
+// credential at one reconnect-and-repair attempt (and one log
+// line) per limiter interval instead of one per failing call.
+func credRestageWorthwhile() bool {
+	credRestageMu.Lock()
+	defer credRestageMu.Unlock()
+	return restageDue(credRestageAt, time.Now())
+}
 
 // requestCredentialRestage asks the helper to refresh the staged
 // LND credentials from current reality. Reports whether a
 // re-stage actually happened (rate limit passed and the helper
-// succeeded), so the caller only re-dials when the board copy
+// succeeded), so the caller only re-dials when the board copies
 // could have changed.
 func requestCredentialRestage() bool {
-	certRestageMu.Lock()
-	defer certRestageMu.Unlock()
-	if !certRestageAt.IsZero() &&
-		time.Since(certRestageAt) < certRestageInterval {
+	credRestageMu.Lock()
+	defer credRestageMu.Unlock()
+	if !restageDue(credRestageAt, time.Now()) {
 		return false
 	}
-	certRestageAt = time.Now()
+	credRestageAt = time.Now()
 	if err := helper.Call(
 		helper.VerbStageLNDCredentials, nil, nil); err != nil {
 		logger.Status("stage-lnd-credentials: %v", err)
