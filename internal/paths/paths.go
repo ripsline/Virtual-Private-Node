@@ -73,6 +73,37 @@ const (
 	SyncthingDir = "/etc/syncthing"
 )
 
+// ── Loopback endpoints ───────────────────────────────────
+
+// Each loopback endpoint is defined exactly once, and BOTH
+// ends of every connection use the same constant: lnd.conf
+// binds LND to these values, and every client dials them —
+// so the two ends cannot silently disagree.
+//
+// The values are literal IPv4 addresses, never the name
+// localhost. The installer disables IPv6 at the kernel, but
+// Debian's /etc/hosts still maps localhost to ::1, and that
+// file is not ours to correct (cloud provider tooling may
+// regenerate it). Reaching loopback by name can therefore
+// resolve to an IPv6 address the box cannot use; on a node
+// that disables IPv6, loopback is always dialed by address.
+const (
+	// LNDGRPCEndpoint is LND's gRPC server. Dialed by the
+	// console's gRPC client, the wallet-creation lncli
+	// invocation, and the shell's lncli wrapper.
+	LNDGRPCEndpoint = "127.0.0.1:10009"
+
+	// LNDRESTEndpoint is LND's REST server. Dialed by the
+	// installer's readiness probe; the Tor hidden service
+	// forwards the REST onion here.
+	LNDRESTEndpoint = "127.0.0.1:8080"
+
+	// LNDP2PBind is LND's peer listener in tor-only mode.
+	// Hybrid mode binds all interfaces instead, computed
+	// where the config is written.
+	LNDP2PBind = "127.0.0.1:9735"
+)
+
 // ── Data ─────────────────────────────────────────────────
 
 const (

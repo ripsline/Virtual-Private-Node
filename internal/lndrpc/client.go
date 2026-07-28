@@ -8,9 +8,9 @@
 // holds the macaroon in memory for the duration of the process.
 // The macaroon is injected into every gRPC call as metadata.
 //
-// Connection uses TLS to localhost. The macaroon never crosses
-// the network. When the TUI process exits, the macaroon is gone
-// from memory.
+// Connection uses TLS to the loopback address. The macaroon
+// never crosses the network. When the TUI process exits, the
+// macaroon is gone from memory.
 //
 // This package only performs read operations. Fund-moving RPCs
 // (SendPayment, OpenChannel, etc.) are added in later changes
@@ -108,7 +108,11 @@ func (c *Client) dial(allowHeal bool) error {
 		grpc.WithDefaultCallOptions(grpc.MaxCallRecvMsgSize(50 * 1024 * 1024)),
 	}
 
-	conn, err := grpc.NewClient("localhost:10009", opts...)
+	// Dial by the shared loopback constant — the same value
+	// lnd.conf binds to. Never by the name localhost: with
+	// IPv6 disabled on the node, that name can resolve to an
+	// IPv6 address the connection cannot use.
+	conn, err := grpc.NewClient(paths.LNDGRPCEndpoint, opts...)
 	if err != nil {
 		return fmt.Errorf("grpc connect: %w", err)
 	}

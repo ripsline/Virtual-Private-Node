@@ -103,6 +103,15 @@ func TestIsCertificateError(t *testing.T) {
 	}
 	otherErrs := []string{
 		"rpc error: code = Unavailable desc = connection refused",
+		// Observed in production when the client dialed LND by
+		// the name localhost on a box with IPv6 disabled: the
+		// name resolved to ::1 and the kernel refused the
+		// address. An address-family failure, not a stale
+		// certificate — a re-stage must never fire on it.
+		"rpc error: code = Unavailable desc = connection error: " +
+			"desc = \"transport: Error while dialing: dial tcp " +
+			"[::1]:10009: connect: cannot assign requested " +
+			"address\"",
 		"rpc error: code = Unimplemented desc = unknown service " +
 			"lnrpc.Lightning",
 		"wallet locked, unlock it to enable full RPC access",

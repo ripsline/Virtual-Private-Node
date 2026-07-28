@@ -82,12 +82,18 @@ func createLNDDirs(username string) error {
 	return nil
 }
 
-func writeLNDConfig(cfg *config.AppConfig, publicIPv4 string) error {
+// BuildLNDConfig generates lnd.conf content. Pure logic — no
+// side effects. LND binds by the literal loopback addresses
+// defined once in paths — the same constants every client
+// dials — so the two ends of each connection cannot disagree,
+// and the name localhost appears nowhere in the file (on this
+// node, which disables IPv6, that name can resolve to an
+// unusable IPv6 address).
+func BuildLNDConfig(cfg *config.AppConfig, publicIPv4, restOnion string) string {
 	net := cfg.NetworkConfig()
-	restOnion := strings.TrimSpace(readFileOrDefault(paths.TorLNDRESTHostname, ""))
 
-	listenLine := "listen=localhost:9735"
-	restListenLine := "restlisten=localhost:8080"
+	listenLine := "listen=" + paths.LNDP2PBind
+	restListenLine := "restlisten=" + paths.LNDRESTEndpoint
 	externalLine := ""
 	tlsExtraIP := ""
 	if cfg.P2PMode == "hybrid" && publicIPv4 != "" {
@@ -104,11 +110,11 @@ func writeLNDConfig(cfg *config.AppConfig, publicIPv4 string) error {
 
 	cookiePath := paths.LNDCookiePath(net.CookiePath)
 
-	content := fmt.Sprintf(`# Virtual Private Node — LND
+	return fmt.Sprintf(`# Virtual Private Node — LND
 [Application Options]
 lnddir=/var/lib/lnd
 %s
-rpclisten=localhost:10009
+rpclisten=%s
 %s
 debuglevel=info
 %s
@@ -181,10 +187,16 @@ db.bolt.auto-compact-min-age=168h
 healthcheck.diskspace.diskrequired=0.05
 healthcheck.diskspace.attempts=2
 healthcheck.diskspace.interval=12h
-`, listenLine, restListenLine, externalLine, tlsExtraDomain, tlsExtraIP,
+`, listenLine, paths.LNDGRPCEndpoint, restListenLine, externalLine,
+		tlsExtraDomain, tlsExtraIP,
 		net.LNDBitcoinFlag, cookiePath,
 		net.RPCPort, net.ZMQBlockPort, net.ZMQTxPort)
+}
 
+func writeLNDConfig(cfg *config.AppConfig, publicIPv4 string) error {
+	restOnion := strings.TrimSpace(
+		readFileOrDefault(paths.TorLNDRESTHostname, ""))
+	content := BuildLNDConfig(cfg, publicIPv4, restOnion)
 	if err := system.SudoWriteFile(paths.LNDConf, []byte(content), 0640); err != nil {
 		return err
 	}
@@ -353,7 +365,8 @@ func disableAutoUnlock() error {
 func waitForLND() error {
 	for i := 0; i < 60; i++ {
 		client := buildLNDClient()
-		resp, err := client.Get("https://localhost:8080/v1/state")
+		resp, err := client.Get(
+			"https://" + paths.LNDRESTEndpoint + "/v1/state")
 		if err == nil {
 			resp.Body.Close()
 			return nil

@@ -316,7 +316,7 @@ echo "  Your seed phrase will appear in this terminal."
 echo "  Make sure nobody is looking over your shoulder."
 echo
 /usr/local/bin/lncli ` +
-		`--rpcserver=localhost:10009 ` +
+		`--rpcserver=` + paths.LNDGRPCEndpoint + ` ` +
 		`--tlscertpath=` + paths.StateLNDTLSCert + ` ` +
 		`--network=` + net.LNCLINetwork + ` create && {
   trap '' INT
