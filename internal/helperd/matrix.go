@@ -21,60 +21,27 @@ import (
 // documentation that can drift from it.
 //
 // Reading the matrix: a verb not listed here invalidates no
-// staged fact (a package upgrade changes no onion address). One
-// entry is conditional: service-action invalidates the staged
-// LND TLS certificate only when the unit acted on is lnd — the
-// handler applies the entry under that condition, because the
-// verb-keyed table cannot see verb parameters. The unit tests
-// in matrix_test.go walk every cell: every listed fact has a
-// stager, every stager is reachable from a verb or the
-// installer's staging step, and the sets match this table
+// staged fact (a package upgrade changes no staged credential).
+// One entry is conditional: service-action invalidates the
+// staged LND TLS certificate only when the unit acted on is
+// lnd — the handler applies the entry under that condition,
+// because the verb-keyed table cannot see verb parameters. The
+// unit tests in matrix_test.go walk every cell: every listed
+// fact has a stager, every stager is reachable from a verb or
+// the installer's staging step, and the sets match this table
 // exactly.
 
 // stagers maps each board file to the function that refreshes
 // it from current reality. All run as root.
 var stagers = map[string]func() error{
-	paths.StateOnionBitcoinP2P: func() error {
-		return installer.StageOnionHostname(
-			paths.TorBitcoinP2P+"/hostname",
-			paths.StateOnionBitcoinP2P)
-	},
-	paths.StateOnionLNDGRPC: func() error {
-		return installer.StageOnionHostname(
-			paths.TorLNDGRPC+"/hostname",
-			paths.StateOnionLNDGRPC)
-	},
-	paths.StateOnionLNDREST: func() error {
-		return installer.StageOnionHostname(
-			paths.TorLNDRESTHostname,
-			paths.StateOnionLNDREST)
-	},
-	paths.StateOnionSyncthing: func() error {
-		return installer.StageOnionHostname(
-			paths.TorSyncthingHostname,
-			paths.StateOnionSyncthing)
-	},
 	paths.StateLNDTLSCert:      installer.StageLNDTLSCert,
 	paths.StateLNDMacaroon:     installer.StageLNDMacaroon,
 	paths.StateSyncthingAPIKey: installer.StageSyncthingAPIKey,
-	paths.StateSyncthingDevID:  installer.StageSyncthingDeviceID,
-	paths.StateSSHPasswordAuth: installer.StageSSHAuthFact,
 }
 
 // freshnessMatrix: verb → board facts the verb invalidates and
 // therefore re-stages on success.
 var freshnessMatrix = map[string][]string{
-	// Rebuilding torrc restarts Tor; hidden-service dirs are
-	// (re)created and hostnames may newly exist. Onion KEYS
-	// persist, so existing addresses do not change — but a
-	// toggled-on service's hostname appears here for the first
-	// time, and re-staging the unchanged ones is free.
-	helper.VerbRebuildTorConfig: {
-		paths.StateOnionBitcoinP2P,
-		paths.StateOnionLNDGRPC,
-		paths.StateOnionLNDREST,
-		paths.StateOnionSyncthing,
-	},
 	// Wallet creation mints fresh macaroons; the staging verb
 	// exists exactly for that moment (and re-copies the cert,
 	// which is free).
@@ -90,16 +57,9 @@ var freshnessMatrix = map[string][]string{
 		paths.StateLNDMacaroon,
 	},
 	// A fresh Syncthing install generates a new identity and
-	// API key, and its Tor rebuild creates the web-UI onion.
+	// API key.
 	helper.VerbSyncthingInstall: {
 		paths.StateSyncthingAPIKey,
-		paths.StateSyncthingDevID,
-		paths.StateOnionSyncthing,
-	},
-	// The SSH drop-in write changes effective password-auth
-	// state; the staged observation must follow it.
-	helper.VerbRebuildSSHConfig: {
-		paths.StateSSHPasswordAuth,
 	},
 	// An lnd start or restart can regenerate the TLS
 	// certificate (tlsautorefresh detects parameter changes and
@@ -110,6 +70,74 @@ var freshnessMatrix = map[string][]string{
 	helper.VerbServiceAction: {
 		paths.StateLNDTLSCert,
 	},
+}
+
+// ── Freshness declarations ───────────────────────────────
+//
+// Every fact the TUI consumes has exactly one declared
+// freshness story, and matrix_test.go fails on any board file
+// without one — a contributor adding a new fact is stopped by
+// a red test asking "how does this stay fresh?". The stories:
+//
+//   - watched: the fact's source can change autonomously (no
+//     operation of ours involved), and a systemd path unit on
+//     the source triggers a re-stage within seconds, before
+//     any human shows up to read a stale copy.
+//   - healed: the fact is a credential that fails CLOSED at
+//     the moment of use when stale (the cryptography rejects
+//     it, in front of the calling code), and the consumer
+//     repairs the failure by asking for a re-stage and
+//     retrying once, rate-limited process-wide.
+//   - live-read: no copy exists at all. The fact is a display
+//     or safety observation whose staleness would produce no
+//     failure to repair from, so screens read it through a
+//     read-only verb at human cadence (liveReadFacts below).
+//   - static-by-decision: the fact changes only through
+//     covered operations (install, a menu verb); foreign
+//     change is possible for root but is not promisable, and
+//     divergence surfaces as an honest, named error — never a
+//     silent false success.
+const (
+	freshWatched  = "watched"
+	freshHealed   = "healed"
+	freshLiveRead = "live-read"
+	freshStatic   = "static-by-decision"
+)
+
+// freshness declares the story for every BOARD file. These are
+// the machine-cadence facts (consumed per RPC call / per dial)
+// — the only ones that justify a cached copy at all.
+var freshness = map[string]string{
+	// Watched (the path unit), and additionally healed as the
+	// backstop: the connection self-heal in the TUI's LND
+	// client re-stages on persistent connection failure.
+	paths.StateLNDTLSCert: freshWatched,
+	// LND rejects a stale macaroon on every call
+	// (Unauthenticated); the client reconnects and the dial-
+	// time repair re-stages both LND credentials.
+	paths.StateLNDMacaroon: freshHealed,
+	// Regenerated only by a Syncthing (re)install, which the
+	// syncthing-install verb covers. The one foreign surface
+	// that can change it — the Syncthing web UI — produces an
+	// HTTP 403 that every REST wrapper now fails loudly on,
+	// so divergence is an immediate honest error.
+	paths.StateSyncthingAPIKey: freshStatic,
+	// Written by the installer, fresh pair per install; if
+	// root replaces the server-side half by hand, bitcoind
+	// answers 401 and the TUI's error names the
+	// divergence. That residue is accepted, not healed.
+	paths.StateBitcoindRPCPass: freshStatic,
+}
+
+// liveReadFacts pins the fourth story: facts with NO board
+// copy, served live by a read-only verb. The map value is the
+// verb that serves the fact; matrix_test.go asserts each is on
+// the menu, so retiring a verb without a replacement story is
+// a red test too.
+var liveReadFacts = map[string]string{
+	"onion-addresses":     helper.VerbReadNodeAddresses,
+	"syncthing-device-id": helper.VerbReadNodeAddresses,
+	"ssh-password-auth":   helper.VerbReadSSHAuth,
 }
 
 // restage refreshes every fact the given verb invalidates.

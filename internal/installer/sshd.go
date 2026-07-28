@@ -134,17 +134,12 @@ func RebuildSSHHardeningConfig(cfg *config.AppConfig) error {
 			detail)
 	}
 
-	if err := restartSSHD(); err != nil {
-		return err
-	}
-
-	// Postcondition: record the now-effective password-auth
-	// answer on the staging board, where unprivileged readers
-	// (the key-removal guard, screen copy) consult it. A
-	// staging failure fails the whole operation — succeeding
-	// while leaving a stale staged answer would be the silent
-	// divergence the board's contract forbids.
-	return StageSSHAuthFact()
+	// No staged copy to refresh afterwards: the effective
+	// password-auth answer is read live (sshd -T through the
+	// helper's read-ssh-auth operation) by every unprivileged
+	// consumer, so the write cannot leave a stale copy behind
+	// — there is none.
+	return restartSSHD()
 }
 
 // restorePreviousDropIn puts the drop-in back to its
@@ -193,39 +188,34 @@ func SetSSHPasswordAuth(
 // configuration permits password authentication for the admin
 // user.
 //
-// Two sources, by privilege:
+// Both paths ask sshd itself, at the moment of the question:
 //
-//   - As root (installer, helper): sshd is asked directly —
-//     see queryEffectiveSSHPasswordAuth.
-//   - Unprivileged (the TUI): the answer comes from the
-//     staging board, where every SSH-config write records the
-//     observation it made right after restarting sshd (see
-//     StageSSHAuthFact). The staged answer is an observation
-//     of sshd's real state, not an echo of this app's config —
-//     it goes stale only if something outside this app edits
-//     sshd's config, and root-side edits are outside the
-//     model anyway.
+//   - As root (installer, helper): directly — see
+//     queryEffectiveSSHPasswordAuth.
+//   - Unprivileged (the TUI): through the helper's read-only
+//     read-ssh-auth operation, which runs the same query on
+//     the root side. No copy of the answer is kept anywhere:
+//     sshd's config can change outside this app (a hand edit,
+//     provider tooling), a stale recorded "yes" would permit
+//     removing the last SSH key on a box where password login
+//     is off — a lockout — and a fact with no failure moment
+//     cannot be repaired at one. Reading live removes the
+//     stale input entirely.
 //
 // Callers MUST treat an error as "password auth unavailable"
 // and refuse the risky action — never as unknown-so-proceed.
-// A missing staged fact therefore biases toward over-refusal,
+// An unreachable helper therefore biases toward over-refusal,
 // the safe direction.
 func EffectiveSSHPasswordAuth() (bool, error) {
 	if os.Geteuid() == 0 {
 		return queryEffectiveSSHPasswordAuth()
 	}
-	v, err := helper.ReadBoardString(paths.StateSSHPasswordAuth)
-	if err != nil {
+	var res helper.SSHAuthResult
+	if err := helper.Call(
+		helper.VerbReadSSHAuth, nil, &res); err != nil {
 		return false, err
 	}
-	switch v {
-	case "yes":
-		return true, nil
-	case "no":
-		return false, nil
-	}
-	return false, fmt.Errorf(
-		"staged password-auth fact is malformed (%q)", v)
+	return res.PasswordAuthEnabled, nil
 }
 
 // queryEffectiveSSHPasswordAuth asks sshd itself:

@@ -6,6 +6,8 @@ import (
 	"encoding/json"
 	"encoding/xml"
 	"fmt"
+	"io"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
@@ -375,17 +377,20 @@ func startSyncthing() error {
 	// Readiness probe. /rest/noauth/health is the documented
 	// unauthenticated endpoint; the previous probe hit
 	// /rest/system/status without an API key, got 403 on every
-	// try, and spun the full 30s. Fail-safe: if the daemon never
+	// try, and spun the full 30s. Same standard HTTP client as
+	// the REST transport below. Fail-safe: if the daemon never
 	// readies, stop it and fail the install.
 	ready := false
+	probe := &http.Client{Timeout: 3 * time.Second}
 	for i := 0; i < 30; i++ {
-		output, err := system.RunContext(3*time.Second,
-			"curl", "-s", "-o", "/dev/null",
-			"-w", "%{http_code}",
-			"http://127.0.0.1:8384/rest/noauth/health")
-		if err == nil && strings.TrimSpace(output) == "200" {
-			ready = true
-			break
+		resp, err := probe.Get(
+			syncthingGUIBase + "/rest/noauth/health")
+		if err == nil {
+			resp.Body.Close()
+			if resp.StatusCode == http.StatusOK {
+				ready = true
+				break
+			}
 		}
 		time.Sleep(1 * time.Second)
 	}
@@ -489,17 +494,22 @@ func registerBackupFolder() error {
 // GetSyncthingDeviceID returns this node's Syncthing device
 // ID. As root it parses Syncthing's config XML (works even
 // with the daemon stopped — the ID derives from the TLS cert);
-// unprivileged it reads the staged copy on the board, which
-// the install (and any reinstall) refreshes.
+// unprivileged it asks the helper's read-node-addresses
+// operation, which performs that same root-side read at the
+// moment of the question. No copy is kept: the ID changes when
+// Syncthing's identity is regenerated (a reinstall, a manual
+// key deletion), a stale copy would fail silently — the remote
+// device just never pairs — and screens need it only at human
+// cadence.
 func GetSyncthingDeviceID() string {
 	if os.Geteuid() != 0 {
-		id, err := helper.ReadBoardString(
-			paths.StateSyncthingDevID)
-		if err != nil {
+		var res helper.NodeAddressesResult
+		if err := helper.Call(
+			helper.VerbReadNodeAddresses, nil, &res); err != nil {
 			logger.Status("syncthing device ID: %v", err)
 			return ""
 		}
-		return id
+		return res.SyncthingDeviceID
 	}
 
 	output, err := os.ReadFile(paths.SyncthingConfigXML)
@@ -597,34 +607,92 @@ func getSyncthingAPIKey() (string, error) {
 	return cfg.GUI.APIKey, nil
 }
 
+// ── REST transport (fail-noisy) ──────────────────────────
+//
+// Every Syncthing REST call goes through syncthingAPI, which
+// FAILS on any HTTP error status. This is load-bearing: the
+// previous transport shelled out to curl -s, which exits 0 on
+// a 403, and these calls once reported success while the
+// daemon had rejected the request — a pairing "done" that had
+// paired nothing, which for the channel-backup folder means
+// the off-box copy the operator is counting on never starts
+// replicating. A silent false success here is forbidden.
+//
+// The transport is Go's standard HTTP client, not a curl
+// subprocess: the status code arrives as an integer with
+// nothing to parse out of shell output, and this path stops
+// depending on an image-supplied binary nothing of ours
+// installs. Same client choice as the LND readiness probe
+// (waitForLND).
+
+// syncthingGUIBase is the daemon's loopback GUI/REST address.
+// A variable so the transport tests can point it at a local
+// test server.
+var syncthingGUIBase = "http://127.0.0.1:8384"
+
+// syncthingAPI performs one REST call against the local
+// Syncthing daemon and returns the response body. Any non-2xx
+// answer is an error naming the refused call.
+func syncthingAPI(
+	method, apiKey, endpoint, body string,
+) (string, error) {
+	fail := func(err error) (string, error) {
+		return "", fmt.Errorf(
+			"syncthing API %s %s: %w", method, endpoint, err)
+	}
+	var reqBody io.Reader
+	if body != "" {
+		reqBody = strings.NewReader(body)
+	}
+	req, err := http.NewRequest(method,
+		syncthingGUIBase+endpoint, reqBody)
+	if err != nil {
+		return fail(err)
+	}
+	if apiKey != "" {
+		req.Header.Set("X-API-Key", apiKey)
+	}
+	if body != "" {
+		req.Header.Set("Content-Type", "application/json")
+	}
+	client := &http.Client{Timeout: 10 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return fail(err)
+	}
+	defer resp.Body.Close()
+	// The bound exists so a defect cannot balloon memory; real
+	// answers are far smaller.
+	data, err := io.ReadAll(io.LimitReader(resp.Body, 10<<20))
+	if err != nil {
+		return fail(fmt.Errorf("read response: %w", err))
+	}
+	if resp.StatusCode < 200 || resp.StatusCode > 299 {
+		hint := ""
+		if resp.StatusCode == http.StatusForbidden {
+			hint = " — the daemon rejected the API key this " +
+				"node staged; reinstalling Syncthing from " +
+				"the Add-On section refreshes it"
+		}
+		return "", fmt.Errorf(
+			"syncthing API %s %s failed: HTTP %d%s",
+			method, endpoint, resp.StatusCode, hint)
+	}
+	return string(data), nil
+}
+
 func syncthingAPIPost(apiKey, endpoint, body string) error {
-	_, err := system.RunContext(10*time.Second,
-		"curl", "-s",
-		"-X", "POST",
-		"-H", "X-API-Key: "+apiKey,
-		"-H", "Content-Type: application/json",
-		"-d", body,
-		"http://127.0.0.1:8384"+endpoint)
+	_, err := syncthingAPI("POST", apiKey, endpoint, body)
 	return err
 }
 
 func syncthingAPIPatch(apiKey, endpoint, body string) error {
-	_, err := system.RunContext(10*time.Second,
-		"curl", "-s",
-		"-X", "PATCH",
-		"-H", "X-API-Key: "+apiKey,
-		"-H", "Content-Type: application/json",
-		"-d", body,
-		"http://127.0.0.1:8384"+endpoint)
+	_, err := syncthingAPI("PATCH", apiKey, endpoint, body)
 	return err
 }
 
 func syncthingAPIDelete(apiKey, endpoint string) error {
-	_, err := system.RunContext(10*time.Second,
-		"curl", "-s",
-		"-X", "DELETE",
-		"-H", "X-API-Key: "+apiKey,
-		"http://127.0.0.1:8384"+endpoint)
+	_, err := syncthingAPI("DELETE", apiKey, endpoint, "")
 	return err
 }
 
@@ -648,10 +716,7 @@ func UnpairSyncthingDevice(deviceID string) error {
 }
 
 func syncthingAPIGet(apiKey, endpoint string) (string, error) {
-	return system.RunContext(10*time.Second,
-		"curl", "-s",
-		"-H", "X-API-Key: "+apiKey,
-		"http://127.0.0.1:8384"+endpoint)
+	return syncthingAPI("GET", apiKey, endpoint, "")
 }
 
 func addDeviceToBackupFolder(

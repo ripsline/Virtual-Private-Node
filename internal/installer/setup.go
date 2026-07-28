@@ -646,6 +646,15 @@ func buildInstallSteps(
 				return restartTor()
 			}},
 		{Key: "lnd.start", Name: "Starting LND", Fn: startLND},
+		// LND owns its TLS certificate lifecycle
+		// (tlsautorefresh), so the cert can be rewritten by a
+		// startup no TUI operation requested. This watch
+		// re-stages the TUI's copy within seconds of any
+		// rewrite. After lnd.start so a migration pass arms it
+		// on the certificate LND is actually serving.
+		{Key: "lnd.certwatch",
+			Name: "Watching the LND TLS certificate",
+			Fn:   installLNDCertWatch},
 		// The initial drop-in write + stale-drop-in deletion,
 		// with the ruling-xv binding order inside (observe →
 		// write new → delete old → validate → restart). Late in

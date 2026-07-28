@@ -6,7 +6,6 @@ import (
 	"charm.land/bubbles/v2/key"
 	tea "charm.land/bubbletea/v2"
 
-	"github.com/virtualprivatenode/vpn/internal/paths"
 	"github.com/virtualprivatenode/vpn/internal/theme"
 )
 
@@ -14,10 +13,17 @@ import (
 // Zeus wallet pairing: shows LND REST connection info
 // with QR (Tor), Macaroon, and optional QR (Clearnet)
 // buttons.
+//
+// The REST onion address is live-read at screen entry (no
+// stored copy exists anywhere) and held only for this
+// screen's lifetime.
 
 type PairingScreen struct {
-	ctx    *ScreenContext
-	btnIdx int
+	ctx       *ScreenContext
+	btnIdx    int
+	restOnion string
+	fetched   bool // the live read answered
+	fetchErr  bool // ...with an error (already logged)
 }
 
 func NewPairingScreen(
@@ -31,7 +37,7 @@ func NewPairingScreen(
 // ── Screen interface ────────────────────────────────────
 
 func (s *PairingScreen) Init() tea.Cmd {
-	return nil
+	return fetchNodeAddressesCmd(tabPairing)
 }
 
 func (s *PairingScreen) maxBtn() int {
@@ -86,8 +92,7 @@ func (s *PairingScreen) handleEnter() (Screen, tea.Cmd) {
 	}
 	switch btns[s.btnIdx] {
 	case "Show QR (Tor)":
-		restOnion := readOnion(
-			paths.TorLNDRESTHostname)
+		restOnion := s.restOnion
 		mac := readMacaroonHex(s.ctx.Cfg)
 		if restOnion != "" && mac != "" {
 			url := fmt.Sprintf(
@@ -128,6 +133,16 @@ func (s *PairingScreen) handleEnter() (Screen, tea.Cmd) {
 func (s *PairingScreen) HandleMsg(
 	msg tea.Msg,
 ) (Screen, tea.Cmd) {
+	switch msg := msg.(type) {
+	case tabActivatedMsg:
+		// Re-entering the tab re-asks: screen entry is the
+		// cadence at which live-read facts are read.
+		return s, fetchNodeAddressesCmd(tabPairing)
+	case nodeAddressesMsg:
+		s.restOnion = msg.addrs.LNDRESTOnion
+		s.fetched = true
+		s.fetchErr = msg.err != nil
+	}
 	return s, nil
 }
 
@@ -156,7 +171,7 @@ func (s *PairingScreen) View(
 	p := newPane(w)
 	p.title(theme.Lightning, "⚡ Zeus — LND REST")
 
-	restOnion := readOnion(paths.TorLNDRESTHostname)
+	restOnion := s.restOnion
 
 	if cfg.P2PMode == "hybrid" {
 		p.line(" " + theme.Header.Render(
@@ -173,7 +188,15 @@ func (s *PairingScreen) View(
 	}
 
 	if restOnion == "" {
-		p.warn("Tor not available")
+		switch {
+		case !s.fetched:
+			p.dim("Reading the node's Tor address...")
+		case s.fetchErr:
+			p.warn("Cannot read the node's Tor address — " +
+				"check: journalctl -u vpn-helperd")
+		default:
+			p.warn("Tor not available")
+		}
 	} else {
 		p.labelLine("Server:")
 		p.monoWrap(restOnion)

@@ -7,7 +7,6 @@ import (
 	"charm.land/bubbles/v2/textinput"
 	tea "charm.land/bubbletea/v2"
 
-	"github.com/virtualprivatenode/vpn/internal/installer"
 	"github.com/virtualprivatenode/vpn/internal/theme"
 )
 
@@ -37,6 +36,10 @@ type SyncthingPairScreen struct {
 	focusZone int // 0=input, 1=buttons
 	btnIdx    int
 	pairError string
+	// This node's Syncthing device ID, live-read at screen
+	// entry through the helper (no stored copy exists
+	// anywhere) and held only for this screen's lifetime.
+	nodeDeviceID string
 }
 
 func NewSyncthingPairScreen(
@@ -52,7 +55,7 @@ func NewSyncthingPairScreen(
 // ── Screen interface ────────────────────────────────────
 
 func (s *SyncthingPairScreen) Init() tea.Cmd {
-	return nil
+	return fetchNodeAddressesCmd(tabSyncthingPair)
 }
 
 func (s *SyncthingPairScreen) HandleKey(
@@ -80,6 +83,12 @@ func (s *SyncthingPairScreen) HandleMsg(
 			s.input, cmd = s.input.Update(msg)
 			return s, cmd
 		}
+	case tabActivatedMsg:
+		// Re-entering the tab re-asks: screen entry is the
+		// cadence at which live-read facts are read.
+		return s, fetchNodeAddressesCmd(tabSyncthingPair)
+	case nodeAddressesMsg:
+		s.nodeDeviceID = msg.addrs.SyncthingDeviceID
 	case syncthingPairedMsg:
 		if msg.err != nil {
 			s.pairError = msg.err.Error()
@@ -331,7 +340,7 @@ func (s *SyncthingPairScreen) handlePostPairKey(
 	case "enter":
 		switch s.btnIdx {
 		case 0: // Show QR
-			vpsDeviceID := installer.GetSyncthingDeviceID()
+			vpsDeviceID := s.nodeDeviceID
 			if vpsDeviceID == "" {
 				return s, nil
 			}
@@ -496,7 +505,7 @@ func (s *SyncthingPairScreen) viewPostPair(
 				"Complete Pairing"), w))
 	lines = append(lines, "")
 
-	vpsDeviceID := installer.GetSyncthingDeviceID()
+	vpsDeviceID := s.nodeDeviceID
 	if vpsDeviceID != "" {
 		lines = append(lines,
 			" "+theme.Dim.Render(

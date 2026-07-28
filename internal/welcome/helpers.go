@@ -17,32 +17,13 @@ import (
 	"github.com/virtualprivatenode/vpn/internal/theme"
 )
 
-// onionBoardFile maps a Tor hidden-service hostname path to
-// its staged copy on the board — the unprivileged read path
-// for onion addresses (the originals are readable only by
-// root and the tor user).
-var onionBoardFile = map[string]string{
-	paths.TorBitcoinP2P + "/hostname": paths.StateOnionBitcoinP2P,
-	paths.TorLNDGRPC + "/hostname":    paths.StateOnionLNDGRPC,
-	paths.TorLNDRESTHostname:          paths.StateOnionLNDREST,
-	paths.TorSyncthingHostname:        paths.StateOnionSyncthing,
-}
-
-func readOnion(path string) string {
-	board, ok := onionBoardFile[path]
-	if !ok {
-		logger.Status("readOnion: no staged copy mapped for %s", path)
-		return ""
-	}
-	v, err := helper.ReadBoardString(board)
-	if err != nil {
-		// Fail-noisy: the screen renders the address as
-		// unavailable; the log names the missing fact.
-		logger.Status("%v", err)
-		return ""
-	}
-	return v
-}
+// Onion addresses have NO unprivileged copy: screens that
+// display one fetch it live at entry with
+// fetchNodeAddressesCmd (cmds.go) and render from their own
+// state. The originals are readable only by root and the tor
+// user, and a staged copy could outlive a hidden service that
+// root destroyed and recreated — a dead address rendered
+// confidently, with no failure moment to catch it.
 
 func readMacaroonHex(cfg *config.AppConfig) string {
 	data, err := helper.ReadBoard(paths.StateLNDMacaroon)

@@ -532,17 +532,74 @@ func (c *Client) getPeerAlias(pubkey string) string {
 }
 
 func (c *Client) handleError(err error) {
-	errStr := err.Error()
-	if strings.Contains(errStr, "DeadlineExceeded") || strings.Contains(errStr, "context deadline") {
-		return
-	}
-	if strings.Contains(errStr, "starting up") || strings.Contains(errStr, "not yet ready") {
-		return
-	}
-	if strings.Contains(errStr, "Unavailable") || strings.Contains(errStr, "connection refused") {
-		logger.Status("LND connection lost, will reconnect: %v", err)
+	switch classifyRPCError(err.Error()) {
+	case rpcErrTransport:
+		logger.Status("LND connection lost, will reconnect: %v",
+			err)
 		go c.Reconnect()
+	case rpcErrCredential:
+		// Reconnecting is only useful when the dial-time
+		// repair could actually re-stage the credentials —
+		// otherwise the dial would rebuild the same connection
+		// from the same board copies and fail the same way. A
+		// credential LND rejects PERMANENTLY (not stale — e.g.
+		// a wallet recreated behind this process's back) would
+		// otherwise produce a reconnect and a log line for
+		// every failing call on every poll tick, forever. The
+		// re-stage limiter is the damper: one repair attempt
+		// per interval, quiet in between.
+		if credRestageWorthwhile() {
+			logger.Status("LND rejected the held credentials, "+
+				"will reconnect and repair: %v", err)
+			go c.Reconnect()
+		}
 	}
+}
+
+// RPC error classes, by what would help:
+//
+//   - transport: the connection itself is gone (Unavailable,
+//     connection refused) — LND restarted or is down; rebuild
+//     the connection and the next dial finds out.
+//   - credential: LND answered but rejected the caller
+//     (PermissionDenied, Unauthenticated) — the fail-closed
+//     moment of a stale staged macaroon. Treating this as
+//     terminal left that staleness permanent; routing it
+//     through Reconnect (damped, above) lands it at the
+//     dial-time repair, which re-stages both LND credentials
+//     and retries once.
+//   - other: in-progress states (deadline, starting up, not
+//     yet ready) and application answers over a working
+//     connection — nothing a reconnect can help.
+type rpcErrClass int
+
+const (
+	rpcErrOther rpcErrClass = iota
+	rpcErrTransport
+	rpcErrCredential
+)
+
+// classifyRPCError sorts an RPC error into the classes above.
+// Matching on error text is unavoidable — grpc flattens error
+// chains into strings. Pure — unit-tested.
+func classifyRPCError(errStr string) rpcErrClass {
+	if strings.Contains(errStr, "DeadlineExceeded") ||
+		strings.Contains(errStr, "context deadline") {
+		return rpcErrOther
+	}
+	if strings.Contains(errStr, "starting up") ||
+		strings.Contains(errStr, "not yet ready") {
+		return rpcErrOther
+	}
+	if strings.Contains(errStr, "Unavailable") ||
+		strings.Contains(errStr, "connection refused") {
+		return rpcErrTransport
+	}
+	if strings.Contains(errStr, "PermissionDenied") ||
+		strings.Contains(errStr, "Unauthenticated") {
+		return rpcErrCredential
+	}
+	return rpcErrOther
 }
 
 func satStr(sats int64) string {

@@ -305,6 +305,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.latestVersion = string(msg)
 		m.screenCtx.LatestVersion = string(msg)
 		return m, nil
+	case nodeAddressesMsg:
+		// Live-read answer — deliver to the screen that asked
+		// (it recorded which tab kind it lives on).
+		return m.dispatchToTab(msg.tab, msg)
 	case syncthingPairedMsg:
 		if msg.err == nil {
 			m.cfg.AddSyncthingDevice(msg.deviceID)

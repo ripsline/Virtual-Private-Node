@@ -25,31 +25,6 @@ import (
 	"github.com/virtualprivatenode/vpn/internal/system"
 )
 
-// StageOnionHostname copies a Tor hidden-service hostname file
-// to the board. Tor creates hostname files asynchronously after
-// a restart, so this waits briefly for the file to appear. A
-// hostname that never appears is treated as "this hidden
-// service is not configured": the board entry is removed, and a
-// screen that needs it reports unavailable rather than showing
-// a stale address.
-func StageOnionHostname(src, dst string) error {
-	deadline := time.Now().Add(20 * time.Second)
-	for {
-		data, err := os.ReadFile(src)
-		if err == nil && len(bytes.TrimSpace(data)) > 0 {
-			return helper.WriteBoard(dst,
-				append(bytes.TrimSpace(data), '\n'))
-		}
-		if time.Now().After(deadline) {
-			logger.System(
-				"staging: %s absent after 20s — removing the "+
-					"staged copy (service not configured?)", src)
-			return helper.RemoveBoard(dst)
-		}
-		time.Sleep(500 * time.Millisecond)
-	}
-}
-
 // StageLNDTLSCert copies LND's TLS certificate (the public
 // half only — tls.key never moves) to the board. LND rewrites
 // the cert during startup when its parameters change, so this
@@ -141,39 +116,21 @@ func StageSyncthingAPIKey() error {
 		paths.StateSyncthingAPIKey, []byte(key+"\n"))
 }
 
-// StageSyncthingDeviceID stages this node's Syncthing device
-// ID (shown during pairing; derived from Syncthing's TLS
-// identity, so it changes only when Syncthing is reinstalled).
-func StageSyncthingDeviceID() error {
-	id := GetSyncthingDeviceID()
-	if id == "" {
-		return fmt.Errorf("could not read the Syncthing device ID")
-	}
-	return helper.WriteBoard(
-		paths.StateSyncthingDevID, []byte(id+"\n"))
-}
-
-// StageSSHAuthFact records sshd's EFFECTIVE password-auth
-// answer for the admin user ("yes"/"no"), by asking sshd itself
-// (sshd -T with a simulated connection). Staged after every
-// SSH-config write, it is what unprivileged code consults where
-// it once ran the query via sudo. The staged answer is an
-// observation taken AFTER the write it follows — stronger than
-// trusting our own config, one step short of querying live
-// (which needs root). Consumers treat a missing or unreadable
-// fact as "unavailable" and refuse risky actions.
-func StageSSHAuthFact() error {
-	enabled, err := queryEffectiveSSHPasswordAuth()
-	if err != nil {
-		return fmt.Errorf(
-			"observe sshd password-auth state: %w", err)
-	}
-	v := "no"
-	if enabled {
-		v = "yes"
-	}
-	return helper.WriteBoard(
-		paths.StateSSHPasswordAuth, []byte(v+"\n"))
+// retiredBoardFiles are board files earlier releases staged
+// that no longer exist as facts: onion addresses, the
+// Syncthing device ID, and the SSH password-auth answer are
+// read LIVE through the helper's read-only verbs now, so a
+// copy on disk is only a chance to be stale. The install's
+// staging step deletes any that survive from an earlier
+// install (nothing reads them; removing them keeps the board
+// equal to the declared fact list).
+var retiredBoardFiles = []string{
+	paths.StateDir + "/onion-bitcoin-p2p",
+	paths.StateDir + "/onion-lnd-grpc",
+	paths.StateDir + "/onion-lnd-rest",
+	paths.StateDir + "/onion-syncthing",
+	paths.StateDir + "/syncthing-device-id",
+	paths.StateDir + "/ssh-password-auth",
 }
 
 // StageBoardAll builds the complete board at install time:
@@ -201,34 +158,18 @@ func StageBoardAll() error {
 	}
 
 	facts := []fact{
-		{"onion-bitcoin-p2p", func() error {
-			return StageOnionHostname(
-				paths.TorBitcoinP2P+"/hostname",
-				paths.StateOnionBitcoinP2P)
-		}, nil},
-		{"onion-lnd-grpc", func() error {
-			return StageOnionHostname(
-				paths.TorLNDGRPC+"/hostname",
-				paths.StateOnionLNDGRPC)
-		}, nil},
-		{"onion-lnd-rest", func() error {
-			return StageOnionHostname(
-				paths.TorLNDRESTHostname,
-				paths.StateOnionLNDREST)
-		}, nil},
-		{"onion-syncthing", func() error {
-			return StageOnionHostname(
-				paths.TorSyncthingHostname,
-				paths.StateOnionSyncthing)
-		}, func() bool { return !haveSyncthing }},
 		{"lnd-tls-cert", StageLNDTLSCert, nil},
 		{"lnd-admin-macaroon", StageLNDMacaroon,
 			func() bool { return !haveWallet }},
 		{"syncthing-api-key", StageSyncthingAPIKey,
 			func() bool { return !haveSyncthing }},
-		{"syncthing-device-id", StageSyncthingDeviceID,
-			func() bool { return !haveSyncthing }},
-		{"ssh-password-auth", StageSSHAuthFact, nil},
+	}
+	// Board hygiene on migrated boxes: drop files this release
+	// no longer stages (their facts are live-read now).
+	for _, f := range retiredBoardFiles {
+		if err := helper.RemoveBoard(f); err != nil {
+			return err
+		}
 	}
 	for _, f := range facts {
 		if f.skip != nil && f.skip() {

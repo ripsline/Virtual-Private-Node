@@ -35,14 +35,27 @@ const (
 	BitcoinDir  = "/etc/bitcoin"
 
 	// StateDir is the staging board: root-written files that
-	// carry privileged facts (onion hostnames, staged
-	// credentials) to the unprivileged admin user. The
-	// directory is root:vpn 0750; each file root:vpn 0640.
-	// Root (the installer and the helper) writes; the admin
-	// user reads. Every file is re-written by whatever
-	// operation changes the fact it carries — a reader that
-	// finds a file missing or unreadable reports the feature
-	// unavailable and logs why, never guesses.
+	// carry privileged facts (staged credentials) to the
+	// unprivileged admin user. The directory is root:vpn
+	// 0750; each file root:vpn 0640. Root (the installer and
+	// the helper) writes; the admin user reads. Every file is
+	// re-written by whatever operation changes the fact it
+	// carries — a reader that finds a file missing or
+	// unreadable reports the feature unavailable and logs
+	// why, never guesses.
+	//
+	// Only facts consumed at MACHINE cadence (per RPC call,
+	// per dial) live here — credentials, which fail closed at
+	// the moment of use when stale, so a stale copy cannot
+	// hide. Display facts consumed at HUMAN cadence (onion
+	// addresses, the Syncthing device ID, the SSH
+	// password-auth answer) have no copy at all: a stale copy
+	// of those would render confidently wrong with no failure
+	// to catch it, so the TUI reads them live through the
+	// helper's read-only verbs instead. Every board file
+	// declares how it stays fresh in the helper's freshness
+	// table (internal/helperd/matrix.go), and a unit test
+	// fails on any file without a declaration.
 	//
 	// The board lives under /var/lib/vpn — NOT under /etc/vpn
 	// — deliberately: /etc/vpn is owned by the admin user (the
@@ -59,13 +72,7 @@ const (
 	StateBitcoindRPCPass = StateDir + "/bitcoind-rpc.pass"
 	StateLNDTLSCert      = StateDir + "/lnd-tls.cert"
 	StateLNDMacaroon     = StateDir + "/lnd-admin.macaroon"
-	StateOnionBitcoinP2P = StateDir + "/onion-bitcoin-p2p"
-	StateOnionLNDGRPC    = StateDir + "/onion-lnd-grpc"
-	StateOnionLNDREST    = StateDir + "/onion-lnd-rest"
-	StateOnionSyncthing  = StateDir + "/onion-syncthing"
 	StateSyncthingAPIKey = StateDir + "/syncthing-api-key"
-	StateSyncthingDevID  = StateDir + "/syncthing-device-id"
-	StateSSHPasswordAuth = StateDir + "/ssh-password-auth"
 
 	LNDConf = "/etc/lnd/lnd.conf"
 	LNDDir  = "/etc/lnd"
@@ -157,6 +164,19 @@ const (
 	SyncthingService  = "/etc/systemd/system/syncthing.service"
 	BackupWatchPath   = "/etc/systemd/system/lnd-backup-watch.path"
 	BackupCopyService = "/etc/systemd/system/lnd-backup-copy.service"
+
+	// The LND TLS certificate watch. LND rewrites tls.cert on
+	// its own (tlsautorefresh in lnd.conf regenerates it at
+	// any startup whose parameters changed or whose cert
+	// nears expiry) — no TUI-requested operation is
+	// involved, so no operation can re-stage the TUI's
+	// copy. This path unit closes that gap at the source: a
+	// rewrite of the certificate triggers the stage service,
+	// which refreshes the staged copy within seconds.
+	LNDCertWatchPath        = "/etc/systemd/system/vpn-lnd-cert-watch.path"
+	LNDCertStageService     = "/etc/systemd/system/vpn-lnd-cert-stage.service"
+	LNDCertWatchPathName    = "vpn-lnd-cert-watch.path"
+	LNDCertStageServiceName = "vpn-lnd-cert-stage.service"
 
 	// The root helper's socket-activated units. The socket
 	// node's ownership and mode (root:vpn 0660, created by

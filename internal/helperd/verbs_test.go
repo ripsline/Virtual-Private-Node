@@ -49,6 +49,12 @@ func TestVerbMenuIsExactlyTheRuledSet(t *testing.T) {
 		helper.VerbSelfUpdate,
 		helper.VerbSetP2PMode,
 		helper.VerbSyncthingInstall,
+		// Read-only verbs: no parameters, no mutation. They
+		// serve the live-read display facts (onion addresses,
+		// the Syncthing device ID, the SSH password-auth
+		// answer), which keep no board copy.
+		helper.VerbReadNodeAddresses,
+		helper.VerbReadSSHAuth,
 	}
 	if len(verbs) != len(want) {
 		t.Errorf("verb menu has %d entries, want %d",

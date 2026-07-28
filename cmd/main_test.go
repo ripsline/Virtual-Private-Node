@@ -58,4 +58,13 @@ func TestParseArgs(t *testing.T) {
 		[]string{"helperd", "--flag"}); err == nil {
 		t.Error("helperd with arguments accepted")
 	}
+
+	cmd, _, err = parseArgs([]string{"stage-lnd-cert"})
+	if err != nil || cmd != cmdStageLNDCert {
+		t.Errorf("stage-lnd-cert: got (%v,%v)", cmd, err)
+	}
+	if _, _, err := parseArgs(
+		[]string{"stage-lnd-cert", "--flag"}); err == nil {
+		t.Error("stage-lnd-cert with arguments accepted")
+	}
 }

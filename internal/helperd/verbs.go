@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
 	"strings"
 	"time"
 
@@ -54,6 +55,8 @@ var verbs = map[string]verbDef{
 	helper.VerbSelfUpdate:           {15 * time.Minute, verbSelfUpdate},
 	helper.VerbSetP2PMode:           {8 * time.Minute, verbSetP2PMode},
 	helper.VerbSyncthingInstall:     {30 * time.Minute, verbSyncthingInstall},
+	helper.VerbReadNodeAddresses:    {1 * time.Minute, verbReadNodeAddresses},
+	helper.VerbReadSSHAuth:          {1 * time.Minute, verbReadSSHAuth},
 }
 
 // decode unmarshals params strictly: unknown fields are an
@@ -237,6 +240,61 @@ func verbStageLNDCredentials(_ *verbCtx, _ json.RawMessage) (any, error) {
 	return nil, restage(helper.VerbStageLNDCredentials)
 }
 
+// ── Read-only verbs ──────────────────────────────────────
+//
+// Live reads for display facts the TUI needs at human
+// cadence (screen entry). These facts can change with no
+// operation of ours involved — a root login can destroy and
+// recreate hidden-service directories, an sshd drop-in can be
+// edited by hand or by provider tooling — and a fact with no
+// failure moment cannot be repaired at one. So no copy is
+// kept anywhere: the answer is read from its source at the
+// moment of the question, and what the screen shows is what
+// is true right now. Cost per read: one socket round-trip, a
+// handful of times per session. Both verbs take no parameters
+// and change nothing; they get the same peer-credential check
+// and journal record as every other verb.
+
+// readHostname reads a Tor hidden-service hostname file. A
+// missing or empty file means that service is not configured
+// on this box — reported as an empty field, which screens
+// render as unavailable.
+func readHostname(path string) string {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(data))
+}
+
+func verbReadNodeAddresses(_ *verbCtx, _ json.RawMessage) (any, error) {
+	return helper.NodeAddressesResult{
+		BitcoinP2POnion: readHostname(
+			paths.TorBitcoinP2P + "/hostname"),
+		LNDGRPCOnion: readHostname(
+			paths.TorLNDGRPC + "/hostname"),
+		LNDRESTOnion:   readHostname(paths.TorLNDRESTHostname),
+		SyncthingOnion: readHostname(paths.TorSyncthingHostname),
+		// Root-side read: parses Syncthing's own config, so it
+		// answers correctly even when the daemon is stopped.
+		SyncthingDeviceID: installer.GetSyncthingDeviceID(),
+	}, nil
+}
+
+func verbReadSSHAuth(_ *verbCtx, _ json.RawMessage) (any, error) {
+	// Root branch of EffectiveSSHPasswordAuth: sshd -T with a
+	// simulated connection for the admin user — the first-
+	// match-wins election across sshd_config and every
+	// drop-in, not any single file's vote. An error (broken
+	// sshd setup) fails the verb; callers refuse the risky
+	// action rather than guessing.
+	enabled, err := installer.EffectiveSSHPasswordAuth()
+	if err != nil {
+		return nil, err
+	}
+	return helper.SSHAuthResult{PasswordAuthEnabled: enabled}, nil
+}
+
 // ── Config writers (templates live on this side) ─────────
 
 func verbRebuildSSHConfig(_ *verbCtx, params json.RawMessage) (any, error) {
@@ -253,7 +311,10 @@ func verbRebuildSSHConfig(_ *verbCtx, params json.RawMessage) (any, error) {
 	if err := installer.RebuildSSHHardeningConfig(view); err != nil {
 		return nil, err
 	}
-	return nil, restage(helper.VerbRebuildSSHConfig)
+	// Nothing to re-stage: the effective password-auth answer
+	// is not copied anywhere — readers ask the read-ssh-auth
+	// verb, which queries sshd live.
+	return nil, nil
 }
 
 func verbRebuildTorConfig(_ *verbCtx, params json.RawMessage) (any, error) {
@@ -276,7 +337,12 @@ func verbRebuildTorConfig(_ *verbCtx, params json.RawMessage) (any, error) {
 	if err := installer.RestartTor(); err != nil {
 		return nil, err
 	}
-	return nil, restage(helper.VerbRebuildTorConfig)
+	// Nothing to re-stage: onion addresses are not copied
+	// anywhere — readers ask the read-node-addresses verb,
+	// which reads the hostname files live (and a hostname
+	// that newly exists after this rebuild is simply there on
+	// the next read).
+	return nil, nil
 }
 
 // ── Streaming verbs ──────────────────────────────────────

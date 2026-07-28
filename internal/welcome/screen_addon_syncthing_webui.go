@@ -4,7 +4,6 @@ import (
 	"charm.land/bubbles/v2/key"
 	tea "charm.land/bubbletea/v2"
 
-	"github.com/virtualprivatenode/vpn/internal/paths"
 	"github.com/virtualprivatenode/vpn/internal/theme"
 )
 
@@ -12,11 +11,18 @@ import (
 // Shows Syncthing Web UI connection info: URL, user,
 // password with show/hide toggle. Two buttons: Full URL
 // and Show/Hide Password.
+//
+// The web UI's onion address is live-read at screen entry
+// (no stored copy exists anywhere) and held only for this
+// screen's lifetime.
 
 type SyncthingWebUIScreen struct {
 	ctx         *ScreenContext
 	btnIdx      int // 0=Full URL, 1=Show/Hide Password
 	showSecrets bool
+	syncOnion   string
+	fetched     bool // the live read answered
+	fetchErr    bool // ...with an error (already logged)
 }
 
 func NewSyncthingWebUIScreen(
@@ -30,7 +36,7 @@ func NewSyncthingWebUIScreen(
 // ── Screen interface ────────────────────────────────────
 
 func (s *SyncthingWebUIScreen) Init() tea.Cmd {
-	return nil
+	return fetchNodeAddressesCmd(tabSyncthingWebUI)
 }
 
 func (s *SyncthingWebUIScreen) HandleKey(
@@ -70,8 +76,7 @@ func (s *SyncthingWebUIScreen) handleEnter() (
 ) {
 	switch s.btnIdx {
 	case 0: // Full URL
-		syncOnion := readOnion(
-			paths.TorSyncthingHostname)
+		syncOnion := s.syncOnion
 		if syncOnion != "" {
 			url := "http://" + syncOnion + ":8384"
 			return s, func() tea.Msg {
@@ -87,6 +92,16 @@ func (s *SyncthingWebUIScreen) handleEnter() (
 func (s *SyncthingWebUIScreen) HandleMsg(
 	msg tea.Msg,
 ) (Screen, tea.Cmd) {
+	switch msg := msg.(type) {
+	case tabActivatedMsg:
+		// Re-entering the tab re-asks: screen entry is the
+		// cadence at which live-read facts are read.
+		return s, fetchNodeAddressesCmd(tabSyncthingWebUI)
+	case nodeAddressesMsg:
+		s.syncOnion = msg.addrs.SyncthingOnion
+		s.fetched = true
+		s.fetchErr = msg.err != nil
+	}
 	return s, nil
 }
 
@@ -96,9 +111,17 @@ func (s *SyncthingWebUIScreen) View(
 	p := newPane(w)
 	p.title(theme.Header, "↻ Syncthing Web UI")
 
-	syncOnion := readOnion(paths.TorSyncthingHostname)
+	syncOnion := s.syncOnion
 	if syncOnion == "" {
-		p.warn("Tor address not available yet.")
+		switch {
+		case !s.fetched:
+			p.dim("Reading the web UI's Tor address...")
+		case s.fetchErr:
+			p.warn("Cannot read the web UI's Tor address — " +
+				"check: journalctl -u vpn-helperd")
+		default:
+			p.warn("Tor address not available yet.")
+		}
 		return p.renderWithBottomButtons(
 			[]string{"Waiting..."}, 0, false, h)
 	}

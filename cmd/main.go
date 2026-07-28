@@ -43,6 +43,39 @@ func main() {
 			fmt.Fprintf(os.Stderr, "vpn helperd: %v\n", err)
 			os.Exit(1)
 		}
+	case cmdStageLNDCert:
+		// Run by systemd's certificate watch (a path unit on
+		// LND's tls.cert) — never by hand. LND rewrites its
+		// certificate on its own (tlsautorefresh); this
+		// refreshes the TUI's staged copy to match. Its
+		// output lands in this oneshot unit's own journal
+		// (journalctl -u vpn-lnd-cert-stage.service), which is
+		// where watcher-driven restages are audited — the
+		// helper's journal only records operations that went
+		// through the helper's socket.
+		if os.Geteuid() != 0 {
+			fmt.Fprintln(os.Stderr,
+				"vpn stage-lnd-cert runs as root via its "+
+					"systemd unit — it is not meant to be "+
+					"started by hand")
+			os.Exit(1)
+		}
+		// Explicit dispatch, nothing inferred — but refuse
+		// fast and clearly on a box this command cannot apply
+		// to, instead of waiting out the stager's stability
+		// window against a file that will never appear.
+		if _, err := os.Stat(config.DefaultPath); err != nil {
+			fmt.Fprintf(os.Stderr,
+				"vpn stage-lnd-cert: no configuration at %s "+
+					"— this node is not installed\n",
+				config.DefaultPath)
+			os.Exit(1)
+		}
+		if err := installer.StageLNDTLSCert(); err != nil {
+			fmt.Fprintf(os.Stderr, "vpn stage-lnd-cert: %v\n", err)
+			os.Exit(1)
+		}
+		fmt.Println("staged LND TLS certificate copy refreshed")
 	case cmdVersion:
 		fmt.Println(version)
 	case cmdHelp:
@@ -94,6 +127,7 @@ const (
 	cmdConsole command = iota
 	cmdInstall
 	cmdHelperd
+	cmdStageLNDCert
 	cmdVersion
 	cmdHelp
 )
@@ -131,6 +165,12 @@ func parseArgs(
 				"helperd takes no arguments")
 		}
 		return cmdHelperd, opts, nil
+	case "stage-lnd-cert":
+		if len(args) > 1 {
+			return 0, opts, fmt.Errorf(
+				"stage-lnd-cert takes no arguments")
+		}
+		return cmdStageLNDCert, opts, nil
 	case "version", "--version", "-v":
 		return cmdVersion, opts, nil
 	case "help", "--help", "-h":
@@ -156,6 +196,9 @@ Usage:
                      and password login disabled)
   vpn helperd        the node's root helper (started by systemd
                      through its socket, not by hand)
+  vpn stage-lnd-cert refresh the node's staged copy of the
+                     LND TLS certificate (run by systemd's
+                     certificate watch, not by hand)
   vpn version        print the version
 `
 }
