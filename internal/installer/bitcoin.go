@@ -117,6 +117,10 @@ zmqpubrawtx=tcp://127.0.0.1:%d
 // credential, staging the matching password on the board in
 // the same operation — the hashed line and the cleartext are
 // only ever replaced together, so they cannot drift apart.
+// Together is not atomic: a failure between the two writes
+// leaves them divergent, but detectably so — the install
+// aborts loudly and RPC auth keeps failing with a clear
+// mismatch message until a rerun replaces the pair.
 func writeBitcoinConfig(cfg *config.AppConfig) error {
 	rpcauthLine, err := writeRPCAuthCredential()
 	if err != nil {

@@ -1005,13 +1005,14 @@ export -f bitcoin-cli
 		content += fmt.Sprintf(`
 lncli() {
     /usr/local/bin/lncli \
-        --rpcserver=localhost:10009 \%s
+        --rpcserver=%s \%s
         --macaroonpath=%s \
         --tlscertpath=%s \
         "$@"
 }
 export -f lncli
-`, lndNetFlag, paths.StateLNDMacaroon, paths.StateLNDTLSCert)
+`, paths.LNDGRPCEndpoint, lndNetFlag,
+			paths.StateLNDMacaroon, paths.StateLNDTLSCert)
 	}
 
 	if content == "" {
