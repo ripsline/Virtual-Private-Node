@@ -189,9 +189,21 @@ bantime = 600
 // Tor's SOCKS proxy. This ensures apt-get install/upgrade commands
 // (GPG, PostgreSQL, Syncthing, fail2ban, unattended-upgrades) don't
 // leak the server's IP to Debian mirrors or third-party repositories.
+//
+// The Acquire timeout and retry lines bound apt's DOWNLOAD phase —
+// its kill-safe phase — which matters most over Tor, where a stalled
+// circuit could otherwise hold a package operation (and with it the
+// root helper's serialized queue) indefinitely. The INSTALL phase is
+// deliberately left unbounded here: interrupting dpkg mid-transaction
+// corrupts package state, which is exactly why the package-update
+// budget is generous. (The pre-Tor apt operations run before this
+// file exists and rely on apt's stock 120-second timeout default.)
 func configureAptTor() error {
 	content := `Acquire::http::Proxy "socks5h://127.0.0.1:9050";
 Acquire::https::Proxy "socks5h://127.0.0.1:9050";
+Acquire::http::Timeout "60";
+Acquire::https::Timeout "60";
+Acquire::Retries "3";
 `
 	return system.SudoWriteFile("/etc/apt/apt.conf.d/99-tor-proxy",
 		[]byte(content), 0644)

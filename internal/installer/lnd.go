@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/virtualprivatenode/vpn/internal/config"
+	"github.com/virtualprivatenode/vpn/internal/helper"
 	"github.com/virtualprivatenode/vpn/internal/logger"
 	"github.com/virtualprivatenode/vpn/internal/paths"
 	"github.com/virtualprivatenode/vpn/internal/system"
@@ -190,8 +191,19 @@ healthcheck.diskspace.interval=12h
 	return system.SudoRun("chown", "root:"+systemUser, paths.LNDConf)
 }
 
-func writeLNDServiceInitial(username string) error {
-	content := fmt.Sprintf(`[Unit]
+// lndServiceUnit renders the LND systemd unit. withUnlock adds
+// LND's --wallet-unlock-password-file flag, pointing at the
+// root-staged password file, so the wallet unlocks without an
+// operator on every service start. Everything else about the
+// two variants is identical by construction — they come from
+// this one template. Pure — unit-tested.
+func lndServiceUnit(username string, withUnlock bool) string {
+	unlockFlag := ""
+	if withUnlock {
+		unlockFlag = " --wallet-unlock-password-file=" +
+			paths.LNDWalletPassword
+	}
+	return fmt.Sprintf(`[Unit]
 Description=LND Lightning Network Daemon
 After=bitcoind.service tor.service
 Wants=bitcoind.service
@@ -200,7 +212,7 @@ Wants=bitcoind.service
 Type=simple
 User=%s
 Group=%s
-ExecStart=/usr/local/bin/lnd --configfile=/etc/lnd/lnd.conf
+ExecStart=/usr/local/bin/lnd --configfile=/etc/lnd/lnd.conf%s
 Restart=on-failure
 RestartSec=30
 TimeoutStopSec=300
@@ -210,10 +222,50 @@ NoNewPrivileges=true
 
 [Install]
 WantedBy=multi-user.target
-`, username, username)
-	return system.SudoWriteFile(paths.LNDService, []byte(content), 0644)
+`, username, username, unlockFlag)
 }
 
+// writeLNDService writes the LND unit in the requested variant.
+func writeLNDService(username string, withUnlock bool) error {
+	return system.SudoWriteFile(paths.LNDService,
+		[]byte(lndServiceUnit(username, withUnlock)), 0644)
+}
+
+// writeLNDServiceFromConfig writes the LND unit that matches the
+// node's RECORDED state: the unlock variant when the config says
+// auto-unlock is enabled AND the wallet password file is actually
+// present, the plain variant otherwise. An install pass does not
+// only run on fresh boxes — on a reinstall or a migration the
+// auto_unlock answer and the password file both carry over, and
+// unconditionally writing the plain unit there disarmed
+// auto-unlock at the next service restart while the config still
+// claimed it enabled. Requiring the file too is deliberate: a
+// unit pointing at a missing password file would keep LND from
+// starting at all.
+func writeLNDServiceFromConfig(cfg *config.AppConfig, username string) error {
+	withUnlock := cfg.AutoUnlock && walletPasswordFileExists()
+	if cfg.AutoUnlock && !withUnlock {
+		logger.Install(
+			"auto_unlock is enabled in the config but %s is "+
+				"missing — writing the LND unit without the unlock "+
+				"flag; re-enable auto-unlock from the node console",
+			paths.LNDWalletPassword)
+	}
+	return writeLNDService(username, withUnlock)
+}
+
+func walletPasswordFileExists() bool {
+	_, err := os.Stat(paths.LNDWalletPassword)
+	return err == nil
+}
+
+// startLND enables and starts LND. `systemctl restart` rather
+// than `start`, deliberately: start is a no-op on a service that
+// is already running, and an install pass can run on a box where
+// LND already runs under a PREVIOUS unit and config (reinstall,
+// migration). Restart makes the unit and config this run just
+// wrote the ones actually in effect; on a fresh box the two
+// commands are equivalent.
 func startLND() error {
 	if err := system.SudoRun("systemctl", "daemon-reload"); err != nil {
 		return err
@@ -221,12 +273,14 @@ func startLND() error {
 	if err := system.SudoRun("systemctl", "enable", "lnd"); err != nil {
 		return err
 	}
-	return system.SudoRun("systemctl", "start", "lnd")
+	return system.SudoRun("systemctl", "restart", "lnd")
 }
 
 func setupAutoUnlock(password string) error {
-	// Write password to a secure temp file, then sudo move it.
-	// os.CreateTemp uses O_EXCL to prevent symlink attacks.
+	// Write the password to a secure temp file, then move it
+	// into place with the service user's ownership (this runs
+	// as root). os.CreateTemp uses O_EXCL to prevent symlink
+	// attacks.
 	tmpFile, err := os.CreateTemp("", "vpn-wallet-pw-")
 	if err != nil {
 		return fmt.Errorf("create temp: %w", err)
@@ -254,28 +308,7 @@ func setupAutoUnlock(password string) error {
 		return fmt.Errorf("move wallet password: %w", err)
 	}
 
-	content := fmt.Sprintf(`[Unit]
-Description=LND Lightning Network Daemon
-After=bitcoind.service tor.service
-Wants=bitcoind.service
-
-[Service]
-Type=simple
-User=%s
-Group=%s
-ExecStart=/usr/local/bin/lnd --configfile=/etc/lnd/lnd.conf --wallet-unlock-password-file=/var/lib/lnd/wallet_password
-Restart=on-failure
-RestartSec=30
-TimeoutStopSec=300
-PrivateTmp=true
-ProtectSystem=full
-NoNewPrivileges=true
-
-[Install]
-WantedBy=multi-user.target
-`, systemUser, systemUser)
-
-	if err := system.SudoWriteFile(paths.LNDService, []byte(content), 0644); err != nil {
+	if err := writeLNDService(systemUser, true); err != nil {
 		return err
 	}
 	if err := system.SudoRun("systemctl", "daemon-reload"); err != nil {
@@ -284,27 +317,37 @@ WantedBy=multi-user.target
 	return system.SudoRun("systemctl", "restart", "lnd")
 }
 
-// disableAutoUnlock removes the wallet password file
-// and rewrites the LND systemd service back to its
-// initial (no auto-unlock) form, then restarts LND.
-// After this returns successfully, LND will require
-// manual unlock (e.g. `lncli unlock`) on next startup.
+// disableAutoUnlock rewrites the LND systemd service back to
+// its initial (no auto-unlock) form, restarts LND, and only
+// THEN removes the wallet password file. After this returns
+// successfully, LND requires manual unlock (e.g. `lncli
+// unlock`) on next startup.
+//
+// The password file is removed LAST, deliberately. The old
+// order (remove first) meant a failure partway left the
+// security-relevant half already done while the operation
+// reported failure and the app still believed auto-unlock was
+// enabled — the state on disk, the service, and the config all
+// disagreed. With removal last, any failure leaves the file in
+// place and the operation honestly failed; a retry converges.
 func disableAutoUnlock() error {
-	// SudoRunSilent because the file may not exist if
-	// called from an inconsistent state — that's fine,
-	// we just want it gone.
-	system.SudoRunSilent(
-		"rm", "-f", paths.LNDWalletPassword)
-
-	if err := writeLNDServiceInitial(systemUser); err != nil {
+	if err := writeLNDService(systemUser, false); err != nil {
 		return fmt.Errorf("rewrite service: %w", err)
 	}
 	if err := system.SudoRun(
 		"systemctl", "daemon-reload"); err != nil {
 		return fmt.Errorf("daemon-reload: %w", err)
 	}
-	return system.SudoRun(
-		"systemctl", "restart", "lnd")
+	if err := system.SudoRun(
+		"systemctl", "restart", "lnd"); err != nil {
+		return fmt.Errorf("restart lnd: %w", err)
+	}
+	// SudoRunSilent because the file may not exist if called
+	// from an inconsistent state — that's fine, we just want
+	// it gone.
+	system.SudoRunSilent(
+		"rm", "-f", paths.LNDWalletPassword)
+	return nil
 }
 
 func waitForLND() error {
@@ -332,35 +375,47 @@ func WaitForLND() error {
 	return waitForLND()
 }
 
-// SetupAutoUnlock writes the wallet password to a
-// permission-locked file and rewrites the LND systemd
-// service to start LND with --wallet-unlock-password-file.
-// LND is restarted as the final step.
+// SetupAutoUnlock enables wallet auto-unlock. As root
+// (installer, helper) it performs the operation directly; from
+// the unprivileged TUI it requests the helper's typed
+// stage-wallet-password operation — the password travels over
+// the local root-owned socket and is written root-side to a
+// file the admin user can never read.
 func SetupAutoUnlock(password string) error {
-	return setupAutoUnlock(password)
+	if os.Geteuid() == 0 {
+		return setupAutoUnlock(password)
+	}
+	return helper.Call(helper.VerbStageWalletPassword,
+		helper.StageWalletPasswordParams{Password: password}, nil)
 }
 
-// DisableAutoUnlock removes the wallet password file and
-// rewrites the LND systemd service back to its initial
-// (no-auto-unlock) form. LND is restarted as the final
-// step. After this call, LND will require manual unlock
-// (e.g. `lncli unlock`) on next startup.
+// DisableAutoUnlock disables wallet auto-unlock (service
+// rewritten and restarted first; password file removed last —
+// see disableAutoUnlock). Root performs it directly; the TUI
+// requests the helper's typed operation.
 func DisableAutoUnlock() error {
-	return disableAutoUnlock()
+	if os.Geteuid() == 0 {
+		return disableAutoUnlock()
+	}
+	return helper.Call(helper.VerbRemoveWalletPassword, nil, nil)
+}
+
+// lndTLSCertBytes returns LND's TLS certificate for client
+// use: read directly where permitted (root; some setups leave
+// it world-readable), else from the staging board copy.
+func lndTLSCertBytes() ([]byte, error) {
+	if data, err := os.ReadFile(paths.LNDTLSCert); err == nil {
+		return data, nil
+	}
+	return helper.ReadBoard(paths.StateLNDTLSCert)
 }
 
 func buildLNDClient() *http.Client {
 	tlsConfig := &tls.Config{}
-	// Try direct read first, fall back to sudo
-	certData, err := os.ReadFile(paths.LNDTLSCert)
+	certData, err := lndTLSCertBytes()
 	if err != nil {
-		output, sudoErr := system.SudoRunOutput("cat", paths.LNDTLSCert)
-		if sudoErr == nil {
-			certData = []byte(output)
-			err = nil
-		}
-	}
-	if err == nil {
+		logger.System("LND REST client: %v", err)
+	} else {
 		pool := x509.NewCertPool()
 		if pool.AppendCertsFromPEM(certData) {
 			tlsConfig.RootCAs = pool

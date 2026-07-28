@@ -2,10 +2,11 @@
 
 // Package lndrpc provides a gRPC client for LND.
 //
-// The client reads the admin macaroon once at startup via sudo
-// (using a temp file that's immediately deleted) and holds it
-// in memory for the duration of the process. The macaroon is
-// injected into every gRPC call as metadata.
+// The client reads the TLS certificate and admin macaroon from
+// the staging board — root-staged copies the admin user reads
+// directly, no privileged operation on the read path — and
+// holds the macaroon in memory for the duration of the process.
+// The macaroon is injected into every gRPC call as metadata.
 //
 // Connection uses TLS to localhost. The macaroon never crosses
 // the network. When the TUI process exits, the macaroon is gone
@@ -21,6 +22,7 @@ import (
 	"crypto/x509"
 	"encoding/hex"
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 
@@ -30,9 +32,9 @@ import (
 
 	"github.com/lightningnetwork/lnd/lnrpc"
 
+	"github.com/virtualprivatenode/vpn/internal/helper"
 	"github.com/virtualprivatenode/vpn/internal/logger"
 	"github.com/virtualprivatenode/vpn/internal/paths"
-	"github.com/virtualprivatenode/vpn/internal/system"
 )
 
 // Client wraps an LND gRPC connection with macaroon authentication.
@@ -63,9 +65,24 @@ func New(network string) *Client {
 func (c *Client) connect() error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	return c.dial(true)
+}
 
-	// Read TLS cert
-	certData, err := system.SudoReadFile(paths.LNDTLSCert)
+// dial establishes the connection; the caller holds c.mu.
+//
+// allowHeal enables the staged-certificate self-heal: LND can
+// regenerate its TLS certificate OUTSIDE any helper operation —
+// an automatic restart after a crash, a reboot, a config change
+// applied by a reinstall — and the staged board copy then no
+// longer matches the certificate LND serves. That staleness
+// reliably surfaces exactly here, as a TLS verification failure
+// on the test call. On one, the client asks the helper to
+// re-stage the LND credentials (rate-limited process-wide) and
+// dials again once with the refreshed board copy.
+func (c *Client) dial(allowHeal bool) error {
+	// Read the staged TLS cert copy (fail-noisy: a missing
+	// staged fact names itself and points at the journal).
+	certData, err := helper.ReadBoard(paths.StateLNDTLSCert)
 	if err != nil {
 		return fmt.Errorf("read TLS cert: %w", err)
 	}
@@ -77,9 +94,9 @@ func (c *Client) connect() error {
 
 	tlsCreds := credentials.NewClientTLSFromCert(certPool, "")
 
-	// Read macaroon
-	macaroonPath := paths.LNDMacaroon(c.networkDir())
-	macBytes, err := system.SudoReadFile(macaroonPath)
+	// Read the staged admin macaroon copy (staged at wallet
+	// creation; re-staged whenever an operation invalidates it).
+	macBytes, err := helper.ReadBoard(paths.StateLNDMacaroon)
 	if err != nil {
 		return fmt.Errorf("read macaroon: %w", err)
 	}
@@ -105,13 +122,66 @@ func (c *Client) connect() error {
 	defer cancel()
 
 	_, err = c.lightning.GetInfo(ctx, &lnrpc.GetInfoRequest{})
-	if err != nil {
-		logger.Status("LND gRPC connected, waiting for RPC ready: %v", err)
-	} else {
+	if err == nil {
 		logger.Status("LND gRPC connected and ready")
+		return nil
 	}
-
+	if allowHeal && isCertificateError(err) &&
+		requestCredentialRestage() {
+		logger.Status("LND gRPC: staged TLS certificate looks "+
+			"stale (%v) — re-staged, reconnecting", err)
+		c.conn.Close()
+		c.conn = nil
+		c.lightning = nil
+		return c.dial(false)
+	}
+	logger.Status("LND gRPC connected, waiting for RPC ready: %v", err)
 	return nil
+}
+
+// isCertificateError reports whether a gRPC connect error looks
+// like a TLS certificate verification failure (as opposed to a
+// down service, a locked wallet, or a plain timeout). Matching
+// on the error text is unavoidable — grpc flattens the tls/x509
+// error chain into a string. Pure — unit-tested.
+func isCertificateError(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := err.Error()
+	return strings.Contains(msg, "x509") ||
+		strings.Contains(msg, "certificate")
+}
+
+// Certificate self-heal state: at most one re-stage request per
+// interval, process-wide — a wrong classification must not turn
+// every reconnect poll into helper traffic.
+var (
+	certRestageMu sync.Mutex
+	certRestageAt time.Time
+)
+
+const certRestageInterval = 5 * time.Minute
+
+// requestCredentialRestage asks the helper to refresh the staged
+// LND credentials from current reality. Reports whether a
+// re-stage actually happened (rate limit passed and the helper
+// succeeded), so the caller only re-dials when the board copy
+// could have changed.
+func requestCredentialRestage() bool {
+	certRestageMu.Lock()
+	defer certRestageMu.Unlock()
+	if !certRestageAt.IsZero() &&
+		time.Since(certRestageAt) < certRestageInterval {
+		return false
+	}
+	certRestageAt = time.Now()
+	if err := helper.Call(
+		helper.VerbStageLNDCredentials, nil, nil); err != nil {
+		logger.Status("stage-lnd-credentials: %v", err)
+		return false
+	}
+	return true
 }
 
 // Reconnect attempts to re-establish the gRPC connection.
@@ -152,15 +222,6 @@ func (c *Client) macaroonCtx() context.Context {
 // callCtx returns a context with macaroon and a timeout.
 func (c *Client) callCtx(timeout time.Duration) (context.Context, context.CancelFunc) {
 	return context.WithTimeout(c.macaroonCtx(), timeout)
-}
-
-// networkDir returns the macaroon network directory name.
-// LND uses "mainnet" not "mainnet" in the path for mainnet.
-func (c *Client) networkDir() string {
-	if c.network == "" {
-		return "mainnet"
-	}
-	return c.network
 }
 
 // rpc returns the Lightning client, or nil if not connected.

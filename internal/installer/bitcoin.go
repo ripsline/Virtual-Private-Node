@@ -54,11 +54,21 @@ func extractAndInstallBitcoin(version, workDir string) error {
 	return nil
 }
 
-// BuildBitcoinConfig generates bitcoin.conf content from config state.
-// Pure logic — no side effects.
-func BuildBitcoinConfig(cfg *config.AppConfig) string {
+// BuildBitcoinConfig generates bitcoin.conf content from config
+// state. Pure logic — no side effects. rpcauthLine, when
+// non-empty, is the salted-hash credential line for this node's
+// own tooling (see rpcauth.go); it is placed in the GLOBAL
+// section deliberately — auth options are not network-scoped,
+// and on testnet4 an appended line would land inside the
+// [testnet4] section.
+func BuildBitcoinConfig(cfg *config.AppConfig, rpcauthLine string) string {
 	net := cfg.NetworkConfig()
 	pruneMB := cfg.PruneSize * 1000
+
+	auth := ""
+	if rpcauthLine != "" {
+		auth = rpcauthLine + "\n"
+	}
 
 	if net.Name == "testnet4" {
 		return fmt.Sprintf(`# Virtual Private Node — Bitcoin Core
@@ -71,7 +81,7 @@ maxmempool=300
 proxy=127.0.0.1:9050
 listen=1
 listenonion=1
-
+%s
 [testnet4]
 bind=127.0.0.1
 rpcbind=127.0.0.1
@@ -79,7 +89,7 @@ rpcport=%d
 rpcallowip=127.0.0.1
 zmqpubrawblock=tcp://127.0.0.1:%d
 zmqpubrawtx=tcp://127.0.0.1:%d
-`, net.BitcoinFlag, pruneMB, cfg.DbCacheMB(),
+`, net.BitcoinFlag, pruneMB, cfg.DbCacheMB(), auth,
 			net.RPCPort, net.ZMQBlockPort, net.ZMQTxPort)
 	}
 
@@ -92,19 +102,27 @@ maxmempool=300
 proxy=127.0.0.1:9050
 listen=1
 listenonion=1
-
+%s
 bind=127.0.0.1
 rpcbind=127.0.0.1
 rpcport=%d
 rpcallowip=127.0.0.1
 zmqpubrawblock=tcp://127.0.0.1:%d
 zmqpubrawtx=tcp://127.0.0.1:%d
-`, pruneMB, cfg.DbCacheMB(),
+`, pruneMB, cfg.DbCacheMB(), auth,
 		net.RPCPort, net.ZMQBlockPort, net.ZMQTxPort)
 }
 
+// writeBitcoinConfig writes bitcoin.conf with a FRESH rpcauth
+// credential, staging the matching password on the board in
+// the same operation — the hashed line and the cleartext are
+// only ever replaced together, so they cannot drift apart.
 func writeBitcoinConfig(cfg *config.AppConfig) error {
-	content := BuildBitcoinConfig(cfg)
+	rpcauthLine, err := writeRPCAuthCredential()
+	if err != nil {
+		return err
+	}
+	content := BuildBitcoinConfig(cfg, rpcauthLine)
 	if err := system.SudoWriteFile(paths.BitcoinConf, []byte(content), 0640); err != nil {
 		return err
 	}
@@ -135,6 +153,13 @@ WantedBy=multi-user.target
 	return system.SudoWriteFile(paths.BitcoindService, []byte(content), 0644)
 }
 
+// startBitcoind enables and starts Bitcoin Core. `systemctl
+// restart` rather than `start`, deliberately: start is a no-op
+// on a service that is already running, and an install pass can
+// run on a box where bitcoind already runs under a PREVIOUS
+// unit and config (reinstall, migration). Restart makes the
+// unit and config this run just wrote the ones actually in
+// effect; on a fresh box the two commands are equivalent.
 func startBitcoind() error {
 	if err := system.SudoRun("systemctl", "daemon-reload"); err != nil {
 		return err
@@ -142,5 +167,5 @@ func startBitcoind() error {
 	if err := system.SudoRun("systemctl", "enable", "bitcoind"); err != nil {
 		return err
 	}
-	return system.SudoRun("systemctl", "start", "bitcoind")
+	return system.SudoRun("systemctl", "restart", "bitcoind")
 }

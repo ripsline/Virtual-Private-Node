@@ -120,6 +120,24 @@ func printConnectInstructions() {
 		"\n\n  Connect to your node:\n\n    ssh %s\n\n", target)
 }
 
+// printConsoleOnlyInstructions replaces the ssh hint when the
+// completed install left no SSH way in — no keys copied and
+// password login over SSH observed off, the end state consented
+// to by name with --allow-console-only. An ssh line here would
+// be affirmatively misleading: it cannot work until the
+// operator adds a key or enables password login. This is a
+// statement of the reached end state, not a warning — the
+// consent already happened, on the command line.
+func printConsoleOnlyInstructions() {
+	fmt.Printf("\n  Install complete."+
+		"\n\n  This box has no SSH way in: no SSH keys were"+
+		"\n  installed and password login over SSH is disabled."+
+		"\n  Log in as %q at your provider console with the"+
+		"\n  login password, then add an SSH key or enable"+
+		"\n  password login from the node console (System)."+
+		"\n\n", paths.AdminUser)
+}
+
 // AdminLoginObserved reports whether sshd's journal shows an
 // accepted login for the admin user. Evidence for clearing the
 // first-run verification banner: the admin user exists only
@@ -128,7 +146,10 @@ func printConnectInstructions() {
 // unreadable, -g unsupported) report false: the banner stays,
 // which only nags, never locks out.
 func AdminLoginObserved() bool {
-	out, err := system.SudoRunOutput("journalctl",
+	// No privilege on either calling side: root reads the
+	// journal freely, and the admin user reads it through
+	// systemd-journal group membership (granted at install).
+	out, err := system.RunOutput("journalctl",
 		"-u", "ssh", "--no-pager", "-o", "cat",
 		"-g", "Accepted")
 	if err != nil {

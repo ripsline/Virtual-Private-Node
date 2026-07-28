@@ -14,6 +14,7 @@ import (
 	"golang.org/x/crypto/bcrypt"
 
 	"github.com/virtualprivatenode/vpn/internal/config"
+	"github.com/virtualprivatenode/vpn/internal/helper"
 	"github.com/virtualprivatenode/vpn/internal/logger"
 	"github.com/virtualprivatenode/vpn/internal/paths"
 	"github.com/virtualprivatenode/vpn/internal/system"
@@ -141,8 +142,10 @@ func configureSyncthingAuth(password string) error {
 	//    then overwritten by the authored template. Explicit
 	//    binary path — never PATH resolution — so a leftover
 	//    apt-installed /usr/bin/syncthing can never be the one
-	//    that generates the identity.
-	if err := system.SudoRun("-u", systemUser,
+	//    that generates the identity. runuser (util-linux)
+	//    drops from root to the service user; this box has no
+	//    sudo rules to borrow.
+	if err := system.SudoRun("runuser", "-u", systemUser, "--",
 		"/usr/local/bin/syncthing",
 		"generate", "--home="+paths.SyncthingDir); err != nil {
 		return fmt.Errorf("syncthing generate: %w", err)
@@ -218,8 +221,18 @@ func configureSyncthingAuth(password string) error {
 // schema assumption broke; refusing to start converts a silent
 // leak into a loud install failure.
 func verifySyncthingConfig() error {
-	// (a) binary version
+	// (a) binary version. Probed through runuser as the service
+	//     user, exactly like `generate` above: not for privilege
+	//     but for environment. Syncthing v2 panics during
+	//     package init when $HOME is undefined
+	//     (lib/locations.userHomeDir), exiting 2 before any
+	//     argument is parsed, and the root helper that runs this
+	//     step is a socket-activated systemd service, which sets
+	//     no $HOME. runuser sets $HOME from the passwd entry, so
+	//     the probe works in any environment that can run the
+	//     daemon itself.
 	verOut, err := system.RunContext(10*time.Second,
+		"runuser", "-u", systemUser, "--",
 		"/usr/local/bin/syncthing", "--version")
 	if err != nil {
 		return fmt.Errorf("syncthing --version: %w", err)
@@ -473,13 +486,23 @@ func registerBackupFolder() error {
 
 // ── Syncthing Device Pairing ─────────────────────────────
 
-// GetSyncthingDeviceID returns the VPS Syncthing Device ID
-// by parsing the config XML. This works even when Syncthing
-// is stopped since the ID is derived from the TLS certificate
-// and stored in the config file.
+// GetSyncthingDeviceID returns this node's Syncthing device
+// ID. As root it parses Syncthing's config XML (works even
+// with the daemon stopped — the ID derives from the TLS cert);
+// unprivileged it reads the staged copy on the board, which
+// the install (and any reinstall) refreshes.
 func GetSyncthingDeviceID() string {
-	output, err := system.SudoRunOutput("cat",
-		paths.SyncthingConfigXML)
+	if os.Geteuid() != 0 {
+		id, err := helper.ReadBoardString(
+			paths.StateSyncthingDevID)
+		if err != nil {
+			logger.Status("syncthing device ID: %v", err)
+			return ""
+		}
+		return id
+	}
+
+	output, err := os.ReadFile(paths.SyncthingConfigXML)
 	if err != nil {
 		return ""
 	}
@@ -494,7 +517,7 @@ func GetSyncthingDeviceID() string {
 	}
 
 	var c syncCfg
-	if xml.Unmarshal([]byte(output), &c) != nil {
+	if xml.Unmarshal(output, &c) != nil {
 		return ""
 	}
 
@@ -542,9 +565,17 @@ func PairSyncthingDevice(deviceID string) error {
 	return nil
 }
 
+// getSyncthingAPIKey returns the REST API key. As root it
+// parses Syncthing's config; unprivileged it reads the staged
+// board copy — which is what makes every runtime device
+// operation (pair, unpair, folder share) plain localhost REST
+// with no privilege involved.
 func getSyncthingAPIKey() (string, error) {
-	output, err := system.SudoRunOutput("cat",
-		paths.SyncthingConfigXML)
+	if os.Geteuid() != 0 {
+		return helper.ReadBoardString(paths.StateSyncthingAPIKey)
+	}
+
+	output, err := os.ReadFile(paths.SyncthingConfigXML)
 	if err != nil {
 		return "", err
 	}
@@ -557,7 +588,7 @@ func getSyncthingAPIKey() (string, error) {
 		GUI     guiKey   `xml:"gui"`
 	}
 	var cfg cfgFile
-	if err := xml.Unmarshal([]byte(output), &cfg); err != nil {
+	if err := xml.Unmarshal(output, &cfg); err != nil {
 		return "", err
 	}
 	if cfg.GUI.APIKey == "" {
