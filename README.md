@@ -1,11 +1,32 @@
 # Virtual Private Node
 
-A one-command installer for a Bitcoin + Lightning node on Debian.
+A Bitcoin + Lightning Node on Debian Linux.
 Bitcoin Core, LND, and Tor, configured and running in minutes.
 
 After installation, manage your node with the beautiful TUI
-or `bitcoin-cli`, `lncli`, and `systemctl`.
 Private by default, simple by design. Your keys, your node.
+
+## Project status
+
+**New home, new name, and v0.7.0 is the first release under it.**
+
+Virtual Private Node moved to github.com/virtualprivatenode/vpn, and
+the move brought every earlier release with it. Those releases predate
+the rename: they install a binary called rlvpn, and they are the
+previous generation of this project. v0.7.0 is the first release under
+the new name and it is what this page describes.
+
+If you are setting up a node now, it is worth waiting for v0.7.0.
+Starting on the current release means a manual upgrade shortly after,
+because the rename is deliberately something the built in updater will
+not cross.
+
+If you already run a node, nothing changes for you until v0.7.0 is
+published, and MIGRATION.md describes that upgrade in full.
+Verification steps for the current releases are in docs/verifying.md.
+
+Please do not build and run the main branch on a node that holds
+funds.
 
 ## Screenshots
 
@@ -49,46 +70,16 @@ Private by default, simple by design. Your keys, your node.
 - **No node alias.** Your node appears in the network graph with only its pubkey. No identifying name broadcast.
 - **Tor-only by default.** All LND connections route through Tor hidden services. Your server IP is never published to the Lightning Network unless you explicitly upgrade to hybrid P2P mode.
 
-### Quick Start
-
-Download the signed `vpn` binary onto your Server (Box), verify
-it, and run the installer:
-
-```bash
-cd /tmp
-wget https://github.com/virtualprivatenode/vpn/releases/download/v0.7.0/vpn-0.7.0-amd64.tar.gz
-wget https://github.com/virtualprivatenode/vpn/releases/download/v0.7.0/SHA256SUMS
-wget https://github.com/virtualprivatenode/vpn/releases/download/v0.7.0/SHA256SUMS.asc
-
-wget -O signing-key.asc https://keys.openpgp.org/vks/v1/by-fingerprint/AFA0EBACDC9A4C4AA7B0154AC97CE10F170BA5FE
-gpg --import signing-key.asc
-gpg --verify SHA256SUMS.asc SHA256SUMS
-sha256sum -c SHA256SUMS --ignore-missing
-
-tar -xzf vpn-0.7.0-amd64.tar.gz
-sudo install -m 755 vpn /usr/local/bin/vpn
-sudo vpn install
-```
-
-The signature must say **Good signature** with primary key
-fingerprint `AFA0 EBAC DC9A 4C4A A7B0  154A C97C E10F 170B
-A5FE`, and the checksum line must say `vpn-0.7.0-amd64.tar.gz:
-OK`. If either fails, stop.
-
-For testnet4:
-
-```bash
-sudo vpn install --testnet4
-```
+### What the installer does
 
 The installer checks the environment first and refuses — with a
 full report, before changing anything — if the box is not one it
 can trust. It then walks you through access setup and hardware
 fit, installs Bitcoin Core and LND with every download after Tor
 routed through Tor and verified before install, and drops you
-straight into the node console. If a step fails or you
-interrupt, just run `sudo vpn install` again — it resumes from
-the first incomplete step.
+straight into the TUI. If a step fails or you interrupt, run it
+again — it resumes from the first incomplete step. Mainnet and
+testnet4 are both supported.
 
 **Access setup.** The installer creates a `vpn` admin user and
 shows every SSH key it finds on the box — with fingerprints and
@@ -98,29 +89,6 @@ a login password (16 characters minimum) as the console
 fallback; whether password login over SSH stays enabled is
 carried over exactly as the installer OBSERVED it on your box —
 installing never silently changes it.
-
-### Build from Source
-
-```bash
-sudo apt update && sudo apt install -y git wget sudo curl
-
-cd /tmp
-wget https://go.dev/dl/go1.26.1.linux-amd64.tar.gz
-sudo rm -rf /usr/local/go
-sudo tar -C /usr/local -xzf go1.26.1.linux-amd64.tar.gz
-echo 'export PATH=$PATH:/usr/local/go/bin' >> ~/.profile
-source ~/.profile
-
-cd ~
-git clone https://github.com/virtualprivatenode/vpn.git
-cd vpn
-go mod tidy
-go build -o vpn ./cmd/
-sudo ./vpn install
-```
-
-The installer places the binary at `/usr/local/bin/vpn` as its
-first step.
 
 ### Wallet Creation
 
@@ -267,7 +235,7 @@ For the full setup guide, see
 
 ### Privacy — Network Traffic
 
-Downloading the `vpn` binary and signing key (Quick Start) is
+Downloading the `vpn` binary and signing key is
 ordinary clearnet traffic — Tor does not exist on the box yet.
 After that, the installer makes two types of network calls:
 
@@ -315,11 +283,15 @@ All software is verified with GPG signatures and SHA256 checksums:
   privacy setting does not verify.
 - **vpn binary** — signed with a key hosted on an independent
   keyserver (not GitHub). You download and verify it yourself
-  before running it (Quick Start above), and the built-in
-  updater performs the same key and checksum verification for
-  every later release. Hosting the key off GitHub means
-  compromising one source does not compromise both the binary
-  and the key.
+  before running it (see [Release Verification](docs/verifying.md)),
+  and the built-in updater performs the same key and checksum
+  verification for every later release. Hosting the key off GitHub
+  means compromising one source does not compromise both the
+  binary and the key.
+
+The release signing key fingerprint is
+`AFA0 EBAC DC9A 4C4A A7B0  154A C97C E10F 170B A5FE`. The same key
+has signed every release of this project and will sign v0.7.0.
 
 Verification failure is a hard stop.
 
@@ -348,7 +320,7 @@ For manual binary verification before installation, see
 
 ## License
 
-Copyright (C) 2026 ripsline
+Copyright (C) 2026 Virtual Private Node
 
 This project is free software licensed under the
 [GNU Affero General Public License v3.0](LICENSE).

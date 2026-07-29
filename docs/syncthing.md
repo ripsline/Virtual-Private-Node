@@ -11,7 +11,7 @@ file is useless without your seed phrase.
 
 ### Step 1 — Install Syncthing on Your Node
 
-1. SSH into your Node as `ripsline`
+1. SSH into your Node as `vpn`
 2. Open the **Add-On** section in the sidebar
 3. Select **Syncthing** and press Enter to install
 
