@@ -1,18 +1,25 @@
-# Migrating from rlvpn to vpn (v0.6.3 → v0.7.0)
+# Migrating from rlvpn to vpn (v0.6.3 to v0.7.0)
+
+**This is the upgrade procedure for v0.7.0, which has not been published
+yet.** It is here so you can read it before you need it. The download
+links in step 1 begin working when v0.7.0 is released. Nothing on this
+page is something to run today, and nothing about your node changes
+until then.
 
 Virtual Private Node has a new home and a new name. The project moved to
-`github.com/virtualprivatenode/vpn`, the binary is now `vpn`, the admin
-user is now `vpn`, and the bootstrap script is gone — installation is a
-subcommand of the signed binary itself: `sudo vpn install`.
+`github.com/virtualprivatenode/vpn`. At v0.7.0 the binary becomes `vpn`,
+the admin user becomes `vpn`, and the bootstrap script goes away:
+installation becomes a subcommand of the signed binary itself,
+`sudo vpn install`.
 
-This is a **one-time manual upgrade**. The built-in updater cannot cross
-the rename (it looks for release files under the old name, which no longer
-exist), and that is deliberate: it makes a half-migrated box impossible.
-If your node shows an update it fails to download — this document is why.
-Every release after this one updates through the TUI as before.
+This will be a **one-time manual upgrade**. The built-in updater cannot
+cross the rename (it looks for release files under the old name), and
+that is deliberate: it makes a half-migrated box impossible. If your node
+ever shows an update it fails to download, this document is why. Every
+release after this one updates through the TUI as before.
 
-The whole procedure takes about 15 minutes of your attention. Your node is
-offline for a few minutes in the middle — the same as a reboot.
+The whole procedure takes about 15 minutes of your attention. Your node
+is offline for a few minutes in the middle, the same as a reboot.
 
 ---
 
@@ -30,24 +37,20 @@ visits:
 - **SSH host keys** — your SSH client sees the same server, no warnings
 
 **You do not need to close channels, move funds, or touch your seed.**
-What happens to LND is a restart — the same thing every reboot already
+What happens to LND is a restart, the same thing every reboot already
 does, and channels are built to survive that. Just don't migrate in the
 middle of heavy payment activity: pick a quiet moment, since in-flight
 payments during the downtime resolve by their normal timeout rules.
 
 ## Before you begin
 
-- Log in as `ripsline` with your SSH key and **keep that session open for
-  the entire procedure**. Exit the TUI to a shell.
+- Log in as `ripsline` via SSH and **keep that session open for
+  the entire procedure**. Exit the TUI to a shell with ctrl + c.
 - Confirm a channel backup exists (skip if you have no channels):
 
   ```
   ls -l /var/lib/lnd/data/chain/bitcoin/mainnet/channel.backup
   ```
-
-  (Use `testnet4` in the path if that's your network.)
-- Know how to reach your VPS provider's console. You should not need it —
-  it's the standard fallback for any change that touches SSH.
 
 ## Step 1 — Download and verify the new binary
 
@@ -60,7 +63,7 @@ torsocks wget https://github.com/virtualprivatenode/vpn/releases/download/v0.7.0
 torsocks wget https://github.com/virtualprivatenode/vpn/releases/download/v0.7.0/SHA256SUMS.asc
 ```
 
-Import the signing key — the **same key** that signed every rlvpn release:
+Import the signing key — the **same key** that signed every old rlvpn release:
 
 ```
 torsocks wget -O signing-key.asc https://keys.openpgp.org/vks/v1/by-fingerprint/AFA0EBACDC9A4C4AA7B0154AC97CE10F170BA5FE
@@ -114,9 +117,8 @@ What you'll see:
   to the new `vpn` user. You'll also set a login password for the `vpn`
   user (16 characters minimum) as a console fallback.
 - **Component reinstall**: Bitcoin Core and LND are re-downloaded over
-  Tor, re-verified, and reinstalled at the same versions. Services
-  restart briefly — this is the downtime window. Your data directories
-  are not touched.
+  Tor, re-verified, and reinstalled. Services restart briefly — this 
+  is the downtime window. Your data directories are not touched.
 - **SSH hardening** is rewritten under the new name. The installer reads
   your *current effective* SSH settings from the running service first,
   so whatever you had — including password login disabled, if you
