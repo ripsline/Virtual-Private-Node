@@ -5,6 +5,7 @@ package lndrpc
 import (
 	"encoding/hex"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 
@@ -470,24 +471,16 @@ func (c *Client) OpenChannel(pubkey string, localAmount int64, private bool, tap
 		req.SatPerVbyte = satPerVbyte
 	}
 
-	// Coin control: restrict inputs to selected UTXOs
+	// Coin control: restrict inputs to the selected UTXOs. A
+	// malformed outpoint aborts the whole operation — silently
+	// skipping one would widen coin selection past what the
+	// operator chose.
 	for _, op := range outpoints {
-		parts := strings.SplitN(op, ":", 2)
-		if len(parts) != 2 {
-			continue
+		outPoint, err := parseOutpoint(op)
+		if err != nil {
+			return nil, err
 		}
-		txid := parts[0]
-		var idx uint32
-		for _, c := range parts[1] {
-			if c >= '0' && c <= '9' {
-				idx = idx*10 + uint32(c-'0')
-			}
-		}
-		req.Outpoints = append(req.Outpoints,
-			&lnrpc.OutPoint{
-				TxidStr:     txid,
-				OutputIndex: idx,
-			})
+		req.Outpoints = append(req.Outpoints, outPoint)
 	}
 
 	resp, err := rpc.OpenChannelSync(ctx, req)
@@ -529,6 +522,30 @@ func (c *Client) getPeerAlias(pubkey string) string {
 		return resp.GetNode().GetAlias()
 	}
 	return ""
+}
+
+// parseOutpoint parses a txid:index outpoint string strictly.
+// Both fund-moving call sites (channel funding, on-chain send
+// with coin control) route through here: a value that does not
+// parse must abort the operation rather than silently narrow or
+// retarget the operator's coin selection. Pure — unit-tested.
+func parseOutpoint(op string) (*lnrpc.OutPoint, error) {
+	parts := strings.SplitN(op, ":", 2)
+	if len(parts) != 2 {
+		return nil, fmt.Errorf("invalid outpoint %q", op)
+	}
+	txidRaw, err := hex.DecodeString(parts[0])
+	if err != nil || len(txidRaw) != 32 {
+		return nil, fmt.Errorf("invalid outpoint txid in %q", op)
+	}
+	idx, err := strconv.ParseUint(parts[1], 10, 32)
+	if err != nil {
+		return nil, fmt.Errorf("invalid outpoint index in %q", op)
+	}
+	return &lnrpc.OutPoint{
+		TxidStr:     parts[0],
+		OutputIndex: uint32(idx),
+	}, nil
 }
 
 func (c *Client) handleError(err error) {

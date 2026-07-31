@@ -3,6 +3,7 @@
 package lndrpc
 
 import (
+	"strings"
 	"testing"
 	"time"
 )
@@ -81,6 +82,61 @@ func TestNilClientSafety(t *testing.T) {
 	}
 	if _, err := c.OpenChannel("a", 100000, false, false, nil, false, 0); err == nil {
 		t.Error("should error")
+	}
+	if _, err := c.SendPayment("lnbc1"); err == nil {
+		t.Error("should error")
+	}
+}
+
+// Both fund-moving coin-control call sites route through
+// parseOutpoint; anything that does not parse must be an error,
+// never a silently narrowed or retargeted selection.
+func TestParseOutpoint(t *testing.T) {
+	txid := strings.Repeat("ab", 32)
+	op, err := parseOutpoint(txid + ":7")
+	if err != nil || op.TxidStr != txid || op.OutputIndex != 7 {
+		t.Fatalf("valid outpoint: got (%v, %v)", op, err)
+	}
+	if _, err := parseOutpoint(txid + ":0"); err != nil {
+		t.Errorf("index 0 rejected: %v", err)
+	}
+	bad := []string{
+		"",
+		txid,
+		txid + ":",
+		txid + ":x",
+		txid + ":1x2",
+		txid + ":-1",
+		txid + ":4294967296",
+		"ab:0",
+		"nothex" + strings.Repeat("a", 58) + ":0",
+	}
+	for _, s := range bad {
+		if _, err := parseOutpoint(s); err == nil {
+			t.Errorf("accepted %q", s)
+		}
+	}
+}
+
+// The routing fee limit scales with the amount: half a percent
+// with a 30 sat floor, and a fixed cap when the amount is
+// unknown (zero-amount invoice).
+func TestPaymentFeeLimit(t *testing.T) {
+	tests := []struct{ amt, want int64 }{
+		{0, 1000},
+		{-5, 1000},
+		{1, 30},
+		{50, 30},
+		{6000, 30},
+		{6200, 31},
+		{200000, 1000},
+		{10000000, 50000},
+	}
+	for _, tt := range tests {
+		if got := paymentFeeLimitSat(tt.amt); got != tt.want {
+			t.Errorf("paymentFeeLimitSat(%d): got %d, want %d",
+				tt.amt, got, tt.want)
+		}
 	}
 }
 
