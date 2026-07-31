@@ -12,9 +12,9 @@
 // never crosses the network. When the TUI process exits, the
 // macaroon is gone from memory.
 //
-// This package only performs read operations. Fund-moving RPCs
-// (SendPayment, OpenChannel, etc.) are added in later changes
-// with explicit confirmation flows.
+// Read queries and fund-moving RPCs share this one client;
+// every fund-moving call sits behind an explicit confirmation
+// flow in its caller.
 package lndrpc
 
 import (
@@ -27,6 +27,7 @@ import (
 
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
+	"google.golang.org/grpc/keepalive"
 	"google.golang.org/grpc/metadata"
 
 	"github.com/lightningnetwork/lnd/lnrpc"
@@ -108,10 +109,19 @@ func (c *Client) dial(allowHeal bool) error {
 	}
 	c.macaroonHex = hex.EncodeToString(macBytes)
 
-	// Connect
+	// Connect. Keepalive bounds how long a silently dead TCP
+	// connection (LND restarted underneath the TUI, a network
+	// blip) can block calls and streams instead of blocking
+	// forever; LND disconnects clients that ping more often
+	// than every five seconds, and one minute stays far clear
+	// of that floor with pings only while calls are active.
 	opts := []grpc.DialOption{
 		grpc.WithTransportCredentials(tlsCreds),
 		grpc.WithDefaultCallOptions(grpc.MaxCallRecvMsgSize(50 * 1024 * 1024)),
+		grpc.WithKeepaliveParams(keepalive.ClientParameters{
+			Time:    time.Minute,
+			Timeout: 20 * time.Second,
+		}),
 	}
 
 	// Dial by the shared loopback constant — the same value
@@ -127,8 +137,13 @@ func (c *Client) dial(allowHeal bool) error {
 	c.lightning = lnrpc.NewLightningClient(conn)
 
 	// Test the connection with a longer timeout.
-	// During IBD, LND's GetInfo queries Bitcoin Core which can be slow.
-	ctx, cancel := context.WithTimeout(c.macaroonCtx(), 30*time.Second)
+	// During IBD, LND's GetInfo queries Bitcoin Core which can
+	// be slow. The probe context is built inline rather than
+	// through macaroonCtx: dial runs under the write lock and
+	// macaroonCtx takes the read lock.
+	md := metadata.New(map[string]string{"macaroon": c.macaroonHex})
+	probeCtx := metadata.NewOutgoingContext(context.Background(), md)
+	ctx, cancel := context.WithTimeout(probeCtx, 30*time.Second)
 	defer cancel()
 
 	_, err = c.lightning.GetInfo(ctx, &lnrpc.GetInfoRequest{})
@@ -227,10 +242,15 @@ func (c *Client) Close() {
 	}
 }
 
-// macaroonCtx returns a context with the macaroon injected as gRPC metadata.
+// macaroonCtx returns a context with the macaroon injected as
+// gRPC metadata. The field is read under the lock — Reconnect
+// rewrites it on another goroutine.
 func (c *Client) macaroonCtx() context.Context {
+	c.mu.RLock()
+	macHex := c.macaroonHex
+	c.mu.RUnlock()
 	md := metadata.New(map[string]string{
-		"macaroon": c.macaroonHex,
+		"macaroon": macHex,
 	})
 	return metadata.NewOutgoingContext(context.Background(), md)
 }

@@ -148,24 +148,16 @@ func (c *Client) SendCoins(
 		SpendUnconfirmed: true,
 	}
 
-	// Coin control: restrict inputs to selected UTXOs
+	// Coin control: restrict inputs to the selected UTXOs. A
+	// malformed outpoint aborts the whole operation — silently
+	// skipping one would widen coin selection past what the
+	// operator chose.
 	for _, op := range outpoints {
-		parts := strings.SplitN(op, ":", 2)
-		if len(parts) != 2 {
-			continue
+		outPoint, err := parseOutpoint(op)
+		if err != nil {
+			return nil, err
 		}
-		txid := parts[0]
-		var idx uint32
-		for _, c := range parts[1] {
-			if c >= '0' && c <= '9' {
-				idx = idx*10 + uint32(c-'0')
-			}
-		}
-		req.Outpoints = append(req.Outpoints,
-			&lnrpc.OutPoint{
-				TxidStr:     txid,
-				OutputIndex: idx,
-			})
+		req.Outpoints = append(req.Outpoints, outPoint)
 	}
 
 	resp, err := rpc.SendCoins(ctx, req)
