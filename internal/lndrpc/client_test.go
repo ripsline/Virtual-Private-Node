@@ -3,9 +3,13 @@
 package lndrpc
 
 import (
+	"fmt"
 	"strings"
+	"sync"
 	"testing"
 	"time"
+
+	"google.golang.org/grpc/metadata"
 )
 
 func TestNodeInfoFields(t *testing.T) {
@@ -86,6 +90,55 @@ func TestNilClientSafety(t *testing.T) {
 	if _, err := c.SendPayment("lnbc1"); err == nil {
 		t.Error("should error")
 	}
+	if _, err := c.CloseChannel(
+		strings.Repeat("ab", 32)+":0", false, 0); err == nil {
+		t.Error("should error")
+	}
+}
+
+// macaroonCtx attaches the credential metadata to every call
+// while Reconnect can rewrite the credential field on another
+// goroutine. This test runs both sides at once so the race
+// detector, not code review, arbitrates the lock discipline:
+// readers hammer macaroonCtx while a writer rewrites the field
+// under the same write lock the redial path holds. Run under
+// go test -race; without the detector it still verifies that
+// every context carries exactly one non-empty macaroon value.
+func TestMacaroonCtxConcurrentRewrite(t *testing.T) {
+	c := &Client{macaroonHex: "00"}
+	stop := make(chan struct{})
+	var wg sync.WaitGroup
+	for i := 0; i < 8; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for {
+				select {
+				case <-stop:
+					return
+				default:
+				}
+				md, ok := metadata.FromOutgoingContext(
+					c.macaroonCtx())
+				if !ok {
+					t.Error("context carries no metadata")
+					return
+				}
+				vals := md.Get("macaroon")
+				if len(vals) != 1 || vals[0] == "" {
+					t.Errorf("macaroon metadata: %q", vals)
+					return
+				}
+			}
+		}()
+	}
+	for i := 0; i < 500; i++ {
+		c.mu.Lock()
+		c.macaroonHex = fmt.Sprintf("%04x", i+1)
+		c.mu.Unlock()
+	}
+	close(stop)
+	wg.Wait()
 }
 
 // Both fund-moving coin-control call sites route through
