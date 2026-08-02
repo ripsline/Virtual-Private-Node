@@ -525,10 +525,11 @@ func (c *Client) getPeerAlias(pubkey string) string {
 }
 
 // parseOutpoint parses a txid:index outpoint string strictly.
-// Both fund-moving call sites (channel funding, on-chain send
-// with coin control) route through here: a value that does not
-// parse must abort the operation rather than silently narrow or
-// retarget the operator's coin selection. Pure — unit-tested.
+// Every fund-moving call site that names an outpoint (channel
+// funding, on-chain send with coin control, channel close)
+// routes through here: a value that does not parse must abort
+// the operation rather than silently narrow or retarget what
+// the operator chose. Pure — unit-tested.
 func parseOutpoint(op string) (*lnrpc.OutPoint, error) {
 	parts := strings.SplitN(op, ":", 2)
 	if len(parts) != 2 {

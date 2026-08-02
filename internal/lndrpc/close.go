@@ -1,9 +1,7 @@
 package lndrpc
 
 import (
-	"encoding/hex"
 	"fmt"
-	"strings"
 	"time"
 
 	"github.com/lightningnetwork/lnd/lnrpc"
@@ -29,45 +27,24 @@ func (c *Client) CloseChannel(
 		return nil, errNotConnected
 	}
 
-	// Parse "txid:index" into components
-	parts := strings.SplitN(channelPoint, ":", 2)
-	if len(parts) != 2 {
-		return nil, fmt.Errorf(
-			"invalid channel point: %s",
-			channelPoint)
-	}
-	txidHex := parts[0]
-	var outputIndex uint32
-	for _, c := range parts[1] {
-		if c < '0' || c > '9' {
-			return nil, fmt.Errorf(
-				"invalid output index: %s",
-				parts[1])
-		}
-		outputIndex = outputIndex*10 +
-			uint32(c-'0')
-	}
-
-	// Convert txid hex to reversed bytes
-	// (LND expects internal byte order)
-	txidBytes, err := hex.DecodeString(txidHex)
+	// The channel point goes through the same strict parser
+	// as every other fund-moving call site: a close must
+	// target exactly the output the operator chose, so a
+	// value that does not parse aborts the request instead
+	// of being reinterpreted. LND accepts the txid in its
+	// display form here, so no byte order handling is
+	// needed.
+	op, err := parseOutpoint(channelPoint)
 	if err != nil {
-		return nil, fmt.Errorf(
-			"invalid txid hex: %w", err)
-	}
-	if len(txidBytes) == 32 {
-		for i, j := 0, 31; i < j; i, j = i+1, j-1 {
-			txidBytes[i], txidBytes[j] =
-				txidBytes[j], txidBytes[i]
-		}
+		return nil, err
 	}
 
 	req := &lnrpc.CloseChannelRequest{
 		ChannelPoint: &lnrpc.ChannelPoint{
-			FundingTxid: &lnrpc.ChannelPoint_FundingTxidBytes{
-				FundingTxidBytes: txidBytes,
+			FundingTxid: &lnrpc.ChannelPoint_FundingTxidStr{
+				FundingTxidStr: op.TxidStr,
 			},
-			OutputIndex: outputIndex,
+			OutputIndex: op.OutputIndex,
 		},
 		Force: force,
 	}
