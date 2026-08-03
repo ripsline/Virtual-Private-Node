@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/virtualprivatenode/vpn/internal/config"
 	"github.com/virtualprivatenode/vpn/internal/paths"
 )
 
@@ -17,14 +18,56 @@ func TestVersionConstants(t *testing.T) {
 	if lndVersion == "" {
 		t.Error("lndVersion is empty")
 	}
-	if systemUser == "" {
-		t.Error("systemUser is empty")
+	for name, value := range map[string]string{
+		"bitcoinUser":   bitcoinUser,
+		"lndUser":       lndUser,
+		"syncthingUser": syncthingUser,
+		"backupGroup":   backupGroup,
+	} {
+		if value == "" {
+			t.Errorf("%s is empty", name)
+		}
 	}
 }
 
-func TestSystemUserIsBitcoin(t *testing.T) {
-	if systemUser != "bitcoin" {
-		t.Errorf("systemUser: got %q, want %q", systemUser, "bitcoin")
+func TestSeedInstallP2PMode(t *testing.T) {
+	for _, mode := range []string{"tor", "hybrid"} {
+		cfg := &config.AppConfig{P2PMode: mode}
+		if err := seedInstallP2PMode(cfg, true); err != nil {
+			t.Fatalf("preserve %s: %v", mode, err)
+		}
+		if cfg.P2PMode != mode {
+			t.Errorf("existing %s changed to %s", mode, cfg.P2PMode)
+		}
+	}
+
+	missing := &config.AppConfig{}
+	if err := seedInstallP2PMode(missing, false); err != nil {
+		t.Fatalf("seed absent mode: %v", err)
+	}
+	if missing.P2PMode != "tor" {
+		t.Errorf("absent mode seeded as %q, want tor", missing.P2PMode)
+	}
+
+	unknown := &config.AppConfig{P2PMode: "unexpected"}
+	if err := seedInstallP2PMode(unknown, true); err == nil {
+		t.Error("unknown persisted P2P mode accepted")
+	}
+}
+
+func TestDedicatedServiceIdentityNames(t *testing.T) {
+	tests := []struct {
+		name, got, want string
+	}{
+		{"bitcoin user", bitcoinUser, "bitcoin"},
+		{"LND user", lndUser, "lnd"},
+		{"Syncthing user", syncthingUser, "syncthing"},
+		{"backup group", backupGroup, "vpn-lnd-backup"},
+	}
+	for _, tt := range tests {
+		if tt.got != tt.want {
+			t.Errorf("%s: got %q, want %q", tt.name, tt.got, tt.want)
+		}
 	}
 }
 

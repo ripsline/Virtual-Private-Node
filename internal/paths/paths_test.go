@@ -4,6 +4,7 @@ package paths
 
 import (
 	"net"
+	"strings"
 	"testing"
 )
 
@@ -36,5 +37,16 @@ func TestLoopbackEndpointsAreLiteralIPv4(t *testing.T) {
 		if port == "" {
 			t.Errorf("%s = %q: missing port", name, ep)
 		}
+	}
+}
+
+func TestServiceLayoutMarkerHasRootOwnedParent(t *testing.T) {
+	if !strings.HasPrefix(ServiceLayoutMarker, VarLibVPN+"/") {
+		t.Errorf("service-layout marker %q is not below %q",
+			ServiceLayoutMarker, VarLibVPN)
+	}
+	if strings.HasPrefix(ServiceLayoutMarker, ConfigDir+"/") {
+		t.Errorf("service-layout marker %q is below admin-owned %q",
+			ServiceLayoutMarker, ConfigDir)
 	}
 }

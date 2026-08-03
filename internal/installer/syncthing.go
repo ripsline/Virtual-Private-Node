@@ -64,17 +64,33 @@ func extractAndInstallSyncthing(version, workDir string) error {
 		src, "/usr/local/bin/")
 }
 
-func createSyncthingDirs() error {
-	dirs := []struct {
-		path  string
-		owner string
-		mode  os.FileMode
-	}{
-		{paths.SyncthingDir, systemUser + ":" + systemUser, 0750},
-		{paths.SyncthingDataDir, systemUser + ":" + systemUser, 0750},
-		{paths.SyncthingBackup, systemUser + ":" + systemUser, 0750},
+type syncthingDirSpec struct {
+	path  string
+	owner string
+	mode  os.FileMode
+}
+
+func syncthingDirSpecs() []syncthingDirSpec {
+	return []syncthingDirSpec{
+		{paths.SyncthingDir,
+			syncthingUser + ":" + syncthingUser, 0750},
+		{paths.SyncthingDataDir,
+			syncthingUser + ":" + backupGroup, 0710},
+		// Only the lnd-run exporter can read or write this
+		// unwatched staging directory. Syncthing can traverse its
+		// parent as owner but cannot enter this directory.
+		{paths.SyncthingBackupStage,
+			lndUser + ":" + lndUser, 0700},
+		// Syncthing owns its send-only folder; only the backup
+		// copy unit receives the private group needed to write an
+		// exported channel.backup into it.
+		{paths.SyncthingBackup,
+			syncthingUser + ":" + backupGroup, 0770},
 	}
-	for _, d := range dirs {
+}
+
+func createSyncthingDirs() error {
+	for _, d := range syncthingDirSpecs() {
 		if err := system.SudoRun("mkdir", "-p", d.path); err != nil {
 			return err
 		}
@@ -97,8 +113,8 @@ func createSyncthingDirs() error {
 // STNODEFAULTFOLDER=1 prevents creation of the default ~/Sync
 // folder on first run. --no-restart + Restart=on-failure keeps
 // lifecycle ownership with systemd (existing posture).
-func writeSyncthingService() error {
-	content := fmt.Sprintf(`[Unit]
+func syncthingServiceUnit() string {
+	return fmt.Sprintf(`[Unit]
 Description=Syncthing File Synchronization
 After=network-online.target tor.service
 Wants=network-online.target
@@ -107,6 +123,7 @@ Wants=network-online.target
 Type=simple
 User=%s
 Group=%s
+SupplementaryGroups=%s
 Environment=STNOUPGRADE=1
 Environment=STNODEFAULTFOLDER=1
 ExecStart=/usr/local/bin/syncthing serve --no-browser --no-restart --config=/etc/syncthing --data=/var/lib/syncthing
@@ -117,9 +134,12 @@ RestartForceExitStatus=3 4
 
 [Install]
 WantedBy=multi-user.target
-`, systemUser, systemUser)
+`, syncthingUser, syncthingUser, backupGroup)
+}
+
+func writeSyncthingService() error {
 	return system.SudoWriteFile(paths.SyncthingService,
-		[]byte(content), 0644)
+		[]byte(syncthingServiceUnit()), 0644)
 }
 
 // configureSyncthingAuth provisions Syncthing's identity and
@@ -137,7 +157,7 @@ WantedBy=multi-user.target
 // before the daemon ever starts.
 func configureSyncthingAuth(password string) error {
 	system.SudoRunSilent("chown",
-		systemUser+":"+systemUser, paths.SyncthingDir)
+		syncthingUser+":"+syncthingUser, paths.SyncthingDir)
 
 	// 1. Crypto identity only: TLS cert/key + device ID. The
 	//    generated config.xml is read for its identity values,
@@ -147,7 +167,7 @@ func configureSyncthingAuth(password string) error {
 	//    that generates the identity. runuser (util-linux)
 	//    drops from root to the service user; this box has no
 	//    sudo rules to borrow.
-	if err := system.SudoRun("runuser", "-u", systemUser, "--",
+	if err := system.SudoRun("runuser", "-u", syncthingUser, "--",
 		"/usr/local/bin/syncthing",
 		"generate", "--home="+paths.SyncthingDir); err != nil {
 		return fmt.Errorf("syncthing generate: %w", err)
@@ -201,7 +221,7 @@ func configureSyncthingAuth(password string) error {
 		return err
 	}
 	if err := system.SudoRun("chown",
-		systemUser+":"+systemUser,
+		syncthingUser+":"+syncthingUser,
 		paths.SyncthingConfigXML); err != nil {
 		return err
 	}
@@ -234,7 +254,7 @@ func verifySyncthingConfig() error {
 	//     the probe works in any environment that can run the
 	//     daemon itself.
 	verOut, err := system.RunContext(10*time.Second,
-		"runuser", "-u", systemUser, "--",
+		"runuser", "-u", syncthingUser, "--",
 		"/usr/local/bin/syncthing", "--version")
 	if err != nil {
 		return fmt.Errorf("syncthing --version: %w", err)
@@ -304,30 +324,15 @@ func setupChannelBackupWatcher(cfg *config.AppConfig) error {
 	}
 	backupSource := paths.ChannelBackup(network)
 	backupDest := paths.SyncthingBackup + "/channel.backup"
+	backupStage := paths.SyncthingBackupStage + "/channel.backup.tmp"
 
-	pathUnit := fmt.Sprintf(`[Unit]
-Description=Watch LND channel backup
-
-[Path]
-PathChanged=%s
-Unit=lnd-backup-copy.service
-
-[Install]
-WantedBy=multi-user.target
-`, backupSource)
+	pathUnit, copyService := channelBackupUnits(
+		backupSource, backupStage, backupDest)
 	if err := system.SudoWriteFile(paths.BackupWatchPath,
 		[]byte(pathUnit), 0644); err != nil {
 		return err
 	}
 
-	copyService := fmt.Sprintf(`[Unit]
-Description=Copy LND channel backup
-
-[Service]
-Type=oneshot
-User=%s
-ExecStart=/bin/cp %s %s
-`, systemUser, backupSource, backupDest)
 	if err := system.SudoWriteFile(paths.BackupCopyService,
 		[]byte(copyService), 0644); err != nil {
 		return err
@@ -345,11 +350,52 @@ ExecStart=/bin/cp %s %s
 		return err
 	}
 
-	// Copy existing backup if present
-	system.SudoRunSilent("cp", backupSource, backupDest)
-	system.SudoRunSilent("chown",
-		systemUser+":"+systemUser, backupDest)
+	// If a backup already exists, copy it through the same
+	// least-privilege unit that handles future changes. A node
+	// without a wallet/channel backup yet is a normal no-op.
+	if _, err := os.Stat(backupSource); err == nil {
+		if err := system.SudoRun("systemctl", "start",
+			"lnd-backup-copy.service"); err != nil {
+			return err
+		}
+	} else if !os.IsNotExist(err) {
+		return fmt.Errorf("inspect LND channel backup: %w", err)
+	}
 	return nil
+}
+
+// channelBackupUnits renders the watcher and the only service
+// allowed to cross from LND state into Syncthing's exported
+// directory. The normal lnd.service has no backup-group access,
+// and Syncthing has no access to /var/lib/lnd.
+func channelBackupUnits(backupSource, backupStage, backupDest string) (
+	pathUnit, copyService string,
+) {
+	pathUnit = fmt.Sprintf(`[Unit]
+Description=Watch LND channel backup
+
+[Path]
+PathChanged=%s
+Unit=lnd-backup-copy.service
+
+[Install]
+WantedBy=multi-user.target
+`, backupSource)
+
+	copyService = fmt.Sprintf(`[Unit]
+Description=Copy LND channel backup
+
+[Service]
+Type=oneshot
+User=%s
+Group=%s
+SupplementaryGroups=%s
+UMask=0027
+ExecStart=/usr/bin/install -m 0640 -g %s %s %s
+ExecStart=/usr/bin/mv -f %s %s
+`, lndUser, lndUser, backupGroup, backupGroup,
+		backupSource, backupStage, backupStage, backupDest)
+	return pathUnit, copyService
 }
 
 // stopSyncthingFailSafe stops AND disables Syncthing. Used on
@@ -456,10 +502,19 @@ func registerBackupFolder() error {
 		return fmt.Errorf("get API key: %w", err)
 	}
 
-	// Check if folder already exists
+	// Check for the exact folder ID. Searching the raw JSON for
+	// a substring can confuse an unrelated label or longer ID
+	// for the required folder.
 	existing, err := syncthingAPIGet(apiKey,
 		"/rest/config/folders")
-	if err == nil && strings.Contains(existing, "lnd-backup") {
+	if err != nil {
+		return fmt.Errorf("list folders: %w", err)
+	}
+	registered, err := backupFolderRegistered(existing)
+	if err != nil {
+		return fmt.Errorf("parse folders: %w", err)
+	}
+	if registered {
 		return nil
 	}
 
@@ -487,6 +542,21 @@ func registerBackupFolder() error {
 
 	logger.Install("Registered lnd-backup folder in Syncthing")
 	return nil
+}
+
+func backupFolderRegistered(foldersJSON string) (bool, error) {
+	var folders []struct {
+		ID string `json:"id"`
+	}
+	if err := json.Unmarshal([]byte(foldersJSON), &folders); err != nil {
+		return false, err
+	}
+	for _, folder := range folders {
+		if folder.ID == "lnd-backup" {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 // ── Syncthing Device Pairing ─────────────────────────────

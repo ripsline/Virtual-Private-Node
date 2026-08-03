@@ -77,10 +77,6 @@ func RebuildTorConfig(cfg *config.AppConfig) error {
 	return system.SudoRun("chown", "root:debian-tor", paths.Torrc)
 }
 
-func addUserToTorGroup(username string) error {
-	return system.SudoRun("usermod", "-aG", "debian-tor", username)
-}
-
 func restartTor() error {
 	if err := system.SudoRun("systemctl", "enable", "tor"); err != nil {
 		return err

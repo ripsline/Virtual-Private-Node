@@ -3,10 +3,12 @@
 package installer
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"os/user"
 	"strings"
+	"syscall"
 
 	"github.com/virtualprivatenode/vpn/internal/config"
 	"github.com/virtualprivatenode/vpn/internal/paths"
@@ -17,15 +19,92 @@ import (
 // superseded by the preflight's exactly-13 assertion (ruling ix).
 // See preflight.go.
 
-func createSystemUser(username string) error {
+func createSystemUser(username, home string) error {
 	if _, err := user.Lookup(username); err == nil {
 		return nil
+	} else {
+		var unknown user.UnknownUserError
+		if !errors.As(err, &unknown) {
+			return fmt.Errorf("look up system user %s: %w", username, err)
+		}
 	}
 	return system.SudoRun("adduser",
 		"--system", "--group",
-		"--home", paths.BitcoinDataDir,
+		"--home", home,
 		"--shell", "/usr/sbin/nologin",
 		username)
+}
+
+func createSystemGroup(name string) error {
+	if _, err := user.LookupGroup(name); err == nil {
+		return nil
+	} else {
+		var unknown user.UnknownGroupError
+		if !errors.As(err, &unknown) {
+			return fmt.Errorf("look up system group %s: %w", name, err)
+		}
+	}
+	return system.SudoRun("groupadd", "--system", name)
+}
+
+// ensureRootOwnedVarLibVPN establishes the root-owned ancestor
+// used by the service-layout marker and staging board. Keeping
+// this check in one place makes both early lifecycle authorization
+// and the later idempotent identity step enforce the same boundary.
+func ensureRootOwnedVarLibVPN() error {
+	if err := os.MkdirAll(paths.VarLibVPN, 0755); err != nil {
+		return fmt.Errorf("create %s: %w", paths.VarLibVPN, err)
+	}
+	fi, err := os.Lstat(paths.VarLibVPN)
+	if err != nil {
+		return fmt.Errorf("inspect %s: %w", paths.VarLibVPN, err)
+	}
+	if !fi.IsDir() {
+		return fmt.Errorf("%s is not a directory", paths.VarLibVPN)
+	}
+	if st, ok := fi.Sys().(*syscall.Stat_t); !ok || st.Uid != 0 {
+		return fmt.Errorf("%s is not owned by root", paths.VarLibVPN)
+	}
+	if err := os.Chmod(paths.VarLibVPN, 0755); err != nil {
+		return fmt.Errorf("chmod %s: %w", paths.VarLibVPN, err)
+	}
+	return nil
+}
+
+// authorizeFreshServiceLayout records that the legacy-layout
+// guard and read-only preflight accepted this installation
+// lifecycle. It runs before any install step can update the
+// ledger, so an interruption in an early step remains resumable.
+func authorizeFreshServiceLayout() error {
+	if err := ensureRootOwnedVarLibVPN(); err != nil {
+		return err
+	}
+	if err := system.SudoWriteFile(paths.ServiceLayoutMarker,
+		[]byte(serviceLayoutMarkerContent), 0644); err != nil {
+		return fmt.Errorf("write service-layout marker: %w", err)
+	}
+	return nil
+}
+
+// createBaseServiceIdentities establishes the fresh-install
+// daemon identity and data-directory boundary. Lifecycle
+// authorization is intentionally earlier than this ledger step;
+// see authorizeFreshServiceLayout.
+func createBaseServiceIdentities() error {
+	if err := ensureRootOwnedVarLibVPN(); err != nil {
+		return err
+	}
+	if err := createSystemUser(
+		bitcoinUser, paths.BitcoinDataDir); err != nil {
+		return err
+	}
+	if err := createSystemUser(lndUser, paths.LNDDataDir); err != nil {
+		return err
+	}
+	if err := createBitcoinDirs(bitcoinUser); err != nil {
+		return err
+	}
+	return createLNDDirs(lndUser)
 }
 
 func createBitcoinDirs(username string) error {

@@ -55,19 +55,23 @@ func extractAndInstallBitcoin(version, workDir string) error {
 }
 
 // BuildBitcoinConfig generates bitcoin.conf content from config
-// state. Pure logic — no side effects. rpcauthLine, when
-// non-empty, is the salted-hash credential line for this node's
-// own tooling (see rpcauth.go); it is placed in the GLOBAL
+// state. Pure logic — no side effects. Non-empty rpcauthLines
+// are the salted-hash credential lines for the TUI and LND
+// (see rpcauth.go); they are placed in the GLOBAL
 // section deliberately — auth options are not network-scoped,
 // and on testnet4 an appended line would land inside the
 // [testnet4] section.
-func BuildBitcoinConfig(cfg *config.AppConfig, rpcauthLine string) string {
+func BuildBitcoinConfig(
+	cfg *config.AppConfig, rpcauthLines ...string,
+) string {
 	net := cfg.NetworkConfig()
 	pruneMB := cfg.PruneSize * 1000
 
-	auth := ""
-	if rpcauthLine != "" {
-		auth = rpcauthLine + "\n"
+	var auth string
+	for _, line := range rpcauthLines {
+		if line != "" {
+			auth += line + "\n"
+		}
 	}
 
 	if net.Name == "testnet4" {
@@ -113,28 +117,30 @@ zmqpubrawtx=tcp://127.0.0.1:%d
 		net.RPCPort, net.ZMQBlockPort, net.ZMQTxPort)
 }
 
-// writeBitcoinConfig writes bitcoin.conf with a FRESH rpcauth
-// credential, staging the matching password on the board in
-// the same operation — the hashed line and the cleartext are
-// only ever replaced together, so they cannot drift apart.
-// Together is not atomic: a failure between the two writes
-// leaves them divergent, but detectably so — the install
-// aborts loudly and RPC auth keeps failing with a clear
-// mismatch message until a rerun replaces the pair.
+// writeBitcoinConfig rotates both local RPC identities and
+// writes both consumers' configurations in one resumable
+// install step. The TUI cleartext is staged on the board; the
+// LND cleartext is written only to root:lnd lnd.conf. A failure
+// between writes is detectable authentication failure and the
+// incomplete btc group reruns the whole operation.
 func writeBitcoinConfig(cfg *config.AppConfig) error {
-	rpcauthLine, err := writeRPCAuthCredential()
+	creds, err := writeRPCAuthCredentials()
 	if err != nil {
 		return err
 	}
-	content := BuildBitcoinConfig(cfg, rpcauthLine)
+	content := BuildBitcoinConfig(cfg, creds.lines...)
 	if err := system.SudoWriteFile(paths.BitcoinConf, []byte(content), 0640); err != nil {
 		return err
 	}
-	return system.SudoRun("chown", "root:"+systemUser, paths.BitcoinConf)
+	if err := system.SudoRun(
+		"chown", "root:"+bitcoinUser, paths.BitcoinConf); err != nil {
+		return err
+	}
+	return writeLNDConfigWithRPCPassword(cfg, "", creds.lndPassword)
 }
 
-func writeBitcoindService(username string) error {
-	content := fmt.Sprintf(`[Unit]
+func bitcoindServiceUnit(username string) string {
+	return fmt.Sprintf(`[Unit]
 Description=Bitcoin Core
 After=network-online.target tor.service
 Wants=network-online.target
@@ -143,6 +149,7 @@ Wants=network-online.target
 Type=simple
 User=%s
 Group=%s
+SupplementaryGroups=debian-tor
 ExecStart=/usr/local/bin/bitcoind -conf=/etc/bitcoin/bitcoin.conf -datadir=/var/lib/bitcoin
 Restart=on-failure
 RestartSec=30
@@ -154,7 +161,11 @@ NoNewPrivileges=true
 [Install]
 WantedBy=multi-user.target
 `, username, username)
-	return system.SudoWriteFile(paths.BitcoindService, []byte(content), 0644)
+}
+
+func writeBitcoindService(username string) error {
+	return system.SudoWriteFile(paths.BitcoindService,
+		[]byte(bitcoindServiceUnit(username)), 0644)
 }
 
 // startBitcoind enables and starts Bitcoin Core. `systemctl

@@ -220,7 +220,10 @@ For the full setup guide, see
 - Fail2ban: SSH brute-force protection
 - Root SSH disabled by the installer
 - SSH hardening: challenge-response, keyboard-interactive, and X11 forwarding disabled; password auth carried over exactly as OBSERVED on your box at install (toggle from System → SSH Keys once you've verified key auth works); login password changeable from the TUI
-- Services run as dedicated bitcoin system user
+- Bitcoin Core, LND, and Syncthing run as separate, non-login system users; `vpn` has no direct access to their private data directories
+- Tor control-cookie access is granted only inside `bitcoind.service` and `lnd.service`; Syncthing and the backup exporter receive none
+- LND authenticates to Bitcoin Core with its own `rpcauth` identity instead of reading Bitcoin Core's cookie or data directory
+- Channel backups cross into Syncthing through a dedicated `lnd` oneshot exporter and the private `vpn-lnd-backup` group; Syncthing cannot read `/var/lib/lnd`
 - GPG signature verification for all software, any bad signature is a hard stop
 - Unattended security upgrades with auto-reboot
 - Base packages upgraded during install — behind the firewall, which comes up first — to close CVE windows on stale server images

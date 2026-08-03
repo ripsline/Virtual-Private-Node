@@ -20,7 +20,10 @@ const (
 	bitcoinVersion   = "29.3"
 	lndVersion       = "0.20.0-beta"
 	syncthingVersion = "2.1.1"
-	systemUser       = "bitcoin"
+	bitcoinUser      = "bitcoin"
+	lndUser          = "lnd"
+	syncthingUser    = "syncthing"
+	backupGroup      = "vpn-lnd-backup"
 )
 
 var appVersion = "dev"
@@ -99,6 +102,15 @@ func RunInstall(opts InstallOptions) error {
 	}
 	defer runLock.Close()
 
+	// This release implements only fresh installations of the
+	// dedicated service-user layout. Refuse an older shared-user
+	// node before any package, identity, ownership, config, or
+	// service mutation; migration of wallet/channel state is a
+	// separate, deferred operation.
+	if err := guardFreshServiceLayout(); err != nil {
+		return err
+	}
+
 	// Preflight (principle 3): assert the environment before the
 	// first mutation; refuses with a full report on any failure.
 	// Returns the sshd observation (ruling xvi(b)) consumed by
@@ -149,15 +161,30 @@ func RunInstall(opts InstallOptions) error {
 	// operator answer — a fresh observation always wins.
 	cfg.SSHPorts = obs.Ports
 
-	// LND is installed during initial setup (Tor-only default).
+	// LND is installed during initial setup. Preserve a prior
+	// explicit P2P answer on reinstall; seed Tor-only only when
+	// the field was absent. Unknown persisted values fail closed
+	// rather than selecting a new port surface implicitly.
+	if err := seedInstallP2PMode(
+		cfg, config.RawFieldPresent("p2p_mode")); err != nil {
+		return err
+	}
+
 	// These fields are set IN MEMORY before the steps are built
 	// because steps read them (Tor config and firewall rules
 	// include LND hidden services and ports) — but they are
 	// PERSISTED only on a complete run, below. A failed or
 	// interrupted run must not record intent as fact (IA-1-9).
-	cfg.P2PMode = "tor"
 	cfg.LNDInstalled = true
 	cfg.Components = "bitcoin+lnd"
+
+	// The guard and every read-only preflight/config check have
+	// now succeeded. Authorize this fresh-layout lifecycle before
+	// the first step can write the ledger, so even an interruption
+	// during an early package step can resume safely.
+	if err := authorizeFreshServiceLayout(); err != nil {
+		return err
+	}
 
 	// (The config dir was created above, before the run lock —
 	// the ledger lives in it. Root-owned during the install;
@@ -330,6 +357,25 @@ func RunInstall(opts InstallOptions) error {
 		printConnectInstructions()
 	}
 	return nil
+}
+
+// seedInstallP2PMode preserves an explicit prior answer and
+// applies the fresh-install Tor default only when p2p_mode was
+// absent from the persisted config. Pure apart from cfg mutation
+// so reinstall behavior is unit-testable without production paths.
+func seedInstallP2PMode(cfg *config.AppConfig, fieldPresent bool) error {
+	if !fieldPresent {
+		cfg.P2PMode = "tor"
+		return nil
+	}
+	switch cfg.P2PMode {
+	case "tor", "hybrid":
+		return nil
+	default:
+		return fmt.Errorf(
+			"invalid p2p_mode %q in %s — expected tor or hybrid",
+			cfg.P2PMode, config.DefaultPath)
+	}
 }
 
 // finalizeOwnership hands the admin user the files it owns in
@@ -516,22 +562,16 @@ func buildInstallSteps(
 			Fn: func() error {
 				return applyIdentityAccess(dec)
 			}},
-		{Key: "user.create",
-			Name: "Creating system user and directories",
+		{Key: "service-identities.v1",
+			Name: "Creating dedicated service identities",
 			Fn: func() error {
-				if err := createSystemUser(systemUser); err != nil {
-					return err
-				}
-				return createBitcoinDirs(systemUser)
+				return createBaseServiceIdentities()
 			}},
 		{Key: "ipv6.disable", Name: "Disabling IPv6",
 			Fn: disableIPv6},
 		{Key: "tor.configure", Name: "Configuring Tor",
 			Fn: func() error {
 				if err := RebuildTorConfig(cfg); err != nil {
-					return err
-				}
-				if err := addUserToTorGroup(systemUser); err != nil {
 					return err
 				}
 				return restartTor()
@@ -584,7 +624,7 @@ func buildInstallSteps(
 				if err := writeBitcoinConfig(cfg); err != nil {
 					return err
 				}
-				return writeBitcoindService(systemUser)
+				return writeBitcoindService(bitcoinUser)
 			}},
 		{Key: "btc.start", Name: "Starting Bitcoin Core",
 			Fn: startBitcoind},
@@ -630,13 +670,7 @@ func buildInstallSteps(
 					return err
 				}
 				os.RemoveAll(lndWork)
-				if err := createLNDDirs(systemUser); err != nil {
-					return err
-				}
-				if err := writeLNDConfig(cfg, ""); err != nil {
-					return err
-				}
-				return writeLNDServiceFromConfig(cfg, systemUser)
+				return writeLNDServiceFromConfig(cfg, lndUser)
 			}},
 		{Key: "tor.lnd", Name: "Configuring Tor for LND",
 			Fn: func() error {
@@ -645,7 +679,19 @@ func buildInstallSteps(
 				}
 				return restartTor()
 			}},
+		{Key: "lnd.configure",
+			Name: "Finalizing LND onion configuration",
+			Fn: func() error {
+				// Re-read the onion after the dedicated LND Tor
+				// restart and rewrite lnd.conf with the preserved,
+				// LND-only bitcoind credential. Missing or invalid
+				// onion state fails closed inside writeLNDConfig.
+				return writeLNDConfig(cfg, "")
+			}},
 		{Key: "lnd.start", Name: "Starting LND", Fn: startLND},
+		{Key: "lnd.tls-san", Kind: StepGate,
+			Name: "Verifying LND TLS onion certificate",
+			Fn:   verifyLNDTLSOnionSAN},
 		// LND owns its TLS certificate lifecycle
 		// (tlsautorefresh), so the cert can be rewritten by a
 		// startup no TUI operation requested. This watch
@@ -777,7 +823,16 @@ func SyncthingInstallSteps(
 				return nil
 			}},
 		{Name: "Creating Syncthing directories",
-			Fn: createSyncthingDirs},
+			Fn: func() error {
+				if err := createSystemGroup(backupGroup); err != nil {
+					return err
+				}
+				if err := createSystemUser(syncthingUser,
+					paths.SyncthingDataDir); err != nil {
+					return err
+				}
+				return createSyncthingDirs()
+			}},
 		{Name: "Creating Syncthing service",
 			Fn: writeSyncthingService},
 		{Name: "Configuring Syncthing authentication",
@@ -945,14 +1000,6 @@ func GetVersion() string {
 }
 
 // ── Helpers ──────────────────────────────────────────────
-
-func readFileOrDefault(path, def string) string {
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return def
-	}
-	return string(data)
-}
 
 // setupShellEnvironment writes the admin user's cli wrappers.
 // Both run with NO privilege: they are the recovery path a

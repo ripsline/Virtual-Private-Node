@@ -165,10 +165,10 @@ func keepWaitingForTor(
 // parse PROGRESS. The cookie is re-read on every attempt because Tor
 // regenerates it on restart.
 func queryTorBootstrapProgress() (int, error) {
-	// The installer user is not in debian-tor (only systemUser is
-	// added, and group changes need a re-login anyway), so read the
-	// 0640 cookie via the sudo path. Under the commit-6 root install
-	// this still works unchanged.
+	// The installer runs as root; daemon access to this cookie is
+	// granted only inside the bitcoind and lnd units through
+	// SupplementaryGroups=debian-tor. Read it directly through the
+	// root-requiring wrapper here.
 	cookie, err := system.SudoReadFile(torCookiePath)
 	if err != nil {
 		return 0, fmt.Errorf("read control cookie: %w", err)

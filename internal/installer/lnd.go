@@ -5,6 +5,7 @@ package installer
 import (
 	"crypto/tls"
 	"crypto/x509"
+	"encoding/pem"
 	"fmt"
 	"net/http"
 	"os"
@@ -89,7 +90,10 @@ func createLNDDirs(username string) error {
 // and the name localhost appears nowhere in the file (on this
 // node, which disables IPv6, that name can resolve to an
 // unusable IPv6 address).
-func BuildLNDConfig(cfg *config.AppConfig, publicIPv4, restOnion string) string {
+func BuildLNDConfig(
+	cfg *config.AppConfig, publicIPv4, restOnion,
+	bitcoindRPCUser, bitcoindRPCPass string,
+) string {
 	net := cfg.NetworkConfig()
 
 	listenLine := "listen=" + paths.LNDP2PBind
@@ -107,8 +111,6 @@ func BuildLNDConfig(cfg *config.AppConfig, publicIPv4, restOnion string) string 
 	if restOnion != "" {
 		tlsExtraDomain = fmt.Sprintf("tlsextradomain=%s", restOnion)
 	}
-
-	cookiePath := paths.LNDCookiePath(net.CookiePath)
 
 	return fmt.Sprintf(`# Virtual Private Node — LND
 [Application Options]
@@ -149,9 +151,8 @@ allow-circular-route=true
 bitcoin.node=bitcoind
 
 [Bitcoind]
-bitcoind.dir=/var/lib/bitcoin
-bitcoind.config=/etc/bitcoin/bitcoin.conf
-bitcoind.rpccookie=%s
+bitcoind.rpcuser=%s
+bitcoind.rpcpass=%s
 bitcoind.rpchost=127.0.0.1:%d
 bitcoind.zmqpubrawblock=tcp://127.0.0.1:%d
 bitcoind.zmqpubrawtx=tcp://127.0.0.1:%d
@@ -189,18 +190,152 @@ healthcheck.diskspace.attempts=2
 healthcheck.diskspace.interval=12h
 `, listenLine, paths.LNDGRPCEndpoint, restListenLine, externalLine,
 		tlsExtraDomain, tlsExtraIP,
-		net.LNDBitcoinFlag, cookiePath,
+		net.LNDBitcoinFlag, bitcoindRPCUser, bitcoindRPCPass,
 		net.RPCPort, net.ZMQBlockPort, net.ZMQTxPort)
 }
 
 func writeLNDConfig(cfg *config.AppConfig, publicIPv4 string) error {
-	restOnion := strings.TrimSpace(
-		readFileOrDefault(paths.TorLNDRESTHostname, ""))
-	content := BuildLNDConfig(cfg, publicIPv4, restOnion)
+	password, err := readLNDBitcoindRPCPassword()
+	if err != nil {
+		return err
+	}
+	return writeLNDConfigWithRPCPassword(cfg, publicIPv4, password)
+}
+
+func writeLNDConfigWithRPCPassword(
+	cfg *config.AppConfig, publicIPv4, password string,
+) error {
+	if password == "" {
+		return fmt.Errorf("refusing to write lnd.conf with an empty " +
+			"bitcoind RPC password")
+	}
+	restOnion, err := readRequiredLNDRESTOnion()
+	if err != nil {
+		return err
+	}
+	content := BuildLNDConfig(cfg, publicIPv4, restOnion,
+		LNDBitcoindRPCUser, password)
 	if err := system.SudoWriteFile(paths.LNDConf, []byte(content), 0640); err != nil {
 		return err
 	}
-	return system.SudoRun("chown", "root:"+systemUser, paths.LNDConf)
+	return system.SudoRun("chown", "root:"+lndUser, paths.LNDConf)
+}
+
+// readRequiredLNDRESTOnion enforces the dependency between Tor's
+// hidden-service identity and LND's TLS configuration. This node
+// requests v3 onions, whose host label is 56 lowercase base32
+// characters. Missing, unreadable, or malformed state is never
+// converted into an lnd.conf without tlsextradomain.
+func readRequiredLNDRESTOnion() (string, error) {
+	data, err := os.ReadFile(paths.TorLNDRESTHostname)
+	if err != nil {
+		return "", fmt.Errorf("read LND REST onion hostname: %w", err)
+	}
+	onion := strings.TrimSpace(string(data))
+	if err := validateLNDRESTOnion(onion); err != nil {
+		return "", err
+	}
+	return onion, nil
+}
+
+func validateLNDRESTOnion(onion string) error {
+	const suffix = ".onion"
+	if len(onion) != 56+len(suffix) ||
+		!strings.HasSuffix(onion, suffix) {
+		return fmt.Errorf("invalid LND REST onion hostname %q", onion)
+	}
+	for _, c := range strings.TrimSuffix(onion, suffix) {
+		if (c < 'a' || c > 'z') && (c < '2' || c > '7') {
+			return fmt.Errorf("invalid LND REST onion hostname %q", onion)
+		}
+	}
+	return nil
+}
+
+// verifyLNDTLSOnionSAN waits for LND's startup-time TLS
+// generation/refresh and proves that the certificate it wrote
+// contains the exact REST onion DNS SAN configured above.
+func verifyLNDTLSOnionSAN() error {
+	onion, err := readRequiredLNDRESTOnion()
+	if err != nil {
+		return err
+	}
+	var lastErr error
+	for i := 0; i < 60; i++ {
+		certPEM, readErr := os.ReadFile(paths.LNDTLSCert)
+		if readErr == nil {
+			lastErr = verifyCertificateDNSName(certPEM, onion)
+			if lastErr == nil {
+				return nil
+			}
+		} else {
+			lastErr = readErr
+		}
+		time.Sleep(2 * time.Second)
+	}
+	return fmt.Errorf(
+		"LND TLS certificate does not contain REST onion %s: %w",
+		onion, lastErr)
+}
+
+func verifyCertificateDNSName(certPEM []byte, name string) error {
+	foundCertificate := false
+	for len(certPEM) > 0 {
+		var block *pem.Block
+		block, certPEM = pem.Decode(certPEM)
+		if block == nil {
+			break
+		}
+		if block.Type != "CERTIFICATE" {
+			continue
+		}
+		foundCertificate = true
+		cert, err := x509.ParseCertificate(block.Bytes)
+		if err != nil {
+			return fmt.Errorf("parse LND TLS certificate: %w", err)
+		}
+		for _, dnsName := range cert.DNSNames {
+			if dnsName == name {
+				return nil
+			}
+		}
+	}
+	if foundCertificate {
+		return fmt.Errorf("DNS SAN %q is missing", name)
+	}
+	return fmt.Errorf("no certificate PEM block found")
+}
+
+// readLNDBitcoindRPCPassword preserves LND's independent RPC
+// credential when a later operation rewrites lnd.conf (for
+// example a P2P-mode change). Duplicate or empty entries fail
+// closed rather than choosing an ambiguous credential.
+func readLNDBitcoindRPCPassword() (string, error) {
+	data, err := os.ReadFile(paths.LNDConf)
+	if err != nil {
+		return "", fmt.Errorf("read LND bitcoind RPC credential: %w", err)
+	}
+	return parseLNDBitcoindRPCPassword(string(data))
+}
+
+func parseLNDBitcoindRPCPassword(content string) (string, error) {
+	var password string
+	for _, line := range strings.Split(content, "\n") {
+		line = strings.TrimSpace(line)
+		if !strings.HasPrefix(line, "bitcoind.rpcpass=") {
+			continue
+		}
+		value := strings.TrimPrefix(line, "bitcoind.rpcpass=")
+		if value == "" || password != "" {
+			return "", fmt.Errorf(
+				"lnd.conf has an empty or duplicate bitcoind.rpcpass")
+		}
+		password = value
+	}
+	if password == "" {
+		return "", fmt.Errorf("lnd.conf has no bitcoind.rpcpass")
+	}
+	return password, nil
 }
 
 // lndServiceUnit renders the LND systemd unit. withUnlock adds
@@ -224,6 +359,7 @@ Wants=bitcoind.service
 Type=simple
 User=%s
 Group=%s
+SupplementaryGroups=debian-tor
 ExecStart=/usr/local/bin/lnd --configfile=/etc/lnd/lnd.conf%s
 Restart=on-failure
 RestartSec=30
@@ -309,7 +445,7 @@ func setupAutoUnlock(password string) error {
 	passwordFile := paths.LNDWalletPassword
 	tmpDest := filepath.Join(filepath.Dir(passwordFile), ".wallet_password.tmp")
 	if err := system.SudoRun("install", "-m", "0400",
-		"-o", systemUser, "-g", systemUser, tmpPw, tmpDest); err != nil {
+		"-o", lndUser, "-g", lndUser, tmpPw, tmpDest); err != nil {
 		system.SudoRunSilent("rm", "-f", tmpDest)
 		logger.System("auto-unlock: install wallet password: %v", err)
 		return fmt.Errorf("install wallet password: %w", err)
@@ -320,7 +456,7 @@ func setupAutoUnlock(password string) error {
 		return fmt.Errorf("move wallet password: %w", err)
 	}
 
-	if err := writeLNDService(systemUser, true); err != nil {
+	if err := writeLNDService(lndUser, true); err != nil {
 		return err
 	}
 	if err := system.SudoRun("systemctl", "daemon-reload"); err != nil {
@@ -343,7 +479,7 @@ func setupAutoUnlock(password string) error {
 // disagreed. With removal last, any failure leaves the file in
 // place and the operation honestly failed; a retry converges.
 func disableAutoUnlock() error {
-	if err := writeLNDService(systemUser, false); err != nil {
+	if err := writeLNDService(lndUser, false); err != nil {
 		return fmt.Errorf("rewrite service: %w", err)
 	}
 	if err := system.SudoRun(

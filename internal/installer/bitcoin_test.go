@@ -101,26 +101,44 @@ func TestBitcoinConfigWalletDisabled(t *testing.T) {
 // appended at the end would fall inside [testnet4].
 func TestBitcoinConfigRPCAuthPlacement(t *testing.T) {
 	line := "rpcauth=vpn:aabb$ccdd"
+	lndLine := "rpcauth=lnd:eeff$0011"
 
 	cfg := config.Default()
-	if got := BuildBitcoinConfig(cfg, line); !strings.Contains(
-		got, line+"\n") {
-		t.Error("mainnet config missing rpcauth line")
+	if got := BuildBitcoinConfig(cfg, line, lndLine); !strings.Contains(
+		got, line+"\n") || !strings.Contains(got, lndLine+"\n") {
+		t.Error("mainnet config missing an rpcauth line")
 	}
 
 	tn := &config.AppConfig{
 		Network: "testnet4", PruneSize: 25, P2PMode: "tor",
 	}
-	got := BuildBitcoinConfig(tn, line)
+	got := BuildBitcoinConfig(tn, line, lndLine)
 	authIdx := strings.Index(got, line)
+	lndAuthIdx := strings.Index(got, lndLine)
 	sectIdx := strings.Index(got, "[testnet4]")
-	if authIdx == -1 || sectIdx == -1 {
-		t.Fatalf("missing rpcauth (%d) or section (%d)",
-			authIdx, sectIdx)
+	if authIdx == -1 || lndAuthIdx == -1 || sectIdx == -1 {
+		t.Fatalf("missing rpcauth (%d, %d) or section (%d)",
+			authIdx, lndAuthIdx, sectIdx)
 	}
-	if authIdx > sectIdx {
+	if authIdx > sectIdx || lndAuthIdx > sectIdx {
 		t.Error("rpcauth line landed inside the [testnet4] " +
 			"section — it must be global")
+	}
+}
+
+func TestBitcoindServiceUsesDedicatedIdentityAndTorGroup(t *testing.T) {
+	unit := bitcoindServiceUnit(bitcoinUser)
+	for _, want := range []string{
+		"User=bitcoin",
+		"Group=bitcoin",
+		"SupplementaryGroups=debian-tor",
+	} {
+		if !strings.Contains(unit, want) {
+			t.Errorf("bitcoind unit missing %q", want)
+		}
+	}
+	if strings.Contains(unit, backupGroup) {
+		t.Error("normal bitcoind unit has channel-backup access")
 	}
 }
 

@@ -8,6 +8,8 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"github.com/virtualprivatenode/vpn/internal/paths"
 )
 
 // The Syncthing REST transport must fail on HTTP errors: the
@@ -99,5 +101,101 @@ func TestSyncthingAPIDaemonDown(t *testing.T) {
 
 	if _, err := syncthingAPI("GET", "k", "/ok", ""); err == nil {
 		t.Error("unreachable daemon reported as success")
+	}
+}
+
+func TestSyncthingServiceIdentityBoundary(t *testing.T) {
+	unit := syncthingServiceUnit()
+	for _, want := range []string{
+		"User=syncthing",
+		"Group=syncthing",
+		"SupplementaryGroups=vpn-lnd-backup",
+	} {
+		if !strings.Contains(unit, want) {
+			t.Errorf("Syncthing unit missing %q", want)
+		}
+	}
+	if strings.Contains(unit, "debian-tor") {
+		t.Error("Syncthing unit has Tor control-cookie access")
+	}
+}
+
+func TestSyncthingDirectoryIdentityBoundary(t *testing.T) {
+	specs := make(map[string]syncthingDirSpec)
+	for _, spec := range syncthingDirSpecs() {
+		specs[spec.path] = spec
+	}
+	for path, want := range map[string]syncthingDirSpec{
+		paths.SyncthingDataDir: {
+			owner: "syncthing:vpn-lnd-backup", mode: 0710,
+		},
+		paths.SyncthingBackupStage: {
+			owner: "lnd:lnd", mode: 0700,
+		},
+		paths.SyncthingBackup: {
+			owner: "syncthing:vpn-lnd-backup", mode: 0770,
+		},
+	} {
+		got, ok := specs[path]
+		if !ok {
+			t.Errorf("missing directory spec for %s", path)
+			continue
+		}
+		if got.owner != want.owner || got.mode != want.mode {
+			t.Errorf("%s: got %s %04o, want %s %04o",
+				path, got.owner, got.mode, want.owner, want.mode)
+		}
+	}
+}
+
+func TestChannelBackupUnitIdentityBoundary(t *testing.T) {
+	source := "/var/lib/lnd/data/chain/bitcoin/mainnet/channel.backup"
+	dest := "/var/lib/syncthing/lnd-backup/channel.backup"
+	stage := "/var/lib/syncthing/lnd-backup-stage/channel.backup.tmp"
+	pathUnit, copyUnit := channelBackupUnits(source, stage, dest)
+	if !strings.Contains(pathUnit, "PathChanged="+source) {
+		t.Error("path unit watches the wrong source")
+	}
+	for _, want := range []string{
+		"User=lnd",
+		"Group=lnd",
+		"SupplementaryGroups=vpn-lnd-backup",
+		"UMask=0027",
+		"-m 0640 -g vpn-lnd-backup",
+		stage,
+		"/usr/bin/mv -f " + stage + " " + dest,
+	} {
+		if !strings.Contains(copyUnit, want) {
+			t.Errorf("backup copy unit missing %q", want)
+		}
+	}
+	if strings.Contains(copyUnit, "debian-tor") {
+		t.Error("backup copy unit has Tor control-cookie access")
+	}
+	if strings.Contains(copyUnit, dest+".tmp") {
+		t.Error("backup temp file is staged inside the synchronized folder")
+	}
+}
+
+func TestBackupFolderRegisteredRequiresExactID(t *testing.T) {
+	for name, tc := range map[string]struct {
+		body string
+		want bool
+	}{
+		"exact":      {`[{"id":"lnd-backup","label":"Backup"}]`, true},
+		"label only": {`[{"id":"documents","label":"old lnd-backup files"}]`, false},
+		"longer ID":  {`[{"id":"lnd-backup-old"}]`, false},
+		"absent":     {`[{"id":"documents"}]`, false},
+	} {
+		got, err := backupFolderRegistered(tc.body)
+		if err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+		if got != tc.want {
+			t.Errorf("%s: got %v, want %v", name, got, tc.want)
+		}
+	}
+	if _, err := backupFolderRegistered(`not json`); err == nil {
+		t.Error("malformed folder response accepted")
 	}
 }

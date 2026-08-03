@@ -68,6 +68,13 @@ const (
 	VarLibVPN = "/var/lib/vpn"
 	StateDir  = VarLibVPN + "/state"
 
+	// ServiceLayoutMarker records that this installation began
+	// with the dedicated bitcoin/lnd service-identity layout.
+	// It lives below a root-owned /var/lib parent, not the
+	// admin-owned /etc/vpn directory, so vpn cannot forge or
+	// replace the migration authorization marker.
+	ServiceLayoutMarker = VarLibVPN + "/service-layout-v1"
+
 	// Staging board files. One fact per file.
 	StateBitcoindRPCPass = StateDir + "/bitcoind-rpc.pass"
 	StateLNDTLSCert      = StateDir + "/lnd-tls.cert"
@@ -118,6 +125,11 @@ const (
 	LNDDataDir       = "/var/lib/lnd"
 	SyncthingDataDir = "/var/lib/syncthing"
 	SyncthingBackup  = "/var/lib/syncthing/lnd-backup"
+	// SyncthingBackupStage is deliberately outside the folder
+	// registered with Syncthing. The backup exporter copies into
+	// this sibling first, then atomically renames the complete file
+	// into SyncthingBackup. Both directories share a filesystem.
+	SyncthingBackupStage = "/var/lib/syncthing/lnd-backup-stage"
 )
 
 // ── LND files ────────────────────────────────────────────
@@ -131,11 +143,6 @@ const (
 // LNDMacaroon returns the path to the admin macaroon for a given network.
 func LNDMacaroon(network string) string {
 	return fmt.Sprintf("/var/lib/lnd/data/chain/bitcoin/%s/admin.macaroon", network)
-}
-
-// LNDCookiePath returns the cookie path relative to bitcoin datadir.
-func LNDCookiePath(cookieSuffix string) string {
-	return fmt.Sprintf("%s/%s", BitcoinDataDir, cookieSuffix)
 }
 
 // ChannelBackup returns the path to the channel backup for a given network.
