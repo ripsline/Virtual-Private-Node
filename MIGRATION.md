@@ -1,208 +1,60 @@
-# Migrating from rlvpn to vpn (v0.6.3 to v0.7.0)
+# Moving from `rlvpn` to `vpn` for v0.7.0
 
-**This is the upgrade procedure for v0.7.0, which has not been published
-yet.** It is here so you can read it before you need it. The download
-links in step 1 begin working when v0.7.0 is released. Nothing on this
-page is something to run today, and nothing about your node changes
-until then.
+v0.7.0 does **not** support an in-place migration from an existing `rlvpn`
+installation or an older unmarked `vpn` layout.
 
-Virtual Private Node has a new home and a new name. The project moved to
-`github.com/virtualprivatenode/vpn`. At v0.7.0 the binary becomes `vpn`,
-the admin user becomes `vpn`, and the bootstrap script goes away:
-installation becomes a subcommand of the signed binary itself,
-`sudo vpn install`.
+The service-identity design changes Linux accounts, directory ownership,
+credentials, service units, helper authority, and project state boundaries.
+An automatic conversion of a live Lightning node has not been designed or
+validated across those changes. The v0.7.0 installer therefore refuses
+recognized pre-existing project state before modifying it.
 
-This will be a **one-time manual upgrade**. The built-in updater cannot
-cross the rename (it looks for release files under the old name), and
-that is deliberate: it makes a half-migrated box impossible. If your node
-ever shows an update it fails to download, this document is why. Every
-release after this one updates through the TUI as before.
+Do not copy the old `/etc/rlvpn/config.json` into `/etc/vpn`, do not run the
+v0.7.0 installer over the old node, and do not manually change ownership below
+Bitcoin Core, LND, Tor, or Syncthing data directories to make the installer
+continue.
 
-The whole procedure takes about 15 minutes of your attention. Your node
-is offline for a few minutes in the middle, the same as a reboot.
+## Supported path for an existing node
 
----
+Plan a move to a clean Debian 13 amd64 installation. This can be a newly
+provisioned machine or an existing machine that has been fully reimaged; it
+must not contain the old project installation.
 
-## What this migration does NOT touch
+1. Keep the existing node healthy and online while planning the move.
+2. Cooperatively close Lightning channels.
+3. Wait for every close to confirm and for the resulting funds to become
+   spendable.
+4. Move funds to a wallet you control and verify the result independently.
+5. Preserve the seed and required disaster-recovery material securely.
+6. Provision or reimage a fresh supported Debian 13 amd64 machine.
+7. Install v0.7.0, create a new LND wallet with a new seed, and reopen channels
+   deliberately.
 
-Your node's identity and your money live in places the rename never
-visits:
+Do not use a static channel backup as the normal way to move a healthy node.
+Static channel backup recovery is an emergency procedure that force-closes
+channels; it is not a substitute for cooperative closes. Never operate two LND
+instances from the same seed.
 
-- **Bitcoin chain data** (`/var/lib/bitcoin`) — no re-sync, no re-download
-- **LND wallet, channels, seed, macaroons** (`/var/lib/lnd`) — no channel
-  closes, no force-closes, nothing to move or restore
-- **Tor onion keys** (`/var/lib/tor`) — your onion addresses stay the same
-- **Syncthing data and device pairings** (`/var/lib/syncthing`,
-  `/etc/syncthing`) — paired phones keep working
-- **SSH host keys** — your SSH client sees the same server, no warnings
+If the old node cannot be operated safely enough to close channels, stop and
+follow LND's disaster-recovery guidance for the exact failure instead of
+improvising a migration.
 
-**You do not need to close channels, move funds, or touch your seed.**
-What happens to LND is a restart, the same thing every reboot already
-does, and channels are built to survive that. Just don't migrate in the
-middle of heavy payment activity: pick a quiet moment, since in-flight
-payments during the downtime resolve by their normal timeout rules.
+## Fresh-install interruption is different
 
-## Before you begin
+The v0.7.0 installer can conservatively resume a recognizable interruption of
+the fresh installation that it started. That recovery applies only to the
+current supported layout and valid base-install progress state.
 
-- Log in as `ripsline` via SSH and **keep that session open for
-  the entire procedure**. Exit the TUI to a shell with ctrl + c.
-- Confirm a channel backup exists (skip if you have no channels):
+It is not an in-place migration, a general reinstall facility, or a repair tool
+for pre-existing node state. A completed base installation reports that it is
+already installed and stops; optional add-ons and later settings are managed
+through their dedicated interfaces.
 
-  ```
-  ls -l /var/lib/lnd/data/chain/bitcoin/mainnet/channel.backup
-  ```
+## Future migration support
 
-## Step 1 — Download and verify the new binary
-
-From your `ripsline` shell (downloads route through Tor, as always):
-
-```
-cd /tmp
-torsocks wget https://github.com/virtualprivatenode/vpn/releases/download/v0.7.0/vpn-0.7.0-amd64.tar.gz
-torsocks wget https://github.com/virtualprivatenode/vpn/releases/download/v0.7.0/SHA256SUMS
-torsocks wget https://github.com/virtualprivatenode/vpn/releases/download/v0.7.0/SHA256SUMS.asc
-```
-
-Import the signing key — the **same key** that signed every old rlvpn release:
-
-```
-torsocks wget -O signing-key.asc https://keys.openpgp.org/vks/v1/by-fingerprint/AFA0EBACDC9A4C4AA7B0154AC97CE10F170BA5FE
-gpg --import signing-key.asc
-```
-
-Verify the signature and the checksum:
-
-```
-gpg --verify SHA256SUMS.asc SHA256SUMS
-sha256sum -c SHA256SUMS --ignore-missing
-```
-
-The signature must say **Good signature** with primary key fingerprint
-`AFA0 EBAC DC9A 4C4A A7B0  154A C97C E10F 170B A5FE`, and the checksum
-line must say `vpn-0.7.0-amd64.tar.gz: OK`. If either fails, stop and ask
-before proceeding.
-
-Install the binary:
-
-```
-tar -xzf vpn-0.7.0-amd64.tar.gz
-sudo install -m 755 vpn /usr/local/bin/vpn
-```
-
-## Step 2 — Carry your settings over
-
-Your existing settings file is compatible as-is. Copy it to the new
-location (the installer fixes ownership):
-
-```
-sudo mkdir -p /etc/vpn
-sudo cp /etc/rlvpn/config.json /etc/vpn/config.json
-```
-
-The installer reads this as your previous answers — network, prune size,
-components, auto-unlock — so it won't ask you to re-decide things your
-node already settled.
-
-## Step 3 — Run the installer
-
-```
-sudo vpn install
-```
-
-What you'll see:
-
-- **Environment checks** run first; on a working box they pass silently.
-- **The access step** shows the SSH keys found on the box — including
-  your existing `ripsline` keys, with fingerprints. Confirm to copy them
-  to the new `vpn` user. You'll also set a login password for the `vpn`
-  user (16 characters minimum) as a console fallback.
-- **Component reinstall**: Bitcoin Core and LND are re-downloaded over
-  Tor, re-verified, and reinstalled. Services restart briefly — this 
-  is the downtime window. Your data directories are not touched.
-- **SSH hardening** is rewritten under the new name. The installer reads
-  your *current effective* SSH settings from the running service first,
-  so whatever you had — including password login disabled, if you
-  disabled it — stays exactly as it was. The old
-  `00-rlvpn-hardening.conf` drop-in is removed automatically.
-
-If the installer fails partway, re-run `sudo vpn install` — it resumes
-from the first incomplete step and re-verifies Tor routing on every pass.
-Nothing about your old setup has been removed, so the box is never
-stranded.
-
-## Step 4 — Verify the new login BEFORE any cleanup
-
-Open a **new** terminal (leave the `ripsline` session open):
-
-```
-ssh vpn@<your-server-ip>
-```
-
-The TUI should launch. Check that your wallet, channels, and onion
-addresses look right. If you don't use auto-unlock, unlock the wallet —
-same as after any restart.
-
-**Do not continue until this login works.** If it doesn't, go back to
-your `ripsline` session (which still has full access) and fix it — or
-ask. Nothing has been lost; the old setup still works at this point.
-
-## Step 5 — Remove the old identity
-
-From the still-open `ripsline` session, one command. It must be a single
-command, in this order, because it removes ripsline's own admin rights
-along the way:
-
-```
-sudo sh -c 'rm -f /usr/local/bin/rlvpn; rm -rf /etc/rlvpn; rm -f /var/log/rlvpn.log; rm -f /etc/sudoers.d/ripsline; userdel -r -f ripsline'
-```
-
-`userdel` will warn that the user is currently logged in — that's
-expected and fine (a warning about a missing mail spool is also normal).
-Your session's shell keeps working until you close it, though `sudo`
-from it will not — the removal you just ran took ripsline's admin
-rights with it, which is why it had to be a single command. If you want
-to keep the old log for your records, copy `/var/log/rlvpn.log`
-somewhere first.
-
-Then `exit`. The migration is complete.
-
-Your box now has: the `vpn` binary, the `vpn` admin user — which by
-design has **no sudo rights at all** (privileged operations go through
-the node's own root helper) — and no trace of the old name.
-
-## If something goes wrong
-
-Until Step 5, the migration is reversible: the old binary, config, user,
-and admin rights are all still in place, and logging in as `ripsline`
-still works (it will still launch the old TUI). The one thing replaced
-along the way is the SSH hardening file — and its settings are carried
-into the new one, so behavior doesn't change.
-
-The two rules that keep you safe:
-
-1. Keep the `ripsline` session open until Step 4 passes.
-2. Never run Step 5 before Step 4 passes.
-
-## Moving to a different box instead
-
-If you'd rather start on a fresh server, treat it as **moving a
-Lightning node**, not as this upgrade: cooperatively close your channels
-from the old box, wait for settlement, send the funds on-chain to a
-wallet you control, install fresh on the new box, create a **new**
-wallet, and reopen channels.
-
-⚠️ **Do not use the channel backup (SCB) to migrate.** SCB restore is
-disaster recovery, not a moving tool: it force-closes every channel,
-your funds come back only after time-locks expire, and it depends on
-your channel partners' cooperation. Worse, running two nodes from the
-same seed — even briefly, even by accident — can lead to loss of funds.
-If the old box is alive and healthy, close cooperatively; the backup is
-for when it isn't.
-
-## After migration
-
-Routine updates return to the TUI: you'll see the update notice, confirm
-it, and the node downloads and verifies the release itself — same
-signing key, same verification, done for you. Any future release that
-ever requires manual steps will say so clearly in its release notes;
-this rename is expected to be the only one.
+In-place migration remains future architecture work. It requires a separately
+reviewed design covering source versions, backups, preconditions, service stop
+order, ownership and path changes, rollback, interruption recovery, wallet and
+channel integrity, Tor identities, Syncthing state, and operator recovery. No
+future release should be assumed to support migration unless its release notes
+and documentation explicitly say so.

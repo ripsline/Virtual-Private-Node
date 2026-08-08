@@ -3,12 +3,9 @@
 A Bitcoin + Lightning Node on Debian Linux.
 Bitcoin Core, LND, and Tor, configured and running in minutes.
 
-After installation, manage your node with the beautiful TUI
-Private by default, simple by design. Your keys, your node.
-
 ## Project status
 
-**New home, new name, and v0.7.0 is the first release under it.**
+**A new home, new name, and v0.7.0.**
 
 Virtual Private Node moved to github.com/virtualprivatenode/vpn, and
 the move brought every earlier release with it. Those releases predate
@@ -17,13 +14,12 @@ previous generation of this project. v0.7.0 is the first release under
 the new name and it is what this page describes.
 
 If you are setting up a node now, it is worth waiting for v0.7.0.
-Starting on the current release means a manual upgrade shortly after,
-because the rename is deliberately something the built in updater will
-not cross.
+v0.7.0 is fresh-install-only: it does not perform an in-place migration from an
+existing `rlvpn` installation or an older unmarked `vpn` layout.
 
-If you already run a node, nothing changes for you until v0.7.0 is
-published, and MIGRATION.md describes that upgrade in full.
-Verification steps for the current releases are in docs/verifying.md.
+If you already run a node, nothing changes until you deliberately plan a move.
+[MIGRATION.md](MIGRATION.md) explains the supported fresh-machine procedure and
+why the v0.7.0 installer refuses pre-existing project state.
 
 Please do not build and run the main branch on a node that holds
 funds.
@@ -78,8 +74,11 @@ can trust. It then walks you through access setup and hardware
 fit, installs Bitcoin Core and LND with every download after Tor
 routed through Tor and verified before install, and drops you
 straight into the TUI. If a step fails or you interrupt, run it
-again — it resumes from the first incomplete step. Mainnet and
-testnet4 are both supported.
+again — when the installer can prove that it is resuming the same recognizable
+fresh-install lifecycle, it continues from the incomplete work. A completed
+base installation reports already installed and stops; optional add-ons and
+later settings remain available through the TUI. Mainnet and testnet4 are both
+supported.
 
 **Access setup.** The installer creates a `vpn` admin user and
 shows every SSH key it finds on the box — with fingerprints and
@@ -223,7 +222,7 @@ For the full setup guide, see
 - Bitcoin Core, LND, and Syncthing run as separate, non-login system users; `vpn` has no direct access to their private data directories
 - Tor control-cookie access is granted only inside `bitcoind.service` and `lnd.service`; Syncthing and the backup exporter receive none
 - LND authenticates to Bitcoin Core with its own `rpcauth` identity instead of reading Bitcoin Core's cookie or data directory
-- Channel backups cross into Syncthing through a dedicated `lnd` oneshot exporter and the private `vpn-lnd-backup` group; Syncthing cannot read `/var/lib/lnd`
+- Channel backups cross through a dedicated `lnd` publisher into the project-owned `/var/lib/vpn/exports` boundary; Syncthing can read only the completed `channel.backup`, cannot write the export, and cannot read `/var/lib/lnd` or private staging
 - GPG signature verification for all software, any bad signature is a hard stop
 - Unattended security upgrades with auto-reboot
 - Base packages upgraded during install — behind the firewall, which comes up first — to close CVE windows on stale server images
@@ -314,11 +313,14 @@ For manual binary verification before installation, see
 | /etc/bitcoin/bitcoin.conf | Bitcoin Core configuration |
 | /etc/lnd/lnd.conf | LND configuration |
 | /etc/syncthing/ | Syncthing configuration |
-| /etc/vpn/config.json | Install state and credentials |
-| /var/lib/vpn/state/ | Node facts staged for the console (onion addresses, staged credentials) |
+| /etc/vpn/config.json | Node and console configuration; mode 0600 and may contain the Syncthing web UI password |
+| /etc/vpn/install-state.json | Root-owned base-install progress ledger and installer coordination lock |
+| /var/lib/vpn/service-layout-v1 | Root-owned marker authorizing the dedicated service-identity layout |
+| /var/lib/vpn/state/ | Root-written facts and credentials deliberately staged for the console |
+| /var/lib/vpn/exports/lnd-backup/ | Read-only Syncthing export of the completed `channel.backup` |
 | /var/lib/bitcoin/ | Blockchain data |
 | /var/lib/lnd/ | LND data and wallet |
-| /var/lib/syncthing/lnd-backup/ | Auto-synced channel.backup |
+| /var/lib/syncthing/ | Syncthing's private data |
 | /var/log/vpn.log | Application log (install, verification, status) |
 
 ## License
