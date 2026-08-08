@@ -50,3 +50,29 @@ func TestServiceLayoutMarkerHasRootOwnedParent(t *testing.T) {
 			ServiceLayoutMarker, ConfigDir)
 	}
 }
+
+func TestLNDBackupUsesProjectOwnedExportBoundary(t *testing.T) {
+	for name, got := range map[string]string{
+		"stage":  LNDBackupStage,
+		"export": LNDBackupExport,
+	} {
+		if !strings.HasPrefix(got, ExportDir+"/") {
+			t.Errorf("%s path %q is not below export boundary %q",
+				name, got, ExportDir)
+		}
+		if strings.HasPrefix(got, SyncthingDataDir+"/") {
+			t.Errorf("%s path %q is below Syncthing private state",
+				name, got)
+		}
+	}
+	if pathDir := strings.TrimSuffix(
+		LNDBackupStage, "/lnd-backup-stage"); pathDir != ExportDir {
+		t.Errorf("stage and export boundary disagree: %q, %q",
+			pathDir, ExportDir)
+	}
+	if BackupExportService !=
+		"/etc/systemd/system/lnd-backup-export.service" {
+		t.Errorf("backup export service path is %q",
+			BackupExportService)
+	}
+}

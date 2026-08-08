@@ -73,19 +73,22 @@ type syncthingDirSpec struct {
 func syncthingDirSpecs() []syncthingDirSpec {
 	return []syncthingDirSpec{
 		{paths.SyncthingDir,
-			syncthingUser + ":" + syncthingUser, 0750},
+			syncthingUser + ":" + syncthingUser, 0700},
 		{paths.SyncthingDataDir,
-			syncthingUser + ":" + backupGroup, 0710},
-		// Only the lnd-run exporter can read or write this
-		// unwatched staging directory. Syncthing can traverse its
-		// parent as owner but cannot enter this directory.
-		{paths.SyncthingBackupStage,
+			syncthingUser + ":" + syncthingUser, 0700},
+		// The project-owned parent is the only cross-service
+		// boundary. Syncthing receives group traversal here, never
+		// through its own private state.
+		{paths.ExportDir,
+			"root:" + backupGroup, 0750},
+		// Only the lnd-run publisher can enter private staging.
+		{paths.LNDBackupStage,
 			lndUser + ":" + lndUser, 0700},
-		// Syncthing owns its send-only folder; only the backup
-		// copy unit receives the private group needed to write an
-		// exported channel.backup into it.
-		{paths.SyncthingBackup,
-			syncthingUser + ":" + backupGroup, 0770},
+		// The publisher owns the final send-only folder. Syncthing
+		// can traverse and read through the backup group but has no
+		// write bit on the directory or published file.
+		{paths.LNDBackupExport,
+			lndUser + ":" + backupGroup, 0750},
 	}
 }
 
@@ -319,22 +322,21 @@ func verifySyncthingConfig() error {
 
 func setupChannelBackupWatcher(cfg *config.AppConfig) error {
 	network := cfg.Network
-	if cfg.IsMainnet() {
-		network = "mainnet"
+	if err := config.ValidateNetwork(network); err != nil {
+		return fmt.Errorf("configure LND backup publisher: %w", err)
 	}
-	backupSource := paths.ChannelBackup(network)
-	backupDest := paths.SyncthingBackup + "/channel.backup"
-	backupStage := paths.SyncthingBackupStage + "/channel.backup.tmp"
 
-	pathUnit, copyService := channelBackupUnits(
-		backupSource, backupStage, backupDest)
+	pathUnit, exportService, err := channelBackupUnits(network)
+	if err != nil {
+		return err
+	}
 	if err := system.SudoWriteFile(paths.BackupWatchPath,
 		[]byte(pathUnit), 0644); err != nil {
 		return err
 	}
 
-	if err := system.SudoWriteFile(paths.BackupCopyService,
-		[]byte(copyService), 0644); err != nil {
+	if err := system.SudoWriteFile(paths.BackupExportService,
+		[]byte(exportService), 0644); err != nil {
 		return err
 	}
 
@@ -353,9 +355,9 @@ func setupChannelBackupWatcher(cfg *config.AppConfig) error {
 	// If a backup already exists, copy it through the same
 	// least-privilege unit that handles future changes. A node
 	// without a wallet/channel backup yet is a normal no-op.
-	if _, err := os.Stat(backupSource); err == nil {
+	if _, err := os.Stat(paths.ChannelBackup(network)); err == nil {
 		if err := system.SudoRun("systemctl", "start",
-			"lnd-backup-copy.service"); err != nil {
+			"lnd-backup-export.service"); err != nil {
 			return err
 		}
 	} else if !os.IsNotExist(err) {
@@ -365,25 +367,32 @@ func setupChannelBackupWatcher(cfg *config.AppConfig) error {
 }
 
 // channelBackupUnits renders the watcher and the only service
-// allowed to cross from LND state into Syncthing's exported
-// directory. The normal lnd.service has no backup-group access,
-// and Syncthing has no access to /var/lib/lnd.
-func channelBackupUnits(backupSource, backupStage, backupDest string) (
-	pathUnit, copyService string,
+// allowed to cross from LND state into the project-owned export.
+// The normal lnd.service has no backup-group access, and Syncthing
+// has no access to /var/lib/lnd or the private staging directory.
+// The service accepts only the closed network selector; every
+// filesystem path is fixed inside the publisher implementation.
+func channelBackupUnits(network string) (
+	pathUnit, exportService string, err error,
 ) {
+	if err := config.ValidateNetwork(network); err != nil {
+		return "", "", fmt.Errorf(
+			"render LND backup units: %w", err)
+	}
+	backupSource := paths.ChannelBackup(network)
 	pathUnit = fmt.Sprintf(`[Unit]
 Description=Watch LND channel backup
 
 [Path]
 PathChanged=%s
-Unit=lnd-backup-copy.service
+Unit=lnd-backup-export.service
 
 [Install]
 WantedBy=multi-user.target
 `, backupSource)
 
-	copyService = fmt.Sprintf(`[Unit]
-Description=Copy LND channel backup
+	exportService = fmt.Sprintf(`[Unit]
+Description=Export LND channel backup
 
 [Service]
 Type=oneshot
@@ -391,11 +400,9 @@ User=%s
 Group=%s
 SupplementaryGroups=%s
 UMask=0027
-ExecStart=/usr/bin/install -m 0640 -g %s %s %s
-ExecStart=/usr/bin/mv -f %s %s
-`, lndUser, lndUser, backupGroup, backupGroup,
-		backupSource, backupStage, backupStage, backupDest)
-	return pathUnit, copyService
+ExecStart=%s publish-lnd-backup %s
+`, lndUser, lndUser, backupGroup, paths.BinaryPath, network)
+	return pathUnit, exportService, nil
 }
 
 // stopSyncthingFailSafe stops AND disables Syncthing. Used on
@@ -524,16 +531,7 @@ func registerBackupFolder() error {
 		return fmt.Errorf("cannot determine local device ID")
 	}
 
-	folder := fmt.Sprintf(`{
-        "id": "lnd-backup",
-        "label": "LND Channel Backup",
-        "path": "%s",
-        "type": "sendonly",
-        "rescanIntervalS": 10,
-        "fsWatcherEnabled": true,
-        "fsWatcherDelayS": 1,
-        "devices": [{"deviceID": %q}]
-    }`, paths.SyncthingBackup, localID)
+	folder := renderBackupFolderConfig(localID)
 
 	if err := syncthingAPIPost(apiKey,
 		"/rest/config/folders", folder); err != nil {
@@ -542,6 +540,19 @@ func registerBackupFolder() error {
 
 	logger.Install("Registered lnd-backup folder in Syncthing")
 	return nil
+}
+
+func renderBackupFolderConfig(localID string) string {
+	return fmt.Sprintf(`{
+        "id": "lnd-backup",
+        "label": "LND Channel Backup",
+        "path": "%s",
+        "type": "sendonly",
+        "rescanIntervalS": 10,
+        "fsWatcherEnabled": true,
+        "fsWatcherDelayS": 1,
+        "devices": [{"deviceID": %q}]
+    }`, paths.LNDBackupExport, localID)
 }
 
 func backupFolderRegistered(foldersJSON string) (bool, error) {
@@ -809,8 +820,8 @@ func addDeviceToBackupFolder(
 	}
 
 	for i, f := range folders {
-		if f.Path == paths.SyncthingBackup ||
-			f.Path == paths.SyncthingBackup+"/" {
+		if f.Path == paths.LNDBackupExport ||
+			f.Path == paths.LNDBackupExport+"/" {
 			// Check if device already added
 			for _, d := range f.Devices {
 				if d.DeviceID == deviceID {

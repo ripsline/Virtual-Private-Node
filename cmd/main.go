@@ -76,6 +76,16 @@ func main() {
 			os.Exit(1)
 		}
 		fmt.Println("staged LND TLS certificate copy refreshed")
+	case cmdPublishLNDBackup:
+		// Intended for lnd-backup-export.service. The publisher
+		// validates the exact lnd identity and unit-local backup
+		// group itself; this dispatch grants no privileges.
+		if err := installer.PublishLNDBackup(opts.Network); err != nil {
+			fmt.Fprintf(os.Stderr,
+				"vpn publish-lnd-backup: %v\n", err)
+			os.Exit(1)
+		}
+		fmt.Println("published LND channel backup")
 	case cmdVersion:
 		fmt.Println(version)
 	case cmdHelp:
@@ -128,6 +138,7 @@ const (
 	cmdInstall
 	cmdHelperd
 	cmdStageLNDCert
+	cmdPublishLNDBackup
 	cmdVersion
 	cmdHelp
 )
@@ -171,6 +182,17 @@ func parseArgs(
 				"stage-lnd-cert takes no arguments")
 		}
 		return cmdStageLNDCert, opts, nil
+	case "publish-lnd-backup":
+		if len(args) != 2 {
+			return 0, opts, fmt.Errorf(
+				"publish-lnd-backup requires exactly one network")
+		}
+		if err := config.ValidateNetwork(args[1]); err != nil {
+			return 0, opts, fmt.Errorf(
+				"publish-lnd-backup: %w", err)
+		}
+		opts.Network = args[1]
+		return cmdPublishLNDBackup, opts, nil
 	case "version", "--version", "-v":
 		return cmdVersion, opts, nil
 	case "help", "--help", "-h":

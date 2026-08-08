@@ -124,12 +124,19 @@ const (
 	BitcoinDataDir   = "/var/lib/bitcoin"
 	LNDDataDir       = "/var/lib/lnd"
 	SyncthingDataDir = "/var/lib/syncthing"
-	SyncthingBackup  = "/var/lib/syncthing/lnd-backup"
-	// SyncthingBackupStage is deliberately outside the folder
-	// registered with Syncthing. The backup exporter copies into
-	// this sibling first, then atomically renames the complete file
-	// into SyncthingBackup. Both directories share a filesystem.
-	SyncthingBackupStage = "/var/lib/syncthing/lnd-backup-stage"
+
+	// ExportDir is the root-controlled boundary for artifacts that
+	// one service deliberately publishes to another. It is separate
+	// from every daemon's private state.
+	ExportDir = VarLibVPN + "/exports"
+
+	// LNDBackupStage is private publisher staging. Syncthing cannot
+	// enter it. LNDBackupExport is the send-only folder registered
+	// with Syncthing. Both live beneath ExportDir so publication can
+	// use a same-filesystem atomic rename without traversing
+	// Syncthing's private state.
+	LNDBackupStage  = ExportDir + "/lnd-backup-stage"
+	LNDBackupExport = ExportDir + "/lnd-backup"
 )
 
 // ── LND files ────────────────────────────────────────────
@@ -166,11 +173,11 @@ const (
 // ── Systemd ──────────────────────────────────────────────
 
 const (
-	BitcoindService   = "/etc/systemd/system/bitcoind.service"
-	LNDService        = "/etc/systemd/system/lnd.service"
-	SyncthingService  = "/etc/systemd/system/syncthing.service"
-	BackupWatchPath   = "/etc/systemd/system/lnd-backup-watch.path"
-	BackupCopyService = "/etc/systemd/system/lnd-backup-copy.service"
+	BitcoindService     = "/etc/systemd/system/bitcoind.service"
+	LNDService          = "/etc/systemd/system/lnd.service"
+	SyncthingService    = "/etc/systemd/system/syncthing.service"
+	BackupWatchPath     = "/etc/systemd/system/lnd-backup-watch.path"
+	BackupExportService = "/etc/systemd/system/lnd-backup-export.service"
 
 	// The LND TLS certificate watch. LND rewrites tls.cert on
 	// its own (tlsautorefresh in lnd.conf regenerates it at

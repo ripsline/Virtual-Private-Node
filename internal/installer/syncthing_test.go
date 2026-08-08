@@ -3,6 +3,7 @@
 package installer
 
 import (
+	"encoding/json"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -126,14 +127,20 @@ func TestSyncthingDirectoryIdentityBoundary(t *testing.T) {
 		specs[spec.path] = spec
 	}
 	for path, want := range map[string]syncthingDirSpec{
-		paths.SyncthingDataDir: {
-			owner: "syncthing:vpn-lnd-backup", mode: 0710,
+		paths.SyncthingDir: {
+			owner: "syncthing:syncthing", mode: 0700,
 		},
-		paths.SyncthingBackupStage: {
+		paths.SyncthingDataDir: {
+			owner: "syncthing:syncthing", mode: 0700,
+		},
+		paths.ExportDir: {
+			owner: "root:vpn-lnd-backup", mode: 0750,
+		},
+		paths.LNDBackupStage: {
 			owner: "lnd:lnd", mode: 0700,
 		},
-		paths.SyncthingBackup: {
-			owner: "syncthing:vpn-lnd-backup", mode: 0770,
+		paths.LNDBackupExport: {
+			owner: "lnd:vpn-lnd-backup", mode: 0750,
 		},
 	} {
 		got, ok := specs[path]
@@ -149,31 +156,50 @@ func TestSyncthingDirectoryIdentityBoundary(t *testing.T) {
 }
 
 func TestChannelBackupUnitIdentityBoundary(t *testing.T) {
-	source := "/var/lib/lnd/data/chain/bitcoin/mainnet/channel.backup"
-	dest := "/var/lib/syncthing/lnd-backup/channel.backup"
-	stage := "/var/lib/syncthing/lnd-backup-stage/channel.backup.tmp"
-	pathUnit, copyUnit := channelBackupUnits(source, stage, dest)
+	source := paths.ChannelBackup("mainnet")
+	pathUnit, exportUnit, err := channelBackupUnits("mainnet")
+	if err != nil {
+		t.Fatal(err)
+	}
 	if !strings.Contains(pathUnit, "PathChanged="+source) {
 		t.Error("path unit watches the wrong source")
+	}
+	if !strings.Contains(pathUnit,
+		"Unit=lnd-backup-export.service") {
+		t.Error("path unit does not target the backup export service")
 	}
 	for _, want := range []string{
 		"User=lnd",
 		"Group=lnd",
 		"SupplementaryGroups=vpn-lnd-backup",
 		"UMask=0027",
-		"-m 0640 -g vpn-lnd-backup",
-		stage,
-		"/usr/bin/mv -f " + stage + " " + dest,
+		"ExecStart=" + paths.BinaryPath +
+			" publish-lnd-backup mainnet",
 	} {
-		if !strings.Contains(copyUnit, want) {
-			t.Errorf("backup copy unit missing %q", want)
+		if !strings.Contains(exportUnit, want) {
+			t.Errorf("backup export unit missing %q", want)
 		}
 	}
-	if strings.Contains(copyUnit, "debian-tor") {
-		t.Error("backup copy unit has Tor control-cookie access")
+	if strings.Contains(exportUnit, "debian-tor") {
+		t.Error("backup export unit has Tor control-cookie access")
 	}
-	if strings.Contains(copyUnit, dest+".tmp") {
-		t.Error("backup temp file is staged inside the synchronized folder")
+	for _, forbidden := range []string{
+		"/usr/bin/install", "/usr/bin/mv", source,
+		paths.LNDBackupStage, paths.LNDBackupExport,
+	} {
+		if strings.Contains(exportUnit, forbidden) {
+			t.Errorf("backup unit exposes implementation path/command %q",
+				forbidden)
+		}
+	}
+	if got := strings.Count(exportUnit, "UMask=0027"); got != 1 {
+		t.Errorf("backup unit has %d publisher umasks, want 1", got)
+	}
+	if strings.Contains(exportUnit, "UMask=0077") {
+		t.Error("publisher inherited the private-daemon umask")
+	}
+	if _, _, err := channelBackupUnits("mainnet /tmp/source"); err == nil {
+		t.Error("backup unit accepted a caller-supplied path as a network")
 	}
 }
 
@@ -197,5 +223,30 @@ func TestBackupFolderRegisteredRequiresExactID(t *testing.T) {
 	}
 	if _, err := backupFolderRegistered(`not json`); err == nil {
 		t.Error("malformed folder response accepted")
+	}
+}
+
+func TestBackupFolderConfigUsesReadOnlyProjectExport(t *testing.T) {
+	var folder struct {
+		ID      string `json:"id"`
+		Path    string `json:"path"`
+		Type    string `json:"type"`
+		Devices []struct {
+			DeviceID string `json:"deviceID"`
+		} `json:"devices"`
+	}
+	if err := json.Unmarshal(
+		[]byte(renderBackupFolderConfig("LOCAL-ID")), &folder); err != nil {
+		t.Fatal(err)
+	}
+	if folder.ID != "lnd-backup" ||
+		folder.Path != paths.LNDBackupExport ||
+		folder.Type != "sendonly" || len(folder.Devices) != 1 ||
+		folder.Devices[0].DeviceID != "LOCAL-ID" {
+		t.Errorf("unexpected folder config: %+v", folder)
+	}
+	if strings.HasPrefix(folder.Path, paths.SyncthingDataDir+"/") {
+		t.Errorf("folder path %q is below Syncthing private state",
+			folder.Path)
 	}
 }

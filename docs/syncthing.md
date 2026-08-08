@@ -113,6 +113,11 @@ the System section.
 - The sync port (22000) rejects all unapproved devices immediately
 - The `channel.backup` file is encrypted by LND and useless
   without your 24-word seed phrase
+- The Node publishes only a completed copy through its own
+  `/var/lib/vpn/exports` boundary; no temporary file is placed in
+  the synchronized folder
+- Syncthing can read that final export but cannot write it, enter
+  the private staging directory, or read LND's source data
 - Discovery and relay servers are disabled — your device connects
   directly to the Node by IP address
 - The Syncthing web UI on the Node is only accessible via Tor
@@ -131,6 +136,8 @@ the System section.
 - Check that the folder is shared with both devices
 - Node side should be **Send Only**
 - Local side should be **Receive Only**
+- Check the Node's export service with
+  `sudo systemctl status lnd-backup-export.service`
 - Check Syncthing logs: **Actions → Logs** in the web UI
 
 **Web UI access on Node:**

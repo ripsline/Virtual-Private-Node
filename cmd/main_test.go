@@ -67,4 +67,23 @@ func TestParseArgs(t *testing.T) {
 		[]string{"stage-lnd-cert", "--flag"}); err == nil {
 		t.Error("stage-lnd-cert with arguments accepted")
 	}
+
+	for _, network := range []string{"mainnet", "testnet4"} {
+		cmd, opts, err = parseArgs(
+			[]string{"publish-lnd-backup", network})
+		if err != nil || cmd != cmdPublishLNDBackup ||
+			opts.Network != network {
+			t.Errorf("publisher %s: got (%v,%+v,%v)",
+				network, cmd, opts, err)
+		}
+	}
+	for _, args := range [][]string{
+		{"publish-lnd-backup"},
+		{"publish-lnd-backup", "signet"},
+		{"publish-lnd-backup", "mainnet", "/tmp/destination"},
+	} {
+		if _, _, err := parseArgs(args); err == nil {
+			t.Errorf("invalid publisher arguments accepted: %v", args)
+		}
+	}
 }
