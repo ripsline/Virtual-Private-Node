@@ -360,6 +360,7 @@ Type=simple
 User=%s
 Group=%s
 SupplementaryGroups=debian-tor
+UMask=0077
 ExecStart=/usr/local/bin/lnd --configfile=/etc/lnd/lnd.conf%s
 Restart=on-failure
 RestartSec=30

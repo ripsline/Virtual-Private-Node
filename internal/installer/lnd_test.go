@@ -187,6 +187,7 @@ func TestLNDServiceUnit(t *testing.T) {
 			"User=lnd",
 			"Group=lnd",
 			"SupplementaryGroups=debian-tor",
+			"UMask=0077",
 			"ExecStart=/usr/local/bin/lnd " +
 				"--configfile=/etc/lnd/lnd.conf",
 			"Restart=on-failure",
@@ -196,6 +197,9 @@ func TestLNDServiceUnit(t *testing.T) {
 			if !strings.Contains(unit, want) {
 				t.Errorf("unit lacks %q", want)
 			}
+		}
+		if got := strings.Count(unit, "UMask=0077"); got != 1 {
+			t.Errorf("unit has %d private umasks, want 1", got)
 		}
 		if strings.Contains(unit, backupGroup) {
 			t.Error("normal lnd unit has channel-backup export access")

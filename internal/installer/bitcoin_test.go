@@ -132,10 +132,14 @@ func TestBitcoindServiceUsesDedicatedIdentityAndTorGroup(t *testing.T) {
 		"User=bitcoin",
 		"Group=bitcoin",
 		"SupplementaryGroups=debian-tor",
+		"UMask=0077",
 	} {
 		if !strings.Contains(unit, want) {
 			t.Errorf("bitcoind unit missing %q", want)
 		}
+	}
+	if got := strings.Count(unit, "UMask=0077"); got != 1 {
+		t.Errorf("bitcoind unit has %d private umasks, want 1", got)
 	}
 	if strings.Contains(unit, backupGroup) {
 		t.Error("normal bitcoind unit has channel-backup access")
