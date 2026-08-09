@@ -217,7 +217,7 @@ try:
         errors = get_json("/rest/folder/errors", {"folder": "lnd-backup"})
         state = str(status.get("state", ""))
         invalid = str(status.get("invalid", ""))
-        error_count = len(errors.get("errors", []))
+        error_count = len(errors.get("errors") or [])
         last = f"{state}|{invalid}|{error_count}"
         if state == "idle" and not invalid and error_count == 0:
             break
