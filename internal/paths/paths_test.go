@@ -75,4 +75,13 @@ func TestLNDBackupUsesProjectOwnedExportBoundary(t *testing.T) {
 		t.Errorf("backup export service path is %q",
 			BackupExportService)
 	}
+	if ExportReadyMarkerName != ".vpn-export-ready" {
+		t.Errorf("export marker convention is %q",
+			ExportReadyMarkerName)
+	}
+	if LNDBackupExportMarker !=
+		LNDBackupExport+"/"+ExportReadyMarkerName {
+		t.Errorf("LND backup export marker path is %q",
+			LNDBackupExportMarker)
+	}
 }

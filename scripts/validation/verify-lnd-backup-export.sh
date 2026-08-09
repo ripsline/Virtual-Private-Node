@@ -3,7 +3,8 @@ set -u -o pipefail
 
 # Read-only Debian 13 validation for the LND backup export boundary.
 # Run as root on an unfunded disposable candidate after the Syncthing
-# add-on has completed and an LND channel.backup exists.
+# add-on has completed and an LND channel.backup exists, then run it
+# again after reboot to re-prove the folder's runtime health.
 
 if [[ ${EUID} -ne 0 ]]; then
     echo "ERROR: run as root on the disposable Debian fixture" >&2
@@ -149,6 +150,8 @@ assert_equal "ENV systemd PID 1" "$(cat /proc/1/comm)" "systemd"
 export_root=/var/lib/vpn/exports
 stage_dir=${export_root}/lnd-backup-stage
 final_dir=${export_root}/lnd-backup
+marker_name=.vpn-export-ready
+marker_dir=${final_dir}/${marker_name}
 source_file=/var/lib/lnd/data/chain/bitcoin/${network}/channel.backup
 final_file=${final_dir}/channel.backup
 
@@ -161,9 +164,71 @@ assert_metadata "FS export root" "${export_root}" directory \
 assert_metadata "FS private stage" "${stage_dir}" directory lnd lnd 700
 assert_metadata "FS final export" "${final_dir}" directory \
     lnd vpn-lnd-backup 750
+assert_metadata "FS export readiness marker" "${marker_dir}" directory \
+    root vpn-lnd-backup 750
 assert_metadata "BKP source" "${source_file}" "regular file" lnd lnd 600
 assert_metadata "BKP final" "${final_file}" "regular file" \
     lnd vpn-lnd-backup 640
+
+folder_config=$(python3 - <<'PY'
+import xml.etree.ElementTree as ET
+
+root = ET.parse("/etc/syncthing/config.xml").getroot()
+folders = [
+    folder for folder in root.findall("folder")
+    if folder.get("id") == "lnd-backup"
+]
+if len(folders) != 1:
+    print(f"count={len(folders)}")
+else:
+    folder = folders[0]
+    print("|".join((
+        folder.get("path", ""),
+        folder.get("type", ""),
+        folder.findtext("markerName", default=""),
+    )))
+PY
+)
+assert_equal "CFG Syncthing backup folder" "${folder_config}" \
+    "${final_dir}|sendonly|${marker_name}"
+
+syncthing_runtime=$(python3 - <<'PY'
+import json
+import time
+import urllib.parse
+import urllib.request
+import xml.etree.ElementTree as ET
+
+root = ET.parse("/etc/syncthing/config.xml").getroot()
+api_key = root.findtext("./gui/apikey", default="")
+headers = {"X-API-Key": api_key}
+base_url = "http://127.0.0.1:8384"
+
+def get_json(endpoint, query):
+    url = base_url + endpoint + "?" + urllib.parse.urlencode(query)
+    request = urllib.request.Request(url, headers=headers)
+    with urllib.request.urlopen(request, timeout=10) as response:
+        return json.load(response)
+
+last = "request-error||-1"
+try:
+    for _ in range(30):
+        status = get_json("/rest/db/status", {"folder": "lnd-backup"})
+        errors = get_json("/rest/folder/errors", {"folder": "lnd-backup"})
+        state = str(status.get("state", ""))
+        invalid = str(status.get("invalid", ""))
+        error_count = len(errors.get("errors", []))
+        last = f"{state}|{invalid}|{error_count}"
+        if state == "idle" and not invalid and error_count == 0:
+            break
+        time.sleep(1)
+except Exception as error:
+    last = f"request-error:{type(error).__name__}||-1"
+print(last)
+PY
+)
+assert_equal "RUN Syncthing backup folder healthy" \
+    "${syncthing_runtime}" "idle||0"
 
 for unit in lnd.service lnd-backup-export.service \
     lnd-backup-watch.path syncthing.service; do
@@ -235,6 +300,10 @@ else
         "${backup_gid}" -x "${stage_dir}" deny
     assert_identity_access "ACCESS Syncthing denied export writes" syncthing \
         "${backup_gid}" -w "${final_dir}" deny
+    assert_identity_access "ACCESS Syncthing traverses export marker" \
+        syncthing "${backup_gid}" -x "${marker_dir}" allow
+    assert_identity_access "ACCESS Syncthing denied marker writes" \
+        syncthing "${backup_gid}" -w "${marker_dir}" deny
 fi
 
 for identity in vpn bitcoin; do
@@ -251,14 +320,15 @@ else
 fi
 
 unexpected_final=$(find "${final_dir}" -mindepth 1 -maxdepth 1 \
-    ! -name channel.backup -printf '%f\n' 2>/dev/null)
+    ! -name channel.backup ! -name "${marker_name}" \
+    -printf '%f\n' 2>/dev/null)
 if [[ ! -d ${final_dir} || -L ${final_dir} ]]; then
-    fail "BKP synchronized folder contains only channel.backup" \
+    fail "BKP export contains only marker and channel.backup" \
         "final export directory is unavailable"
 elif [[ -z ${unexpected_final} ]]; then
-    pass "BKP synchronized folder contains only channel.backup"
+    pass "BKP export contains only marker and channel.backup"
 else
-    fail "BKP synchronized folder contains only channel.backup" \
+    fail "BKP export contains only marker and channel.backup" \
         "unexpected object exists"
 fi
 

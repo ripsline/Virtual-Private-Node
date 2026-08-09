@@ -142,6 +142,9 @@ func TestSyncthingDirectoryIdentityBoundary(t *testing.T) {
 		paths.LNDBackupExport: {
 			owner: "lnd:vpn-lnd-backup", mode: 0750,
 		},
+		paths.LNDBackupExportMarker: {
+			owner: "root:vpn-lnd-backup", mode: 0750,
+		},
 	} {
 		got, ok := specs[path]
 		if !ok {
@@ -231,6 +234,7 @@ func TestBackupFolderConfigUsesReadOnlyProjectExport(t *testing.T) {
 		ID      string `json:"id"`
 		Path    string `json:"path"`
 		Type    string `json:"type"`
+		Marker  string `json:"markerName"`
 		Devices []struct {
 			DeviceID string `json:"deviceID"`
 		} `json:"devices"`
@@ -241,7 +245,9 @@ func TestBackupFolderConfigUsesReadOnlyProjectExport(t *testing.T) {
 	}
 	if folder.ID != "lnd-backup" ||
 		folder.Path != paths.LNDBackupExport ||
-		folder.Type != "sendonly" || len(folder.Devices) != 1 ||
+		folder.Type != "sendonly" ||
+		folder.Marker != paths.ExportReadyMarkerName ||
+		len(folder.Devices) != 1 ||
 		folder.Devices[0].DeviceID != "LOCAL-ID" {
 		t.Errorf("unexpected folder config: %+v", folder)
 	}

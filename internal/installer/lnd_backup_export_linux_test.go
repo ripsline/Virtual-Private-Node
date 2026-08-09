@@ -84,6 +84,14 @@ func newPublisherFixture(t *testing.T, source []byte) publisherFixture {
 		t.Fatalf("chmod source: %v", err)
 	}
 	stagePath := filepath.Join(root, filepath.FromSlash(stageDir))
+	markerPath := filepath.Join(
+		root, filepath.FromSlash(finalDir), paths.ExportReadyMarkerName)
+	if err := os.Mkdir(markerPath, 0750); err != nil {
+		t.Fatalf("mkdir export marker: %v", err)
+	}
+	if err := os.Chmod(markerPath, 0750); err != nil {
+		t.Fatalf("chmod export marker: %v", err)
+	}
 	finalPath := filepath.Join(
 		root, filepath.FromSlash(finalDir), backupFileName)
 	return publisherFixture{
@@ -535,10 +543,17 @@ func TestPublishLNDBackupAtomicObservation(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, entry := range entries {
-		if entry.Name() != backupFileName {
+		if entry.Name() != backupFileName &&
+			entry.Name() != paths.ExportReadyMarkerName {
 			t.Errorf("unexpected synchronized-folder object %q",
 				entry.Name())
 		}
+	}
+	if info, err := os.Stat(filepath.Join(
+		filepath.Dir(f.finalPath), paths.ExportReadyMarkerName)); err != nil {
+		t.Errorf("export marker was not preserved: %v", err)
+	} else if !info.IsDir() {
+		t.Errorf("export marker is %s, want directory", info.Mode().Type())
 	}
 }
 

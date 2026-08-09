@@ -89,6 +89,11 @@ func syncthingDirSpecs() []syncthingDirSpec {
 		// write bit on the directory or published file.
 		{paths.LNDBackupExport,
 			lndUser + ":" + backupGroup, 0750},
+		// Syncthing requires a marker in every folder it serves. A
+		// custom, installer-owned marker lets it validate this folder
+		// without receiving the write access used to create .stfolder.
+		{paths.LNDBackupExportMarker,
+			"root:" + backupGroup, 0750},
 	}
 }
 
@@ -546,13 +551,14 @@ func renderBackupFolderConfig(localID string) string {
 	return fmt.Sprintf(`{
         "id": "lnd-backup",
         "label": "LND Channel Backup",
-        "path": "%s",
+        "path": %q,
         "type": "sendonly",
+        "markerName": %q,
         "rescanIntervalS": 10,
         "fsWatcherEnabled": true,
         "fsWatcherDelayS": 1,
         "devices": [{"deviceID": %q}]
-    }`, paths.LNDBackupExport, localID)
+    }`, paths.LNDBackupExport, paths.ExportReadyMarkerName, localID)
 }
 
 func backupFolderRegistered(foldersJSON string) (bool, error) {

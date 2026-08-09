@@ -130,13 +130,19 @@ const (
 	// from every daemon's private state.
 	ExportDir = VarLibVPN + "/exports"
 
+	// ExportReadyMarkerName is the installer-owned marker convention
+	// for project exports served from read-only Syncthing folders.
+	// Each export places its own marker inside its folder root.
+	ExportReadyMarkerName = ".vpn-export-ready"
+
 	// LNDBackupStage is private publisher staging. Syncthing cannot
 	// enter it. LNDBackupExport is the send-only folder registered
 	// with Syncthing. Both live beneath ExportDir so publication can
 	// use a same-filesystem atomic rename without traversing
 	// Syncthing's private state.
-	LNDBackupStage  = ExportDir + "/lnd-backup-stage"
-	LNDBackupExport = ExportDir + "/lnd-backup"
+	LNDBackupStage        = ExportDir + "/lnd-backup-stage"
+	LNDBackupExport       = ExportDir + "/lnd-backup"
+	LNDBackupExportMarker = LNDBackupExport + "/" + ExportReadyMarkerName
 )
 
 // ── LND files ────────────────────────────────────────────
