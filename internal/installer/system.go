@@ -8,7 +8,6 @@ import (
 	"os"
 	"os/user"
 	"strings"
-	"syscall"
 
 	"github.com/virtualprivatenode/vpn/internal/config"
 	"github.com/virtualprivatenode/vpn/internal/paths"
@@ -47,49 +46,16 @@ func createSystemGroup(name string) error {
 	return system.SudoRun("groupadd", "--system", name)
 }
 
-// ensureRootOwnedVarLibVPN establishes the root-owned ancestor
-// used by the service-layout marker and staging board. Keeping
-// this check in one place makes both early lifecycle authorization
-// and the later idempotent identity step enforce the same boundary.
+// ensureRootOwnedVarLibVPN revalidates the lifecycle-owned ancestor before a
+// later install step uses it. Creation belongs exclusively to lifecycle
+// initialization; resume never normalizes an unsafe object.
 func ensureRootOwnedVarLibVPN() error {
-	if err := os.MkdirAll(paths.VarLibVPN, 0755); err != nil {
-		return fmt.Errorf("create %s: %w", paths.VarLibVPN, err)
-	}
-	fi, err := os.Lstat(paths.VarLibVPN)
-	if err != nil {
-		return fmt.Errorf("inspect %s: %w", paths.VarLibVPN, err)
-	}
-	if !fi.IsDir() {
-		return fmt.Errorf("%s is not a directory", paths.VarLibVPN)
-	}
-	if st, ok := fi.Sys().(*syscall.Stat_t); !ok || st.Uid != 0 {
-		return fmt.Errorf("%s is not owned by root", paths.VarLibVPN)
-	}
-	if err := os.Chmod(paths.VarLibVPN, 0755); err != nil {
-		return fmt.Errorf("chmod %s: %w", paths.VarLibVPN, err)
-	}
-	return nil
-}
-
-// authorizeFreshServiceLayout records that the legacy-layout
-// guard and read-only preflight accepted this installation
-// lifecycle. It runs before any install step can update the
-// ledger, so an interruption in an early step remains resumable.
-func authorizeFreshServiceLayout() error {
-	if err := ensureRootOwnedVarLibVPN(); err != nil {
-		return err
-	}
-	if err := system.SudoWriteFile(paths.ServiceLayoutMarker,
-		[]byte(serviceLayoutMarkerContent), 0644); err != nil {
-		return fmt.Errorf("write service-layout marker: %w", err)
-	}
-	return nil
+	return validateRootDir(paths.VarLibVPN, 0o755)
 }
 
 // createBaseServiceIdentities establishes the fresh-install
-// daemon identity and data-directory boundary. Lifecycle
-// authorization is intentionally earlier than this ledger step;
-// see authorizeFreshServiceLayout.
+// daemon identity and data-directory boundary. Lifecycle initialization is
+// intentionally earlier than this ledger step.
 func createBaseServiceIdentities() error {
 	if err := ensureRootOwnedVarLibVPN(); err != nil {
 		return err
@@ -284,6 +250,6 @@ Acquire::http::Timeout "60";
 Acquire::https::Timeout "60";
 Acquire::Retries "3";
 `
-	return system.SudoWriteFile("/etc/apt/apt.conf.d/99-tor-proxy",
+	return system.SudoWriteFile(paths.AptTorProxy,
 		[]byte(content), 0644)
 }

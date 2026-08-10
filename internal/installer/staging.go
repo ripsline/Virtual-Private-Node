@@ -116,23 +116,6 @@ func StageSyncthingAPIKey() error {
 		paths.StateSyncthingAPIKey, []byte(key+"\n"))
 }
 
-// retiredBoardFiles are board files earlier releases staged
-// that no longer exist as facts: onion addresses, the
-// Syncthing device ID, and the SSH password-auth answer are
-// read LIVE through the helper's read-only verbs now, so a
-// copy on disk is only a chance to be stale. The install's
-// staging step deletes any that survive from an earlier
-// install (nothing reads them; removing them keeps the board
-// equal to the declared fact list).
-var retiredBoardFiles = []string{
-	paths.StateDir + "/onion-bitcoin-p2p",
-	paths.StateDir + "/onion-lnd-grpc",
-	paths.StateDir + "/onion-lnd-rest",
-	paths.StateDir + "/onion-syncthing",
-	paths.StateDir + "/syncthing-device-id",
-	paths.StateDir + "/ssh-password-auth",
-}
-
 // StageBoardAll builds the complete board at install time:
 // every fact that exists on this box right now. Facts whose
 // source does not exist yet are SKIPPED, not failed — a fresh
@@ -163,13 +146,6 @@ func StageBoardAll() error {
 			func() bool { return !haveWallet }},
 		{"syncthing-api-key", StageSyncthingAPIKey,
 			func() bool { return !haveSyncthing }},
-	}
-	// Board hygiene on migrated boxes: drop files this release
-	// no longer stages (their facts are live-read now).
-	for _, f := range retiredBoardFiles {
-		if err := helper.RemoveBoard(f); err != nil {
-			return err
-		}
 	}
 	for _, f := range facts {
 		if f.skip != nil && f.skip() {

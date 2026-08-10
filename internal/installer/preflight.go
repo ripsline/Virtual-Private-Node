@@ -53,6 +53,7 @@ type PreflightResult struct {
 // Check names double as report labels — short, present-tense facts.
 const (
 	checkNameDebian    = "Debian version is exactly 13"
+	checkNameArch      = "CPU architecture is amd64"
 	checkNameIOLogging = "sudo I/O logging is disabled"
 	checkNameDpkg      = "package system is healthy (dpkg --audit)"
 	checkNameUfw       = "ufw is installable"
@@ -99,12 +100,13 @@ func RunPreflight() (SSHObservation, error) {
 		failed, len(results))
 }
 
-// runPreflightChecks executes the checks in order. All five run
+// runPreflightChecks executes the checks in order. All checks run
 // unconditionally — root dispatch removed the sudo dependency that
 // used to force failed-as-skipped coupling between checks.
 func runPreflightChecks() ([]PreflightResult, SSHObservation) {
 	results := []PreflightResult{
 		{checkNameDebian, checkDebian13()},
+		{checkNameArch, checkDebianArchitecture()},
 		{checkNameIOLogging, checkSudoersIOLogging()},
 		{checkNameDpkg, checkDpkgAudit()},
 		{checkNameUfw, checkUfwInstallable()},
@@ -113,6 +115,26 @@ func runPreflightChecks() ([]PreflightResult, SSHObservation) {
 	results = append(results,
 		PreflightResult{checkNameSSHState, obsErr})
 	return results, obs
+}
+
+// checkArchitecture enforces the only artifact set certified by this
+// release. It runs before lifecycle initialization, so unsupported binaries
+// cannot create durable installation state or begin amd64-specific work.
+func checkArchitecture(arch string) error {
+	if arch != "amd64" {
+		return fmt.Errorf(
+			"this release is verified for Debian 13 amd64 only "+
+				"(found architecture %q)", arch)
+	}
+	return nil
+}
+
+func checkDebianArchitecture() error {
+	out, err := exec.Command("dpkg", "--print-architecture").Output()
+	if err != nil {
+		return fmt.Errorf("cannot determine Debian architecture: %w", err)
+	}
+	return checkArchitecture(strings.TrimSpace(string(out)))
 }
 
 // preflightWarnings collects conditions worth telling the
@@ -340,7 +362,7 @@ func dpkgAuditVerdict(output string, err error) error {
 // checkUfwInstallable asserts apt's on-disk package index can
 // deliver ufw when the engine's base-package step apt-installs it.
 // Offline; installs nothing; passes instantly when ufw is already
-// present (re-runs, migrated boxes).
+// present (recognized interrupted-install resumes).
 //
 // LOAD-BEARING since the script absorption (commit 6): nothing
 // pre-proves apt anymore — the binary's own base-package step is

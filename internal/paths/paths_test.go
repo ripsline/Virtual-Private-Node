@@ -40,14 +40,46 @@ func TestLoopbackEndpointsAreLiteralIPv4(t *testing.T) {
 	}
 }
 
-func TestServiceLayoutMarkerHasRootOwnedParent(t *testing.T) {
-	if !strings.HasPrefix(ServiceLayoutMarker, VarLibVPN+"/") {
-		t.Errorf("service-layout marker %q is not below %q",
-			ServiceLayoutMarker, VarLibVPN)
+func TestLifecycleStateUsesPrivateBoundary(t *testing.T) {
+	for name, path := range map[string]string{
+		"layout version":  LayoutVersion,
+		"install ledger":  InstallStateFile,
+		"password marker": PasswordPendingMarker,
+	} {
+		if !strings.HasPrefix(path, PrivateDir+"/") {
+			t.Errorf("%s %q is not below %q", name, path, PrivateDir)
+		}
+		if strings.HasPrefix(path, ConfigDir+"/") {
+			t.Errorf("%s %q is below config directory", name, path)
+		}
 	}
-	if strings.HasPrefix(ServiceLayoutMarker, ConfigDir+"/") {
-		t.Errorf("service-layout marker %q is below admin-owned %q",
-			ServiceLayoutMarker, ConfigDir)
+	if InstallLock != RuntimeDir+"/install.lock" {
+		t.Errorf("install lock %q is not below runtime dir", InstallLock)
+	}
+	if InstallLock == InstallStateFile {
+		t.Error("stable lock and replaceable ledger share a path")
+	}
+	for network, path := range map[string]string{
+		"mainnet":  InstallBootstrapMainnet,
+		"testnet4": InstallBootstrapTestnet4,
+	} {
+		if !strings.HasPrefix(path, InstallBootstrapPrefix) {
+			t.Errorf("%s bootstrap path %q is outside /var/lib", network, path)
+		}
+		if strings.HasPrefix(path, VarLibVPN+"/") {
+			t.Errorf("%s bootstrap path %q is below the tree it precedes",
+				network, path)
+		}
+		if !strings.Contains(path, "-"+network+"-") {
+			t.Errorf("%s bootstrap path %q does not encode its network",
+				network, path)
+		}
+	}
+	if InstallBootstrapMainnet == InstallBootstrapTestnet4 {
+		t.Error("mainnet and testnet4 share a bootstrap path")
+	}
+	if InstallBootstrapPrefix != "/var/lib/vpn-install-bootstrap-" {
+		t.Errorf("bootstrap prefix is %q", InstallBootstrapPrefix)
 	}
 }
 

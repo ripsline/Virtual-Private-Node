@@ -106,7 +106,7 @@ func runConsole() {
 		fmt.Fprintf(os.Stderr,
 			"  The node console runs as the %q user, not root.\n"+
 				"  Connect with: ssh %s@<your-server-ip>\n"+
-				"  (To install or reinstall: sudo vpn install)\n",
+				"  (To install or resume an interrupted install: sudo vpn install)\n",
 			paths.AdminUser, paths.AdminUser)
 		os.Exit(1)
 	}
@@ -208,7 +208,7 @@ func usage() string {
 Usage:
   vpn                open the node console (run as the ` +
 		paths.AdminUser + ` user)
-  sudo vpn install   install or reinstall the node
+  sudo vpn install   start a fresh install or resume a recognized interruption
       --testnet4     use testnet4 instead of mainnet
       --unattended   no prompts (keys auto-copied from the box,
                      login password generated and printed once)

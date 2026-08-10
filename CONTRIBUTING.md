@@ -55,6 +55,38 @@ go build -o rlvpn ./cmd/
 
 See [docs/reproducing.md](docs/reproducing.md) for the exact build flags and verification steps.
 
+## Testing
+
+Run the ordinary development gate without elevated privileges:
+
+```bash
+go test -count=1 ./...
+```
+
+Tests whose names begin with `TestRoot` exercise real Linux ownership and
+filesystem behavior. They run automatically on Linux when the test process has
+effective UID 0. In other environments they skip with an explicit reason; use
+`-v` to display individual skip messages.
+
+Run the privileged gate only in a disposable Linux environment:
+
+```bash
+sudo env VPN_REQUIRE_ROOT_TESTS=1 "$(command -v go)" test \
+  -count=1 -v ./internal/installer -run '^TestRoot'
+```
+
+`VPN_REQUIRE_ROOT_TESTS=1` does not grant privileges. It makes the selected
+tests fail instead of skip if Linux or effective UID 0 is unavailable. The
+tests never invoke `sudo` or prompt for credentials themselves.
+In CI, run the same gate in a disposable Linux job already provisioned with
+effective UID 0, omit `sudo`, and set `VPN_REQUIRE_ROOT_TESTS=1` in the job
+environment.
+
+Passing both Go test gates is not a substitute for testing the complete
+installer on a disposable Debian 13 amd64 system. Installation tests modify
+users, packages, systemd services, firewall rules, and persistent system
+paths; never run them on a funded node or an everyday development machine.
+
 ## Pull request guidelines
 
 - Open a PR against `main`

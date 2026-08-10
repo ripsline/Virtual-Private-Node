@@ -12,25 +12,6 @@ const (
 	ConfigDir  = "/etc/vpn"
 	ConfigFile = "/etc/vpn/config.json"
 
-	// InstallStateFile is the per-step install ledger: which
-	// install steps have completed, keyed by stable step key
-	// (installer/ledger.go). A SEPARATE file from config.json
-	// so a config load failure cannot erase install history,
-	// and so its ownership flips to root with root-dispatched
-	// install without touching config's story.
-	InstallStateFile = "/etc/vpn/install-state.json"
-
-	// PasswordPendingMarker exists while an unattended install
-	// has applied a generated admin password that was never
-	// displayed (the identity step applies early; the print
-	// happens only at the end of a completed run — a failure in
-	// between would otherwise strand a credential nobody has
-	// seen). Written by the identity step on the unattended
-	// path; cleared when the password is finally printed, or
-	// when the operator sets a password of their own from the
-	// node console. Holds no secret — its presence is the fact.
-	PasswordPendingMarker = "/etc/vpn/password-pending"
-
 	BitcoinConf = "/etc/bitcoin/bitcoin.conf"
 	BitcoinDir  = "/etc/bitcoin"
 
@@ -68,12 +49,42 @@ const (
 	VarLibVPN = "/var/lib/vpn"
 	StateDir  = VarLibVPN + "/state"
 
-	// ServiceLayoutMarker records that this installation began
-	// with the dedicated bitcoin/lnd service-identity layout.
-	// It lives below a root-owned /var/lib parent, not the
-	// admin-owned /etc/vpn directory, so vpn cannot forge or
-	// replace the migration authorization marker.
-	ServiceLayoutMarker = VarLibVPN + "/service-layout-v1"
+	// PrivateDir contains root-authoritative lifecycle and
+	// security-workflow state. Every ancestor remains root
+	// controlled; the vpn operator cannot replace these files.
+	PrivateDir = VarLibVPN + "/private"
+
+	// LayoutVersion records the exact supported base-install
+	// generation. InstallStateFile is the bounded base-install
+	// progress ledger. PasswordPendingMarker closes the gap
+	// between applying and displaying an unattended password.
+	LayoutVersion         = PrivateDir + "/layout-version"
+	InstallStateFile      = PrivateDir + "/install-state.json"
+	PasswordPendingMarker = PrivateDir + "/password-pending"
+
+	// InstallBootstrap* are short-lived, root-owned indications that
+	// lifecycle authority is being published. The immutable initial install
+	// context is encoded in the exact path so even an interruption before the
+	// normal private tree exists remains unambiguous. They live beside
+	// VarLibVPN because they must exist before that tree is created.
+	InstallBootstrapPrefix  = "/var/lib/vpn-install-bootstrap-"
+	InstallBootstrapMainnet = InstallBootstrapPrefix +
+		"service-layout-1-mainnet-tor"
+	InstallBootstrapTestnet4 = InstallBootstrapPrefix +
+		"service-layout-1-testnet4-tor"
+
+	// RuntimeDir and InstallLock are transient serialization
+	// state. The stable lock is deliberately separate from the
+	// atomically replaced durable ledger.
+	RuntimeDir  = "/run/vpn"
+	InstallLock = RuntimeDir + "/install.lock"
+
+	// Previous lifecycle paths are recognized only so v0.7.0
+	// can refuse unsupported or conflicting state. They are
+	// never adopted, normalized, or migrated.
+	OldInstallStateFile  = "/etc/vpn/install-state.json"
+	OldPasswordPending   = "/etc/vpn/password-pending"
+	OldServiceLayoutMark = VarLibVPN + "/service-layout-v1"
 
 	// Staging board files. One fact per file.
 	StateBitcoindRPCPass = StateDir + "/bitcoind-rpc.pass"
@@ -232,23 +243,15 @@ const (
 	// loading first = winning.
 	SSHDDropIn = "/etc/ssh/sshd_config.d/00-vpn-hardening.conf"
 
-	// OldSSHDDropIn is the drop-in filename from before the
-	// rlvpn → vpn rename. On a migrated box the stale file
-	// would sort BEFORE SSHDDropIn (r < v) and win every
-	// contested directive under first-match-wins, so the
-	// install SSH step deletes it — the ONLY old-name
-	// artifact the installer removes (ruling xv: everything
-	// else old survives until the operator's verified
-	// teardown). Ordering is binding: observe → write new →
-	// delete old → validate → restart, because a
-	// TUI-disabled PasswordAuthentication lives in THIS
-	// file until the observed value is carried into the
-	// new one.
+	// OldSSHDDropIn is the pre-rename path. Its presence is
+	// lifecycle-conflict evidence; v0.7.0 refuses it and never
+	// deletes, adopts, or rewrites it.
 	OldSSHDDropIn = "/etc/ssh/sshd_config.d/00-rlvpn-hardening.conf"
 
 	Fail2banJail       = "/etc/fail2ban/jail.local"
 	AutoUpgrades       = "/etc/apt/apt.conf.d/20auto-upgrades"
 	UnattendedUpgrades = "/etc/apt/apt.conf.d/50unattended-upgrades"
+	AptTorProxy        = "/etc/apt/apt.conf.d/99-tor-proxy"
 	DisableIPv6Conf    = "/etc/sysctl.d/99-disable-ipv6.conf"
 )
 
@@ -257,9 +260,8 @@ const (
 const (
 	// AdminUser is the node's admin login — same name as the
 	// binary, one name to know (ruling vi: clean break from
-	// the old ripsline user; migrated boxes retire the old
-	// user via MIGRATION.md's operator-run teardown, never
-	// via this binary).
+	// the old ripsline user). Existing old identities are
+	// refused by the fresh-install lifecycle classifier.
 	AdminUser          = "vpn"
 	AdminHome          = "/home/" + AdminUser
 	AdminBashrc        = AdminHome + "/.bashrc"

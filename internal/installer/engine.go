@@ -51,9 +51,8 @@ const (
 
 // StepPhase classifies a step for the image pipeline (ruling
 // iv): bake steps run at image-build time, first-boot steps
-// must run on the deployed box (identity, hardware). Commit 5
-// ships the mechanism; the phase map is ratified by the image
-// track. All current steps are provisionally PhaseBake.
+// must run on the deployed box (identity, hardware, SSH, and
+// machine-specific staging).
 type StepPhase int
 
 const (
@@ -183,12 +182,15 @@ type stepRunner struct {
 }
 
 func newStepRunner(
-	steps []InstallStep, version, ledgerPath string,
+	steps []InstallStep, version string, led *installLedger,
+	ledgerPath string,
 ) (*stepRunner, error) {
 	if err := validateSteps(steps); err != nil {
 		return nil, err
 	}
-	led := loadLedger(ledgerPath)
+	if led == nil {
+		return nil, fmt.Errorf("install ledger is required")
+	}
 	plan := planRun(steps, led)
 	toRun := 0
 	for _, p := range plan {
@@ -213,11 +215,9 @@ func newStepRunner(
 // runIndex executes one step per the plan. Every path leaves a
 // log line — start, skip, complete, FAILED — so a run's trail
 // in vpn.log never just stops (the commit-5 addendum fix,
-// once, in the core). The ledger entry is written only after
-// Fn returns nil; a ledger persist failure is logged and does
-// NOT fail the step (this run's authority is its in-process
-// results — the ledger serves the NEXT process, and the
-// fail-safe cost is a re-run, not a wrong skip).
+// once, in the core). The ledger entry is written only after Fn returns nil.
+// A publication failure stops the run immediately: later steps must not
+// advance past a mutation whose completion is not durable for the next pass.
 func (r *stepRunner) runIndex(i int) (skipped bool, err error) {
 	s := &r.steps[i]
 	n, total := i+1, len(r.steps)
@@ -232,11 +232,12 @@ func (r *stepRunner) runIndex(i int) (skipped bool, err error) {
 			n, total, s.Name, err)
 		return false, err
 	}
-	r.ledger.markDone(s.Key, r.version)
+	if err := r.ledger.markDone(s.Key, r.version); err != nil {
+		return false, err
+	}
 	if err := r.ledger.save(r.ledgerPath); err != nil {
-		logger.Install(
-			"WARNING: step %d/%d complete but ledger save "+
-				"failed (a re-run repeats it): %v", n, total, err)
+		return false, fmt.Errorf(
+			"step completed but install ledger publication failed: %w", err)
 	}
 	logger.Install("step %d/%d complete: %s", n, total, s.Name)
 	return false, nil
@@ -244,10 +245,8 @@ func (r *stepRunner) runIndex(i int) (skipped bool, err error) {
 
 // ── Outcomes ─────────────────────────────────────────────
 
-// RunOutcome distinguishes the three ways a run ends. Only
-// RunComplete may reach the InstallComplete write (IA-1-9's
-// fix): completion is derived from per-step results, never
-// from a front-end returning cleanly.
+// RunOutcome distinguishes the three ways a runner ends. Terminal lifecycle
+// status is derived only from RunComplete plus successful finalization.
 type RunOutcome int
 
 const (
@@ -310,14 +309,14 @@ func classifyRun(
 
 // RunInstallUnattended executes steps with no TUI: one plain
 // line per step to stdout, same runner, same ledger, same log
-// trail. No CLI reaches it yet — its consumers are the
-// commit-6 `vpn install --unattended` dispatch and the image
-// build pipeline. Interruption needs no handling here: a
+// trail. Its consumers are `vpn install --unattended` and the
+// image build pipeline. Interruption needs no handling here: a
 // killed process leaves the ledger truthful by write ordering.
 func RunInstallUnattended(
-	steps []InstallStep, version, ledgerPath string,
+	steps []InstallStep, version string, ledger *installLedger,
+	ledgerPath string,
 ) (RunResult, error) {
-	r, err := newStepRunner(steps, version, ledgerPath)
+	r, err := newStepRunner(steps, version, ledger, ledgerPath)
 	if err != nil {
 		return RunResult{}, err
 	}

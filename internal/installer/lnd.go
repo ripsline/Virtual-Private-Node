@@ -381,14 +381,9 @@ func writeLNDService(username string, withUnlock bool) error {
 }
 
 // writeLNDServiceFromConfig writes the LND unit that matches the
-// node's RECORDED state: the unlock variant when the config says
+// node's desired state: the unlock variant when the config says
 // auto-unlock is enabled AND the wallet password file is actually
-// present, the plain variant otherwise. An install pass does not
-// only run on fresh boxes — on a reinstall or a migration the
-// auto_unlock answer and the password file both carry over, and
-// unconditionally writing the plain unit there disarmed
-// auto-unlock at the next service restart while the config still
-// claimed it enabled. Requiring the file too is deliberate: a
+// present, the plain variant otherwise. Requiring the file too is deliberate: a
 // unit pointing at a missing password file would keep LND from
 // starting at all.
 func writeLNDServiceFromConfig(cfg *config.AppConfig, username string) error {
@@ -410,11 +405,9 @@ func walletPasswordFileExists() bool {
 
 // startLND enables and starts LND. `systemctl restart` rather
 // than `start`, deliberately: start is a no-op on a service that
-// is already running, and an install pass can run on a box where
-// LND already runs under a PREVIOUS unit and config (reinstall,
-// migration). Restart makes the unit and config this run just
-// wrote the ones actually in effect; on a fresh box the two
-// commands are equivalent.
+// is already running during an interrupted-install resume. Restart makes the
+// unit and config already written by this lifecycle the ones actually in
+// effect; on a fresh pass the two commands are equivalent.
 func startLND() error {
 	if err := system.SudoRun("systemctl", "daemon-reload"); err != nil {
 		return err

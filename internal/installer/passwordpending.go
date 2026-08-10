@@ -21,6 +21,7 @@ package installer
 // secret; plaintext passwords exist only in process memory.
 
 import (
+	"fmt"
 	"os"
 
 	"github.com/virtualprivatenode/vpn/internal/logger"
@@ -46,8 +47,20 @@ func markPasswordPending() error {
 
 // passwordPending reports whether the marker is present.
 func passwordPending() bool {
-	_, err := os.Stat(paths.PasswordPendingMarker)
+	_, err := os.Lstat(paths.PasswordPendingMarker)
 	return err == nil
+}
+
+// clearPasswordPendingMarkerStrict is used only by installer completion. A
+// terminal ledger may never be published while this marker remains, so cleanup
+// failure is an installation failure rather than a warning.
+func clearPasswordPendingMarkerStrict() error {
+	if err := os.Remove(paths.PasswordPendingMarker); err != nil &&
+		!os.IsNotExist(err) {
+		return fmt.Errorf("remove password-pending marker %s: %w",
+			paths.PasswordPendingMarker, err)
+	}
+	return nil
 }
 
 // ClearPasswordPendingMarker removes the marker. Best-effort by
@@ -60,8 +73,8 @@ func ClearPasswordPendingMarker() {
 	if err := os.Remove(paths.PasswordPendingMarker); err != nil &&
 		!os.IsNotExist(err) {
 		logger.Install(
-			"WARNING: could not remove %s (%v) — a later install "+
-				"re-run may re-apply and print a fresh password",
+			"WARNING: could not remove %s (%v) — password-delivery "+
+				"state remains pending",
 			paths.PasswordPendingMarker, err)
 	}
 }

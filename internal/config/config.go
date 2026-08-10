@@ -26,8 +26,6 @@ const (
 // meaningful security benefit on a dedicated node where the attacker
 // model is remote access, not local privilege escalation.
 type AppConfig struct {
-	InstallComplete    bool              `json:"install_complete"`
-	InstallVersion     string            `json:"install_version,omitempty"`
 	Network            string            `json:"network"`
 	Components         string            `json:"components"`
 	PruneSize          int               `json:"prune_size"`
@@ -43,8 +41,7 @@ type AppConfig struct {
 	// DbCache is bitcoind's dbcache in MB, chosen at the
 	// install hardware-fit step (ruling viii) from detected
 	// RAM. Zero means "never set" — DbCacheMB() falls back
-	// to the historical 512 so configs from older installs
-	// keep their exact behavior.
+	// to 512 when the field is absent.
 	DbCache int `json:"dbcache,omitempty"`
 
 	// SSHPorts holds sshd's OBSERVED listening ports,
@@ -53,9 +50,7 @@ type AppConfig struct {
 	// hardcoded 22, which on a nonstandard-port box was a
 	// delayed silent lockout hazard (deny-all enabled with
 	// only 22 open, next connection refused). Empty means
-	// "never observed" (pre-rename configs):
-	// SSHPortsOrDefault falls back to 22, byte-identical to
-	// the old behavior.
+	// "never observed": SSHPortsOrDefault falls back to 22.
 	SSHPorts []int `json:"ssh_ports,omitempty"`
 
 	// KeyVerificationPending is set at install completion
@@ -157,33 +152,6 @@ func Load() (*AppConfig, error) {
 	return DefaultStore().Load()
 }
 
-// RawFieldPresent reports whether the config file on disk
-// contains the given JSON key at the top level. Needed where
-// "absent" and "zero value" must be told apart on omitempty
-// fields — the migration rule (commit-6 addendum 2026-07-17):
-// an install seeds a field from observation ONLY when the
-// operator's carried-over config never answered it; a present
-// value is a prior answer and is never clobbered. A missing or
-// unreadable file simply reports absent.
-func RawFieldPresent(key string) bool {
-	data, err := os.ReadFile(DefaultPath)
-	if err != nil {
-		return false
-	}
-	return rawFieldPresent(data, key)
-}
-
-// rawFieldPresent is the pure half of RawFieldPresent —
-// unit-tested.
-func rawFieldPresent(data []byte, key string) bool {
-	var m map[string]json.RawMessage
-	if err := json.Unmarshal(data, &m); err != nil {
-		return false
-	}
-	_, ok := m[key]
-	return ok
-}
-
 func Save(cfg *AppConfig) error {
 	return DefaultStore().Save(cfg)
 }
@@ -194,8 +162,7 @@ func (c *AppConfig) HasLND() bool {
 
 // DbCacheMB returns the dbcache value for bitcoin.conf: the
 // hardware-fit choice when one was recorded, else the
-// historical default (512), so configs that predate the
-// hardware-fit step render byte-identical bitcoin.conf.
+// default (512).
 func (c *AppConfig) DbCacheMB() int {
 	if c.DbCache > 0 {
 		return c.DbCache
@@ -204,8 +171,8 @@ func (c *AppConfig) DbCacheMB() int {
 }
 
 // SSHPortsOrDefault returns the observed sshd ports for
-// firewall allow-rules, falling back to 22 when no
-// observation was ever recorded (pre-rename configs).
+// firewall allow-rules, falling back to 22 when no observation
+// was ever recorded.
 func (c *AppConfig) SSHPortsOrDefault() []int {
 	if len(c.SSHPorts) > 0 {
 		return c.SSHPorts

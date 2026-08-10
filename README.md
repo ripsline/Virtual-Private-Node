@@ -53,7 +53,7 @@ funds.
 
 ### Requirements
 
-- Fresh Debian 13 Box
+- Fresh Debian 13 amd64 machine
 - 2 (v)CPU, 4+ GB RAM, 90+ GB SSD
 
 ### Privacy
@@ -68,9 +68,9 @@ funds.
 
 ### What the installer does
 
-The installer checks the environment first and refuses — with a
-full report, before changing anything — if the box is not one it
-can trust. It then walks you through access setup and hardware
+The installer takes a transient whole-run lock, checks the environment, and
+refuses with a full report before starting durable installation work if the box
+is not one it can trust. It then walks you through access setup and hardware
 fit, installs Bitcoin Core and LND with every download after Tor
 routed through Tor and verified before install, and drops you
 straight into the TUI. If a step fails or you interrupt, run it
@@ -84,9 +84,9 @@ supported.
 shows every SSH key it finds on the box — with fingerprints and
 comments, and provider control lines excluded — for you to
 confirm, replace, or extend before they are copied. You also set
-a login password (16 characters minimum) as the console
+a login password (16 characters minimum) as the provider console
 fallback; whether password login over SSH stays enabled is
-carried over exactly as the installer OBSERVED it on your box —
+preserved exactly as the installer OBSERVED it on your box —
 installing never silently changes it.
 
 ### Wallet Creation
@@ -314,8 +314,11 @@ For manual binary verification before installation, see
 | /etc/lnd/lnd.conf | LND configuration |
 | /etc/syncthing/ | Syncthing configuration |
 | /etc/vpn/config.json | Node and console configuration; mode 0600 and may contain the Syncthing web UI password |
-| /etc/vpn/install-state.json | Root-owned base-install progress ledger and installer coordination lock |
-| /var/lib/vpn/service-layout-v1 | Root-owned marker authorizing the dedicated service-identity layout |
+| /var/lib/vpn-install-bootstrap-service-layout-1-{mainnet,testnet4}-tor | Short-lived root-only indication while initial lifecycle authority is published |
+| /var/lib/vpn/private/layout-version | Root-only supported-layout generation record |
+| /var/lib/vpn/private/install-state.json | Root-only bounded base-install progress and completion ledger |
+| /var/lib/vpn/private/password-pending | Root-only interrupted unattended-password delivery marker, present only while needed |
+| /run/vpn/install.lock | Stable root-only runtime lock for one active base installer |
 | /var/lib/vpn/state/ | Root-written facts and credentials deliberately staged for the console |
 | /var/lib/vpn/exports/lnd-backup/ | Read-only Syncthing export of the completed `channel.backup` |
 | /var/lib/bitcoin/ | Blockchain data |

@@ -2,7 +2,10 @@
 
 package main
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 // Explicit dispatch: the command line alone decides the mode.
 func TestParseArgs(t *testing.T) {
@@ -85,5 +88,15 @@ func TestParseArgs(t *testing.T) {
 		if _, _, err := parseArgs(args); err == nil {
 			t.Errorf("invalid publisher arguments accepted: %v", args)
 		}
+	}
+}
+
+func TestUsageDescribesFreshInstallAndResume(t *testing.T) {
+	text := usage()
+	if strings.Contains(text, "install or reinstall") {
+		t.Fatal("usage still advertises reinstall")
+	}
+	if !strings.Contains(text, "resume a recognized interruption") {
+		t.Fatal("usage does not describe supported resume")
 	}
 }

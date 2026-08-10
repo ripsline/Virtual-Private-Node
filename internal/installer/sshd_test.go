@@ -191,7 +191,7 @@ func TestBuildHardeningDropInOmission(t *testing.T) {
 }
 
 // The TUI-era builder and the install builder must render the
-// SAME body for the same auth state — a migrated box's later
+// SAME body for the same auth state — an interrupted install's later
 // TUI rebuild may not churn the file.
 func TestBuildersAgree(t *testing.T) {
 	cfg := config.Default()

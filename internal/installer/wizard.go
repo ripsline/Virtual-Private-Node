@@ -24,10 +24,7 @@ package installer
 //
 // Completion is PERSISTED the moment the last step verifies —
 // before the done screen waits for Enter (live-run finding: the
-// old order left install_complete unwritten while the done
-// screen sat unattended; a dropped connection then meant a
-// complete install with no durable completion record until the
-// next re-run).
+// terminal ledger status is published before the done screen can sit unattended).
 
 import (
 	"fmt"
@@ -71,8 +68,9 @@ type wizardModel struct {
 	// as soon as the last step verifies (before the done
 	// screen). Its error renders on the done screen and fails
 	// the run.
-	onComplete  func() error
-	completeErr string
+	onComplete     func() error
+	completeErr    string
+	persistDbCache func(int) error
 
 	phase         wizardPhase
 	width, height int
@@ -106,6 +104,7 @@ type wizardModel struct {
 	dbIdx   int
 	hwFocus int // 0 = dbcache selector, 1 = buttons
 	hwBtn   int // index into hwButtons()
+	hwErr   string
 
 	// Steps
 	current           int
@@ -122,12 +121,13 @@ type wizardModel struct {
 func newWizardModel(
 	cfg *config.AppConfig, steps []InstallStep,
 	runner *stepRunner, dec *InstallDecisions, version string,
-	onComplete func() error,
+	persistDbCache func(int) error, onComplete func() error,
 ) wizardModel {
 	m := wizardModel{
 		cfg: cfg, dec: dec, steps: steps,
 		runner: runner, version: version,
-		onComplete: onComplete,
+		persistDbCache: persistDbCache,
+		onComplete:     onComplete,
 	}
 
 	// Resume-aware screen skipping: a screen exists to collect
@@ -139,7 +139,8 @@ func newWizardModel(
 	// completion — present-correctness is the doctor check's
 	// question, not resume's.)
 	m.needIdentity = runner.willRun(steps, "identity.access")
-	m.needHardware = runner.willRun(steps, "btc.install")
+	m.needHardware = runner.willRun(steps, "btc.install") &&
+		runner.ledger.Context.DbCacheMB == nil
 
 	m.sources = SortKeySources(EnumerateKeySources())
 	m.keys = DedupeKeys(m.sources)
@@ -309,10 +310,12 @@ func (m wizardModel) updateAccess(
 			m.cursor++
 		}
 	case "left":
+		m.hwErr = ""
 		if m.cursor == last && m.btnIdx > 0 {
 			m.btnIdx--
 		}
 	case "right":
+		m.hwErr = ""
 		if m.cursor == last && m.btnIdx < 1 {
 			m.btnIdx++
 		}
@@ -714,7 +717,14 @@ func (m wizardModel) updateHardware(
 			m.enterPasswordScreen()
 			return m, nil
 		}
-		m.dec.DbCacheMB = dbCacheChoices[m.dbIdx]
+		selected := dbCacheChoices[m.dbIdx]
+		if m.persistDbCache != nil {
+			if err := m.persistDbCache(selected); err != nil {
+				m.hwErr = err.Error()
+				return m, nil
+			}
+		}
+		m.dec.DbCacheMB = selected
 		m.cfg.DbCache = m.dec.DbCacheMB
 		m.phase = wzSteps
 		return m, m.startSteps()
@@ -768,6 +778,10 @@ func (m wizardModel) viewHardware(p *wizPane) {
 	}
 	p.line(" " + sty.Render(choice) + theme.Dim.Render(
 		fmt.Sprintf("   (recommended for this box: %d MB)", rec)))
+	if m.hwErr != "" {
+		p.blank()
+		p.warn("Could not record this install decision: " + m.hwErr)
+	}
 	p.blank()
 	p.buttons(m.hwButtons(), m.hwBtn, m.hwFocus == 1)
 	p.blank()
@@ -1021,23 +1035,22 @@ func (r *stepRunner) willRun(
 
 // runInstallWizard drives the interactive install: wizard
 // screens, then the engine steps, reporting HOW the run ended via
-// RunResult (only RunComplete may reach the InstallComplete
-// write — IA-1-9). onComplete is invoked exactly once, when the
+// RunResult. onComplete is invoked exactly once, when the
 // last step verifies, BEFORE the done screen blocks on input; a
 // persist failure is surfaced as the run's error.
 func runInstallWizard(
 	cfg *config.AppConfig, steps []InstallStep,
-	dec *InstallDecisions, version string,
-	onComplete func() error,
+	dec *InstallDecisions, version string, ledger *installLedger,
+	persistDbCache func(int) error, onComplete func() error,
 ) (RunResult, bool, error) {
 	runner, err := newStepRunner(
-		steps, version, paths.InstallStateFile)
+		steps, version, ledger, paths.InstallStateFile)
 	if err != nil {
 		return RunResult{}, false, err
 	}
 	theme.Init(cfg.Theme != "light")
 	m := newWizardModel(cfg, steps, runner, dec, version,
-		onComplete)
+		persistDbCache, onComplete)
 	p := tea.NewProgram(m)
 	result, err := p.Run()
 	if err != nil {

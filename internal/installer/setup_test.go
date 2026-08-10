@@ -30,28 +30,23 @@ func TestVersionConstants(t *testing.T) {
 	}
 }
 
-func TestSeedInstallP2PMode(t *testing.T) {
-	for _, mode := range []string{"tor", "hybrid"} {
-		cfg := &config.AppConfig{P2PMode: mode}
-		if err := seedInstallP2PMode(cfg, true); err != nil {
-			t.Fatalf("preserve %s: %v", mode, err)
+func TestBaseInstallStepsMatchLedgerSchema(t *testing.T) {
+	cfg := config.Default()
+	cfg.LNDInstalled = true
+	steps := buildInstallSteps(cfg, &InstallDecisions{})
+	if err := validateBaseInstallSteps(steps); err != nil {
+		t.Fatal(err)
+	}
+	bake := FilterPhase(steps, PhaseBake)
+	if len(bake) != len(bakeInstallStepKeys) {
+		t.Fatalf("bake steps=%d schema keys=%d",
+			len(bake), len(bakeInstallStepKeys))
+	}
+	for i := range bake {
+		if bake[i].Key != bakeInstallStepKeys[i] {
+			t.Fatalf("bake step %d=%q schema=%q", i+1,
+				bake[i].Key, bakeInstallStepKeys[i])
 		}
-		if cfg.P2PMode != mode {
-			t.Errorf("existing %s changed to %s", mode, cfg.P2PMode)
-		}
-	}
-
-	missing := &config.AppConfig{}
-	if err := seedInstallP2PMode(missing, false); err != nil {
-		t.Fatalf("seed absent mode: %v", err)
-	}
-	if missing.P2PMode != "tor" {
-		t.Errorf("absent mode seeded as %q, want tor", missing.P2PMode)
-	}
-
-	unknown := &config.AppConfig{P2PMode: "unexpected"}
-	if err := seedInstallP2PMode(unknown, true); err == nil {
-		t.Error("unknown persisted P2P mode accepted")
 	}
 }
 

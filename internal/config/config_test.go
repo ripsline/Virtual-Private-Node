@@ -33,12 +33,6 @@ func TestDefaultValues(t *testing.T) {
 	if cfg.SyncthingInstalled {
 		t.Error("SyncthingInstalled: expected false")
 	}
-	if cfg.InstallComplete {
-		t.Error("InstallComplete: expected false")
-	}
-	if cfg.InstallVersion != "" {
-		t.Error("InstallVersion: expected empty")
-	}
 	if cfg.WalletCreated {
 		t.Error("WalletCreated: expected false")
 	}
@@ -99,8 +93,6 @@ func TestNetworkConfigRouting(t *testing.T) {
 
 func TestJSONRoundTrip(t *testing.T) {
 	original := &AppConfig{
-		InstallComplete:    true,
-		InstallVersion:     "0.2.2",
 		Network:            "testnet4",
 		Components:         "bitcoin+lnd",
 		PruneSize:          50,
@@ -151,6 +143,22 @@ func TestOmitEmptyPasswords(t *testing.T) {
 
 	if _, exists := raw["syncthing_password"]; exists {
 		t.Error("empty SyncthingPassword should be omitted from JSON")
+	}
+}
+
+func TestConfigExcludesInstallCompletionAuthority(t *testing.T) {
+	data, err := json.Marshal(Default())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(data, &raw); err != nil {
+		t.Fatal(err)
+	}
+	for _, field := range []string{"install_complete", "install_version"} {
+		if _, ok := raw[field]; ok {
+			t.Errorf("general config still contains lifecycle field %q", field)
+		}
 	}
 }
 

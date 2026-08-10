@@ -49,8 +49,8 @@ func SyncthingVersionStr() string { return syncthingVersion }
 
 // InstallOptions carries the `vpn install` command line.
 type InstallOptions struct {
-	// Network from --testnet4 ("" = mainnet, or keep a
-	// pre-existing config's answer).
+	// Network from --testnet4 ("" = mainnet for a pristine host,
+	// or keep the interrupted lifecycle's recorded answer).
 	Network string
 	// Unattended runs with no TUI and no prompts (ruling iv/vii:
 	// keys auto-copied from enumeration, password randomly
@@ -58,7 +58,7 @@ type InstallOptions struct {
 	Unattended bool
 	// UntilBake runs only PhaseBake steps (image build
 	// pipeline, ruling iv). Requires Unattended. The run ends
-	// WITHOUT InstallComplete, without handoff, without the
+	// without terminal ledger status, without handoff, without the
 	// verification banner — first-boot steps are still owed.
 	UntilBake bool
 	// AllowConsoleOnly permits an unattended install to
@@ -90,168 +90,152 @@ func RunInstall(opts InstallOptions) error {
 	os.Setenv("DEBIAN_FRONTEND", "noninteractive")
 	os.Setenv("NEEDRESTART_MODE", "a")
 
-	// One install at a time: an exclusive lock on the ledger,
-	// held for the whole run (released by process exit on any
-	// death). A second concurrent run refuses immediately.
-	if err := os.MkdirAll(paths.ConfigDir, 0750); err != nil {
-		return fmt.Errorf("create %s: %w", paths.ConfigDir, err)
-	}
-	runLock, err := acquireRunLock(paths.InstallStateFile)
+	// The transient stable lock is acquired before classification. It is not
+	// durable lifecycle state and remains the same inode while the ledger is
+	// atomically replaced.
+	runLock, err := acquireRunLock(paths.RuntimeDir, paths.InstallLock)
 	if err != nil {
 		return err
 	}
 	defer runLock.Close()
 
-	// This release implements only fresh installations of the
-	// dedicated service-user layout. Refuse an older shared-user
-	// node before any package, identity, ownership, config, or
-	// service mutation; migration of wallet/channel state is a
-	// separate, deferred operation.
-	if err := guardFreshServiceLayout(); err != nil {
+	fs := productionLifecycleFS()
+	lookup := productionIdentityLookup()
+	lifecycle, err := classifyLifecycleState(
+		fs, lookup)
+	if err != nil {
 		return err
 	}
+	if lifecycle.Disposition == lifecycleCompleted {
+		fmt.Println("\n  Virtual Private Node is already installed; no changes were made.")
+		return nil
+	}
+	if lifecycle.Disposition != lifecyclePristine &&
+		!opts.Unattended && passwordPending() {
+		return errors.New(
+			"an interrupted unattended install still owes password delivery — resume with: sudo vpn install --unattended")
+	}
 
-	// Preflight (principle 3): assert the environment before the
-	// first mutation; refuses with a full report on any failure.
-	// Returns the sshd observation (ruling xvi(b)) consumed by
-	// the firewall rules, the wizard copy, and the config seed.
+	// Preflight is read-only and precedes every durable initialization.
 	obs, err := RunPreflight()
 	if err != nil {
 		return err
 	}
 
-	// A pre-existing loadable config is the operator's prior
-	// answers (migration requirement 1, ruling xv): a migrated
-	// box pre-creates /etc/vpn/config.json by copy. Values it
-	// carries are never clobbered; only ABSENT fields are
-	// seeded. install_complete:true with an empty ledger is NOT
-	// refused — explicit dispatch means the operator asked.
-	cfg := config.Default()
-	preExisting := false
-	if pre, loadErr := config.Load(); loadErr == nil {
-		cfg = pre
-		preExisting = true
-	} else if !os.IsNotExist(loadErr) {
-		// An unloadable (present but corrupt) config is a
-		// fail-stop, same direction as the TUI path (IA-1-C1):
-		// silently installing over the operator's carried
-		// answers would destroy them.
-		return fmt.Errorf(
-			"cannot read %s: %v — fix or remove the file, "+
-				"then re-run", config.DefaultPath, loadErr)
-	}
-
-	if opts.Network != "" {
-		if preExisting && cfg.Network != opts.Network {
-			return fmt.Errorf(
-				"--%s conflicts with network %q already set in %s "+
-					"— drop the flag to keep the existing answer",
-				opts.Network, cfg.Network, config.DefaultPath)
+	ledger := lifecycle.Ledger
+	if lifecycle.Disposition == lifecyclePristine {
+		network := opts.Network
+		if network == "" {
+			network = "mainnet"
 		}
-		cfg.Network = opts.Network
+		ledger, err = initializeLifecycle(fs, lookup, installContext{
+			Network: network, InitialP2PMode: "tor",
+		})
+		if err != nil {
+			return err
+		}
+	} else if lifecycle.Disposition == lifecycleBootstrap {
+		ctx := *lifecycle.BootstrapContext
+		if opts.Network != "" && opts.Network != ctx.Network {
+			return fmt.Errorf(
+				"--%s conflicts with the interrupted install network %q — drop the flag to resume the recorded lifecycle",
+				opts.Network, ctx.Network)
+		}
+		ledger, err = resumeLifecycleBootstrap(fs, lookup, ctx)
+		if err != nil {
+			return err
+		}
+	} else if opts.Network != "" && opts.Network != ledger.Context.Network {
+		return fmt.Errorf(
+			"--%s conflicts with the interrupted install network %q — drop the flag to resume the recorded lifecycle",
+			opts.Network, ledger.Context.Network)
+	}
+	if lifecycle.Disposition == lifecycleCompletionPending && opts.UntilBake {
+		return errors.New(
+			"base installation is awaiting finalization — resume without --until=bake")
 	}
 
-	// Seed from observation ONLY where the config never
-	// answered (on a migrated box the two agree anyway: the
-	// observation runs while the old drop-in still stands).
-	if !config.RawFieldPresent("ssh_password_auth_disabled") {
-		cfg.SSHPasswordAuthDisabled = !obs.PasswordAuth
-	}
-	// Observed ports are a recorded observation, not an
-	// operator answer — a fresh observation always wins.
+	// General configuration is reconstructed from immutable lifecycle context
+	// and fresh observations. It is not installation-completion authority.
+	cfg := config.Default()
+	cfg.Network = ledger.Context.Network
+	cfg.P2PMode = ledger.Context.InitialP2PMode
+	cfg.SSHPasswordAuthDisabled = !obs.PasswordAuth
 	cfg.SSHPorts = obs.Ports
-
-	// LND is installed during initial setup. Preserve a prior
-	// explicit P2P answer on reinstall; seed Tor-only only when
-	// the field was absent. Unknown persisted values fail closed
-	// rather than selecting a new port surface implicitly.
-	if err := seedInstallP2PMode(
-		cfg, config.RawFieldPresent("p2p_mode")); err != nil {
-		return err
-	}
-
-	// These fields are set IN MEMORY before the steps are built
-	// because steps read them (Tor config and firewall rules
-	// include LND hidden services and ports) — but they are
-	// PERSISTED only on a complete run, below. A failed or
-	// interrupted run must not record intent as fact (IA-1-9).
 	cfg.LNDInstalled = true
 	cfg.Components = "bitcoin+lnd"
-
-	// The guard and every read-only preflight/config check have
-	// now succeeded. Authorize this fresh-layout lifecycle before
-	// the first step can write the ledger, so even an interruption
-	// during an early package step can resume safely.
-	if err := authorizeFreshServiceLayout(); err != nil {
-		return err
+	dec := &InstallDecisions{Obs: obs}
+	if ledger.Context.DbCacheMB != nil {
+		dec.DbCacheMB = *ledger.Context.DbCacheMB
+		cfg.DbCache = dec.DbCacheMB
 	}
 
-	// (The config dir was created above, before the run lock —
-	// the ledger lives in it. Root-owned during the install;
-	// ownership of the dir and config.json passes to the admin
-	// user at completion, migration requirement 2.)
-
-	dec := &InstallDecisions{Obs: obs}
-	steps := buildInstallSteps(cfg, dec)
+	allSteps := buildInstallSteps(cfg, dec)
+	if err := validateBaseInstallSteps(allSteps); err != nil {
+		return err
+	}
+	steps := allSteps
 	if opts.UntilBake {
 		steps = FilterPhase(steps, PhaseBake)
 	}
 
-	// completeInstall writes the durable completion record.
-	// Every step verified complete this pass — only then may
-	// the record say so: InstallComplete is DERIVED from
-	// per-step results, never from a front-end returning
-	// (IA-1-9); the intent fields set above reach disk only
-	// through here. On the interactive path this runs the
-	// moment the last step verifies, BEFORE the done screen
-	// waits for the operator (live-run finding: the old
-	// after-the-TUI order left completion unpersisted while
-	// the done screen sat unattended). Idempotent.
-	completeInstall := func() error {
-		logger.Install(
-			"all %d install steps complete", len(steps))
-		cfg.InstallComplete = true
-		cfg.InstallVersion = appVersion
-		if dec.DbCacheMB > 0 {
-			cfg.DbCache = dec.DbCacheMB
+	persistDbCache := func(v int) error {
+		if err := ledger.setDbCache(v); err != nil {
+			return err
 		}
-		// First-run verification banner: armed when the ledger
-		// shows this install lifecycle set up the admin user AND
-		// the journal shows no admin login yet. Keyed on the
-		// LEDGER, not on this pass (live-run finding: a run that
-		// failed after the identity step and then resumed to
-		// completion lost the banner, because the completing
-		// pass ledger-skipped identity). The journal check keeps
-		// the original guarantee too: a re-run after a verified
-		// login never re-arms a stale banner.
-		if loadLedger(paths.InstallStateFile).
-			done("identity.access") && !AdminLoginObserved() {
-			cfg.KeyVerificationPending = true
+		if err := ledger.save(paths.InstallStateFile); err != nil {
+			return fmt.Errorf("record db cache decision: %w", err)
 		}
-		if err := config.Save(cfg); err != nil {
-			return fmt.Errorf(
-				"write %s: %w", config.DefaultPath, err)
-		}
-		finalizeOwnership()
+		dec.DbCacheMB = v
+		cfg.DbCache = v
 		return nil
+	}
+	completeInteractive := func() error {
+		if err := prepareInstallCompletion(cfg, dec, ledger, len(allSteps)); err != nil {
+			return err
+		}
+		return publishTerminalLedger(ledger)
 	}
 
 	var res RunResult
 	openConsole := false
-	if opts.Unattended {
+	if opts.Unattended && lifecycle.Disposition != lifecycleCompletionPending {
 		if err := fillUnattendedDecisions(
 			dec, opts.AllowConsoleOnly); err != nil {
 			return err
 		}
+		if ledger.Context.DbCacheMB == nil {
+			if err := persistDbCache(dec.DbCacheMB); err != nil {
+				return err
+			}
+		} else {
+			dec.DbCacheMB = *ledger.Context.DbCacheMB
+			cfg.DbCache = dec.DbCacheMB
+		}
+	} else if opts.Unattended && passwordPending() {
+		if err := fillGeneratedPassword(dec); err != nil {
+			return err
+		}
+	}
+
+	if lifecycle.Disposition == lifecycleCompletionPending {
+		res = RunResult{Outcome: RunComplete, Total: len(allSteps)}
+	} else if opts.Unattended {
 		fmt.Printf("\n  Virtual Private Node — unattended install\n\n")
 		res, err = RunInstallUnattended(
-			steps, appVersion, paths.InstallStateFile)
+			steps, appVersion, ledger, paths.InstallStateFile)
 	} else {
 		res, openConsole, err = runInstallWizard(
-			cfg, steps, dec, appVersion, completeInstall)
+			cfg, steps, dec, appVersion, ledger,
+			persistDbCache, completeInteractive)
 	}
 	if err != nil {
 		return err
+	}
+	if lifecycle.Disposition == lifecycleCompletionPending && !opts.Unattended {
+		if err := completeInteractive(); err != nil {
+			return err
+		}
 	}
 	switch res.Outcome {
 	case RunFailed:
@@ -283,9 +267,8 @@ func RunInstall(opts InstallOptions) error {
 	}
 
 	if opts.Unattended {
-		// The unattended runner has no wait-for-input gap; the
-		// record is written here, right after the last step.
-		if err := completeInstall(); err != nil {
+		if err := prepareInstallCompletion(
+			cfg, dec, ledger, len(allSteps)); err != nil {
 			return err
 		}
 		if needsPasswordReapply(dec.GeneratedPassword,
@@ -314,23 +297,17 @@ func RunInstall(opts InstallOptions) error {
 		// this pass actually applied it (a ledger-skip with no
 		// pending marker means an older, already-shown password
 		// stands). Printed once, never logged.
-		fmt.Printf("\n  Login password for %q (SAVE IT — it will "+
-			"not be shown again):\n\n    %s\n",
-			paths.AdminUser, dec.GeneratedPassword)
-		ClearPasswordPendingMarker()
+		if err := printGeneratedPassword(dec.GeneratedPassword); err != nil {
+			return err
+		}
+		if err := clearPasswordPendingMarkerStrict(); err != nil {
+			return err
+		}
 	}
-
-	if !opts.Unattended && passwordPending() {
-		// Mixed-mode resume: an earlier unattended pass applied a
-		// generated password that was never displayed, and this
-		// interactive completion had no password screen to
-		// replace it (the identity step was ledger-skipped).
-		// Nothing here can recover it — say so and name the
-		// remedy. The marker stays until the operator acts.
-		fmt.Printf("\n  NOTE: an earlier unattended run set a "+
-			"login password for %q that was never displayed.\n"+
-			"  Set a new one from the node console: System → "+
-			"SSH Keys → Change Password.\n", paths.AdminUser)
+	if opts.Unattended {
+		if err := publishTerminalLedger(ledger); err != nil {
+			return err
+		}
 	}
 
 	if opts.Unattended {
@@ -359,44 +336,83 @@ func RunInstall(opts InstallOptions) error {
 	return nil
 }
 
-// seedInstallP2PMode preserves an explicit prior answer and
-// applies the fresh-install Tor default only when p2p_mode was
-// absent from the persisted config. Pure apart from cfg mutation
-// so reinstall behavior is unit-testable without production paths.
-func seedInstallP2PMode(cfg *config.AppConfig, fieldPresent bool) error {
-	if !fieldPresent {
-		cfg.P2PMode = "tor"
-		return nil
+func validateBaseInstallSteps(steps []InstallStep) error {
+	if len(steps) != len(baseInstallStepKeys) {
+		return fmt.Errorf("base install has %d steps, ledger schema requires %d",
+			len(steps), len(baseInstallStepKeys))
 	}
-	switch cfg.P2PMode {
-	case "tor", "hybrid":
-		return nil
-	default:
-		return fmt.Errorf(
-			"invalid p2p_mode %q in %s — expected tor or hybrid",
-			cfg.P2PMode, config.DefaultPath)
+	for i, step := range steps {
+		if step.Key != baseInstallStepKeys[i] {
+			return fmt.Errorf("base install step %d is %q, ledger schema requires %q",
+				i+1, step.Key, baseInstallStepKeys[i])
+		}
 	}
+	return nil
 }
 
-// finalizeOwnership hands the admin user the files it owns in
-// the post-install world: the config dir + config.json
-// (migration requirement 2 — a migrated box pre-created them
-// root-owned via cp) and the log file (the TUI appends to it).
-// The install ledger deliberately stays root-owned (ruling xiv).
-// Failures are logged, not fatal: the install is complete; a
-// wrong owner surfaces as a TUI config error the operator can
-// fix, and the log names the fix.
-func finalizeOwnership() {
+func prepareInstallCompletion(
+	cfg *config.AppConfig, dec *InstallDecisions,
+	ledger *installLedger, stepCount int,
+) error {
+	if !ledger.allBaseStepsDone() {
+		return errors.New("cannot finalize installation before every base step is recorded")
+	}
+	logger.Install("all %d install steps complete", stepCount)
+	if ledger.Context.DbCacheMB == nil {
+		return errors.New("cannot finalize installation without recorded db cache")
+	}
+	cfg.DbCache = *ledger.Context.DbCacheMB
+	dec.DbCacheMB = cfg.DbCache
+	if ledger.done("identity.access") && !AdminLoginObserved() {
+		cfg.KeyVerificationPending = true
+	}
+	if err := config.Save(cfg); err != nil {
+		return fmt.Errorf("write %s: %w", config.DefaultPath, err)
+	}
+	if err := finalizeOwnership(); err != nil {
+		return err
+	}
+	return nil
+}
+
+func publishTerminalLedger(ledger *installLedger) error {
+	if passwordPending() {
+		return errors.New(
+			"cannot mark installation complete while password delivery is pending")
+	}
+	if err := ledger.markComplete(); err != nil {
+		return err
+	}
+	if err := ledger.save(paths.InstallStateFile); err != nil {
+		return fmt.Errorf("publish terminal install ledger: %w", err)
+	}
+	return nil
+}
+
+func printGeneratedPassword(password string) error {
+	_, err := fmt.Fprintf(os.Stdout,
+		"\n  Login password for %q (SAVE IT — it will not be shown again):\n\n    %s\n",
+		paths.AdminUser, password)
+	if err != nil {
+		return fmt.Errorf("display generated login password: %w", err)
+	}
+	return nil
+}
+
+// finalizeOwnership performs the current config/log handoff. Failure is fatal
+// to completion: the private ledger remains in progress until the TUI can read
+// its current configuration. CONFIG-001 separately owns the root-config
+// authority redesign.
+func finalizeOwnership() error {
 	owner := paths.AdminUser + ":" + paths.AdminUser
 	for _, p := range []string{
 		paths.ConfigDir, paths.ConfigFile, paths.LogFile,
 	} {
 		if err := system.SudoRun("chown", owner, p); err != nil {
-			logger.Install(
-				"WARNING: chown %s to %s failed (%v) — fix with: "+
-					"chown %s %s", p, owner, err, owner, p)
+			return fmt.Errorf("chown %s to %s: %w", p, owner, err)
 		}
 	}
+	return nil
 }
 
 // fillUnattendedDecisions supplies the wizard answers for
@@ -429,6 +445,14 @@ func fillUnattendedDecisions(
 				"with --allow-console-only if console-only " +
 				"access is really what you want")
 	}
+	if err := fillGeneratedPassword(dec); err != nil {
+		return err
+	}
+	dec.DbCacheMB = RecommendDbCache(DetectHardware().RAMMB)
+	return nil
+}
+
+func fillGeneratedPassword(dec *InstallDecisions) error {
 	gen, err := generateAdminPassword()
 	if err != nil {
 		return err
@@ -439,7 +463,6 @@ func fillUnattendedDecisions(
 	}
 	dec.Password = pw
 	dec.GeneratedPassword = gen
-	dec.DbCacheMB = RecommendDbCache(DetectHardware().RAMMB)
 	return nil
 }
 
@@ -457,9 +480,7 @@ func strandsBox(
 // installBasePackages is the SINGLE clearnet apt operation
 // (IA-2-L disclosure: op count unchanged from the script; ufw
 // joined its package list per ruling xvi(b) so the firewall can
-// come up immediately after). On a migrated box the old
-// install's apt Tor proxy is still configured, so even this op
-// routes through Tor there.
+// come up immediately after).
 func installBasePackages() error {
 	if err := system.SudoRun("apt-get", "update", "-qq"); err != nil {
 		return err

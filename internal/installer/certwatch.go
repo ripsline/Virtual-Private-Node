@@ -5,8 +5,8 @@ package installer
 // The LND TLS certificate watch. lnd.conf sets tlsautorefresh,
 // which lets LND regenerate its own certificate at ANY startup
 // whose parameters changed or whose certificate nears expiry —
-// a crash restart, a reboot, a config change applied by a
-// reinstall. None of those moments is an operation the TUI
+// a crash restart, a reboot, or a typed configuration change.
+// None of those moments is an operation the TUI
 // requested, so no operation can refresh the TUI's staged
 // copy of the certificate; without a watcher, the copy goes
 // stale the moment LND rewrites the file, and the TUI's
@@ -52,8 +52,7 @@ SyslogIdentifier=vpn-cert-stage
 
 // installLNDCertWatch writes both units, reloads systemd, and
 // enables and starts the path unit, verifying it is active.
-// Idempotent — a reinstall or migration pass rewrites the
-// current unit content and re-enables.
+// Idempotent for a recognized interrupted base install.
 func installLNDCertWatch() error {
 	pathUnit, serviceUnit := lndCertWatchUnits()
 	if err := system.SudoWriteFile(paths.LNDCertWatchPath,
