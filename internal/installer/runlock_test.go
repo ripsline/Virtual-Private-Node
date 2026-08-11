@@ -2,11 +2,62 @@ package installer
 
 import (
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"syscall"
 	"testing"
 )
+
+const (
+	runLockHelperEnv  = "VPN_TEST_RUN_LOCK_HELPER"
+	runLockHelperDir  = "VPN_TEST_RUN_LOCK_DIR"
+	runLockHelperPath = "VPN_TEST_RUN_LOCK_PATH"
+	runLockHelperWant = "VPN_TEST_RUN_LOCK_WANT"
+)
+
+func TestRunLockSubprocessHelper(t *testing.T) {
+	if os.Getenv(runLockHelperEnv) != "1" {
+		return
+	}
+	dir := os.Getenv(runLockHelperDir)
+	lock := os.Getenv(runLockHelperPath)
+	want := os.Getenv(runLockHelperWant)
+	got, err := acquireRunLock(dir, lock)
+	switch want {
+	case "blocked":
+		if err == nil {
+			got.Close()
+			t.Fatal("subprocess acquired lock held by parent")
+		}
+		if !strings.Contains(err.Error(), "already running") {
+			t.Fatalf("unexpected contention error: %v", err)
+		}
+	case "acquired":
+		if err != nil {
+			t.Fatalf("subprocess did not acquire released lock: %v", err)
+		}
+		if err := got.Close(); err != nil {
+			t.Fatal(err)
+		}
+	default:
+		t.Fatalf("unknown helper expectation %q", want)
+	}
+}
+
+func runLockSubprocess(t *testing.T, dir, lock, want string) {
+	t.Helper()
+	cmd := exec.Command(os.Args[0], "-test.run=^TestRunLockSubprocessHelper$")
+	cmd.Env = append(os.Environ(),
+		runLockHelperEnv+"=1",
+		runLockHelperDir+"="+dir,
+		runLockHelperPath+"="+lock,
+		runLockHelperWant+"="+want,
+	)
+	if output, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("lock subprocess (%s): %v\n%s", want, err, output)
+	}
+}
 
 func TestRootRunLockSurvivesLedgerReplacement(t *testing.T) {
 	requireRootTestEnvironment(t)
@@ -19,6 +70,10 @@ func TestRootRunLockSurvivesLedgerReplacement(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	beforeLock, err := os.Stat(lock)
+	if err != nil {
+		t.Fatal(err)
+	}
 	for i := 0; i < 10; i++ {
 		tmp := filepath.Join(root, "replacement")
 		if err := os.WriteFile(tmp, []byte{byte(i)}, 0o600); err != nil {
@@ -27,23 +82,18 @@ func TestRootRunLockSurvivesLedgerReplacement(t *testing.T) {
 		if err := os.Rename(tmp, ledger); err != nil {
 			t.Fatal(err)
 		}
-		if second, err := acquireRunLock(dir, lock); err == nil {
-			second.Close()
-			t.Fatal("second lock acquired while first remained held")
-		} else if !strings.Contains(err.Error(), "already running") {
-			t.Fatalf("unexpected contention error: %v", err)
-		}
+		runLockSubprocess(t, dir, lock, "blocked")
 	}
 	if err := first.Close(); err != nil {
 		t.Fatal(err)
 	}
-	third, err := acquireRunLock(dir, lock)
+	runLockSubprocess(t, dir, lock, "acquired")
+	afterLock, err := os.Stat(lock)
 	if err != nil {
-		t.Fatalf("lock did not release on close: %v", err)
-	}
-	third.Close()
-	if _, err := os.Lstat(lock); err != nil {
 		t.Fatalf("stable lock path was removed: %v", err)
+	}
+	if !os.SameFile(beforeLock, afterLock) {
+		t.Fatal("stable lock object was replaced")
 	}
 }
 

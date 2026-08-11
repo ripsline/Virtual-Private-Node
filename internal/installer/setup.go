@@ -72,6 +72,36 @@ type InstallOptions struct {
 	AllowConsoleOnly bool
 }
 
+// installStartupDependencies keeps the lifecycle authorization boundary
+// testable against isolated paths. The production constructor below supplies
+// the same paths, lock, classifier, preflight, and initializer used before this
+// seam was introduced.
+type installStartupDependencies struct {
+	runtimeDir          string
+	installLock         string
+	fs                  lifecycleFS
+	lookup              identityLookup
+	acquireRunLock      func(string, string) (*os.File, error)
+	classifyLifecycle   func(lifecycleFS, identityLookup) (lifecycleState, error)
+	runPreflight        func() (SSHObservation, error)
+	initializeLifecycle func(lifecycleFS, identityLookup, installContext) (*installLedger, error)
+}
+
+func productionInstallStartupDependencies() installStartupDependencies {
+	return installStartupDependencies{
+		runtimeDir:          paths.RuntimeDir,
+		installLock:         paths.InstallLock,
+		fs:                  productionLifecycleFS(),
+		lookup:              productionIdentityLookup(),
+		acquireRunLock:      acquireRunLock,
+		classifyLifecycle:   classifyLifecycleState,
+		runPreflight:        RunPreflight,
+		initializeLifecycle: initializeLifecycle,
+	}
+}
+
+var newInstallStartupDependencies = productionInstallStartupDependencies
+
 // RunInstall is the `sudo vpn install` entry point.
 func RunInstall(opts InstallOptions) error {
 	if os.Geteuid() != 0 {
@@ -89,20 +119,20 @@ func RunInstall(opts InstallOptions) error {
 	// showing its dialog mid-upgrade.
 	os.Setenv("DEBIAN_FRONTEND", "noninteractive")
 	os.Setenv("NEEDRESTART_MODE", "a")
+	deps := newInstallStartupDependencies()
 
 	// The transient stable lock is acquired before classification. It is not
 	// durable lifecycle state and remains the same inode while the ledger is
 	// atomically replaced.
-	runLock, err := acquireRunLock(paths.RuntimeDir, paths.InstallLock)
+	runLock, err := deps.acquireRunLock(deps.runtimeDir, deps.installLock)
 	if err != nil {
 		return err
 	}
 	defer runLock.Close()
 
-	fs := productionLifecycleFS()
-	lookup := productionIdentityLookup()
-	lifecycle, err := classifyLifecycleState(
-		fs, lookup)
+	fs := deps.fs
+	lookup := deps.lookup
+	lifecycle, err := deps.classifyLifecycle(fs, lookup)
 	if err != nil {
 		return err
 	}
@@ -117,7 +147,7 @@ func RunInstall(opts InstallOptions) error {
 	}
 
 	// Preflight is read-only and precedes every durable initialization.
-	obs, err := RunPreflight()
+	obs, err := deps.runPreflight()
 	if err != nil {
 		return err
 	}
@@ -128,7 +158,7 @@ func RunInstall(opts InstallOptions) error {
 		if network == "" {
 			network = "mainnet"
 		}
-		ledger, err = initializeLifecycle(fs, lookup, installContext{
+		ledger, err = deps.initializeLifecycle(fs, lookup, installContext{
 			Network: network, InitialP2PMode: "tor",
 		})
 		if err != nil {
