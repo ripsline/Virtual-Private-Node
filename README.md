@@ -91,7 +91,7 @@ installing never silently changes it.
 
 ### Wallet Creation
 
-On first launch of the node console, you go straight to the wallet
+On first launch of the node TUI, you go straight to the wallet
 creation flow:
 
 1. Read the privacy and seed warnings, press Proceed
@@ -313,13 +313,15 @@ For manual binary verification before installation, see
 | /etc/bitcoin/bitcoin.conf | Bitcoin Core configuration |
 | /etc/lnd/lnd.conf | LND configuration |
 | /etc/syncthing/ | Syncthing configuration |
-| /etc/vpn/config.json | Node and console configuration; mode 0600 and may contain the Syncthing web UI password |
+| /etc/vpn/config.json | Root-owned, non-secret desired node configuration; root:vpn mode 0640 |
+| /home/vpn/.config/vpn/preferences.json | User-owned TUI preferences (theme); vpn:vpn mode 0600 |
 | /var/lib/vpn-install-bootstrap-service-layout-1-{mainnet,testnet4}-tor | Short-lived root-only indication while initial lifecycle authority is published |
 | /var/lib/vpn/private/layout-version | Root-only supported-layout generation record |
 | /var/lib/vpn/private/install-state.json | Root-only bounded base-install progress and completion ledger |
 | /var/lib/vpn/private/password-pending | Root-only interrupted unattended-password delivery marker, present only while needed |
+| /var/lib/vpn/private/key-verification-pending | Root-only first-login verification marker, present only while needed |
 | /run/vpn/install.lock | Stable root-only runtime lock for one active base installer |
-| /var/lib/vpn/state/ | Root-written facts and credentials deliberately staged for the console |
+| /var/lib/vpn/state/ | Root-written facts and credentials deliberately staged read-only for the TUI, including the Syncthing web password |
 | /var/lib/vpn/exports/lnd-backup/ | Read-only Syncthing export of the completed `channel.backup` |
 | /var/lib/bitcoin/ | Blockchain data |
 | /var/lib/lnd/ | LND data and wallet |
