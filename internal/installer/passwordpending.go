@@ -16,7 +16,7 @@ package installer
 // box but was never displayed". A completing unattended pass
 // that finds it re-applies its own freshly generated password
 // and prints that one instead. The operator setting a password
-// of their own from the node console clears it too — at that
+// of their own from the node TUI clears it too — at that
 // point they hold a credential they chose. The file carries no
 // secret; plaintext passwords exist only in process memory.
 
@@ -32,7 +32,7 @@ import (
 const passwordPendingNote = `An unattended install applied a generated admin login password
 that has not been displayed yet. A completed unattended run
 resolves this automatically; setting a new password from the
-node console also clears it.
+node TUI also clears it.
 `
 
 // markPasswordPending records that a generated password was

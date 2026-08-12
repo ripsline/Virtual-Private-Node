@@ -13,7 +13,7 @@ import (
 // ── SyncthingDetailScreen ──────────────────────────────
 // Main Syncthing manage tab: header with Pair Device /
 // Web UI buttons, scrollable paired device table below.
-// Reads device list live through ctx.Cfg pointer.
+// Reads the daemon-observed device list through shared runtime state.
 
 const (
 	syncDetailZoneButtons = 0
@@ -38,13 +38,13 @@ func NewSyncthingDetailScreen(
 // ── Screen interface ────────────────────────────────────
 
 func (s *SyncthingDetailScreen) Init() tea.Cmd {
-	return nil
+	return fetchSyncthingDevicesCmd()
 }
 
 func (s *SyncthingDetailScreen) HandleKey(
 	keyStr string, msg tea.KeyPressMsg,
 ) (Screen, tea.Cmd) {
-	devices := s.ctx.Cfg.SyncthingDevices
+	devices := s.ctx.State.SyncthingDevices
 	s.clampCursor()
 
 	switch keyStr {
@@ -139,7 +139,7 @@ func (s *SyncthingDetailScreen) handleEnter() (
 	}
 
 	// Device list — open device detail
-	devices := s.ctx.Cfg.SyncthingDevices
+	devices := s.ctx.State.SyncthingDevices
 	if s.cursor < len(devices) {
 		dev := devices[s.cursor]
 		label := dev.Name
@@ -165,6 +165,9 @@ func (s *SyncthingDetailScreen) handleEnter() (
 func (s *SyncthingDetailScreen) HandleMsg(
 	msg tea.Msg,
 ) (Screen, tea.Cmd) {
+	if _, ok := msg.(tabActivatedMsg); ok {
+		return s, fetchSyncthingDevicesCmd()
+	}
 	return s, nil
 }
 
@@ -172,7 +175,7 @@ func (s *SyncthingDetailScreen) View(
 	w, h int,
 ) string {
 	s.clampCursor()
-	devices := s.ctx.Cfg.SyncthingDevices
+	devices := s.ctx.State.SyncthingDevices
 	isFocused := s.ctx.ContentFocused
 	onButtons := isFocused &&
 		s.focusZone == syncDetailZoneButtons
@@ -205,7 +208,14 @@ func (s *SyncthingDetailScreen) View(
 
 	cursorLine := 0
 
-	if pairedCount == 0 {
+	if !s.ctx.State.SyncthingDevicesKnown {
+		midLines = append(midLines,
+			" "+theme.Warning.Render(
+				"Cannot read the current device list"))
+		midLines = append(midLines,
+			" "+theme.Dim.Render(
+				"Check: journalctl -u vpn-helperd"))
+	} else if pairedCount == 0 {
 		midLines = append(midLines,
 			" "+theme.Dim.Render(
 				"No devices paired yet"))
@@ -213,18 +223,15 @@ func (s *SyncthingDetailScreen) View(
 		hdrStyle := theme.TableHeader
 		sepStyle := theme.TableDim
 
-		nameW := 20
-		idW := 24
-		dateW := w - nameW - idW - 6
-		if dateW < 12 {
-			dateW = 12
+		nameW := 24
+		idW := w - nameW - 3
+		if idW < 24 {
+			idW = 24
 		}
 
 		hdr := " " +
 			hdrStyle.Render(pad("Name", nameW)) +
-			hdrStyle.Render(pad("Device ID", idW)) +
-			hdrStyle.Render(
-				fmt.Sprintf("%-*s", dateW, "Paired"))
+			hdrStyle.Render(pad("Device ID", idW))
 		midLines = append(midLines, hdr)
 		midLines = append(midLines,
 			" "+sepStyle.Render(
@@ -252,9 +259,6 @@ func (s *SyncthingDetailScreen) View(
 			}
 			idStr := pad(devID, idW)
 
-			dateStr := fmt.Sprintf("%-*s",
-				dateW, d.PairedAt)
-
 			isSelected := onList && s.cursor == i
 
 			marker := " "
@@ -264,14 +268,12 @@ func (s *SyncthingDetailScreen) View(
 				midLines = append(midLines,
 					marker+
 						selStyle.Render(nameStr)+
-						selStyle.Render(idStr)+
-						selStyle.Render(dateStr))
+						selStyle.Render(idStr))
 			} else {
 				midLines = append(midLines,
 					marker+
 						theme.Value.Render(nameStr)+
-						theme.Dim.Render(idStr)+
-						theme.Dim.Render(dateStr))
+						theme.Dim.Render(idStr))
 			}
 		}
 	}
@@ -305,7 +307,7 @@ func (s *SyncthingDetailScreen) HelpBindings() []key.Binding {
 // clampCursor ensures the cursor is within bounds after
 // the device list may have shrunk (e.g. after a remove).
 func (s *SyncthingDetailScreen) clampCursor() {
-	devices := s.ctx.Cfg.SyncthingDevices
+	devices := s.ctx.State.SyncthingDevices
 	if s.cursor >= len(devices) {
 		s.cursor = len(devices) - 1
 	}

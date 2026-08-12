@@ -13,8 +13,7 @@ package installer
 //     is a DELAYED silent lockout (the current connection
 //     survives; the next one is refused).
 //   - whether password authentication is effectively enabled —
-//     the fresh preflight seed for cfg.SSHPasswordAuthDisabled,
-//     the state-aware wizard copy, and the explicit
+//     the fresh preflight decision input and the explicit
 //     PasswordAuthentication directive in the install drop-in
 //     (ruling xvi(a): explicit-from-observed).
 //

@@ -9,6 +9,7 @@ import (
 	"crypto/x509/pkix"
 	"encoding/pem"
 	"math/big"
+	"net"
 	"strings"
 	"testing"
 	"time"
@@ -98,6 +99,7 @@ func TestVerifyCertificateDNSName(t *testing.T) {
 		SerialNumber: big.NewInt(1),
 		Subject:      pkix.Name{CommonName: "LND"},
 		DNSNames:     []string{onion},
+		IPAddresses:  []net.IP{net.ParseIP("203.0.113.7")},
 		NotBefore:    time.Now().Add(-time.Minute),
 		NotAfter:     time.Now().Add(time.Hour),
 	}
@@ -118,6 +120,17 @@ func TestVerifyCertificateDNSName(t *testing.T) {
 	}
 	if err := verifyCertificateDNSName([]byte("not pem"), onion); err == nil {
 		t.Error("malformed certificate was accepted")
+	}
+	if err := verifyCertificateIPAddress(
+		certPEM, "203.0.113.7"); err != nil {
+		t.Fatalf("certificate with IP SAN rejected: %v", err)
+	}
+	if err := verifyCertificateIPAddress(
+		certPEM, "203.0.113.8"); err == nil {
+		t.Error("certificate missing the requested IP SAN was accepted")
+	}
+	if err := verifyCertificateIPAddress(certPEM, "not-an-ip"); err == nil {
+		t.Error("invalid requested IP address was accepted")
 	}
 }
 

@@ -9,7 +9,9 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"os/user"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -21,6 +23,46 @@ import (
 	"github.com/virtualprivatenode/vpn/internal/paths"
 	"github.com/virtualprivatenode/vpn/internal/system"
 )
+
+var syncthingResiduePaths = []string{
+	paths.SyncthingBinary,
+	paths.SyncthingDir,
+	paths.SyncthingDataDir,
+	paths.SyncthingService,
+	paths.StateSyncthingAPIKey,
+	paths.StateSyncthingWebPassword,
+	paths.TorSyncthing,
+	paths.TorSyncthingSync,
+	paths.BackupWatchPath,
+	paths.BackupExportService,
+	paths.LNDBackupStage,
+	paths.LNDBackupExport,
+}
+
+// SyncthingResiduePresent conservatively detects known add-on artifacts before
+// a fresh install attempt. It does not classify, adopt, clean, or repair them;
+// any evidence causes the helper to refuse without mutation so ADDON-001 can
+// define recovery later.
+func SyncthingResiduePresent() (bool, error) {
+	for _, path := range syncthingResiduePaths {
+		if _, err := os.Lstat(path); err == nil {
+			return true, nil
+		} else if !os.IsNotExist(err) {
+			return false, fmt.Errorf("inspect Syncthing residue %s: %w", path, err)
+		}
+	}
+	if _, err := user.Lookup(syncthingUser); err == nil {
+		return true, nil
+	} else if _, ok := err.(user.UnknownUserError); !ok {
+		return false, fmt.Errorf("inspect Syncthing user: %w", err)
+	}
+	if _, err := user.LookupGroup(backupGroup); err == nil {
+		return true, nil
+	} else if _, ok := err.(user.UnknownGroupError); !ok {
+		return false, fmt.Errorf("inspect Syncthing backup group: %w", err)
+	}
+	return false, nil
+}
 
 // downloadSyncthing fetches the pinned release tarball and its
 // clearsigned checksum file from GitHub over Tor.
@@ -577,6 +619,63 @@ func backupFolderRegistered(foldersJSON string) (bool, error) {
 }
 
 // ── Syncthing Device Pairing ─────────────────────────────
+
+type SyncthingDevice struct {
+	Name     string
+	DeviceID string
+}
+
+// ListSyncthingDevices reads the daemon's effective device list at screen
+// cadence. It excludes this node's own identity and returns the current names,
+// including changes made through Syncthing's Web UI.
+func ListSyncthingDevices() ([]SyncthingDevice, error) {
+	apiKey, err := getSyncthingAPIKey()
+	if err != nil {
+		return nil, fmt.Errorf("get API key: %w", err)
+	}
+	raw, err := syncthingAPIGet(apiKey, "/rest/config/devices")
+	if err != nil {
+		return nil, err
+	}
+	localID := GetSyncthingDeviceID()
+	if localID == "" {
+		return nil, fmt.Errorf("local Syncthing device ID unavailable")
+	}
+	return parseSyncthingDevices([]byte(raw), localID)
+}
+
+func parseSyncthingDevices(
+	raw []byte, localID string,
+) ([]SyncthingDevice, error) {
+	seen := make(map[string]bool)
+	var entries []struct {
+		DeviceID string `json:"deviceID"`
+		Name     string `json:"name"`
+	}
+	if err := json.Unmarshal(raw, &entries); err != nil {
+		return nil, fmt.Errorf("decode Syncthing devices: %w", err)
+	}
+	devices := make([]SyncthingDevice, 0, len(entries))
+	for _, entry := range entries {
+		id := strings.TrimSpace(entry.DeviceID)
+		if id == "" || id == localID || seen[id] {
+			continue
+		}
+		seen[id] = true
+		name := strings.TrimSpace(entry.Name)
+		if name == "" {
+			name = "Syncthing device"
+		}
+		devices = append(devices, SyncthingDevice{Name: name, DeviceID: id})
+	}
+	sort.Slice(devices, func(i, j int) bool {
+		if devices[i].Name == devices[j].Name {
+			return devices[i].DeviceID < devices[j].DeviceID
+		}
+		return devices[i].Name < devices[j].Name
+	})
+	return devices, nil
+}
 
 // GetSyncthingDeviceID returns this node's Syncthing device
 // ID. As root it parses Syncthing's config XML (works even

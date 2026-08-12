@@ -202,7 +202,8 @@ func (m Model) viewMain() string {
 	fullContent := frame + "\n" + helpLine
 	// First-run verification banner (ruling xvi): shown until
 	// the journal proves a real sshd login for the admin user.
-	if m.cfg.KeyVerificationPending {
+	if !m.state.KeyVerificationKnown ||
+		m.state.KeyVerificationPending {
 		fullContent = centerInWidth(
 			m.renderVerifyBanner(), totalW) +
 			"\n" + fullContent
@@ -219,6 +220,10 @@ func (m Model) viewMain() string {
 // banner line. Copy is deliberately imperative and small: it
 // nags, it never blocks.
 func (m Model) renderVerifyBanner() string {
+	if !m.state.KeyVerificationKnown {
+		return theme.Warning.Render("⚠ Key verification status unavailable") +
+			theme.Dim.Render(" — check: journalctl -u vpn-helperd")
+	}
 	target := "ssh " + paths.AdminUser + "@<server-ip>"
 	if ip := system.PublicIPv4(); ip != "" {
 		target = "ssh " + paths.AdminUser + "@" + ip

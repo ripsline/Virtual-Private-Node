@@ -288,7 +288,6 @@ func TestVersionConstants(t *testing.T) {
 
 func TestBaseInstallStepsMatchLedgerSchema(t *testing.T) {
 	cfg := config.Default()
-	cfg.LNDInstalled = true
 	steps := buildInstallSteps(cfg, &InstallDecisions{})
 	if err := validateBaseInstallSteps(steps); err != nil {
 		t.Fatal(err)

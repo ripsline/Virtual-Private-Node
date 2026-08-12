@@ -4,7 +4,7 @@ import (
 	"charm.land/bubbles/v2/key"
 	tea "charm.land/bubbletea/v2"
 
-	"github.com/virtualprivatenode/vpn/internal/config"
+	"github.com/virtualprivatenode/vpn/internal/installer"
 	"github.com/virtualprivatenode/vpn/internal/theme"
 )
 
@@ -22,16 +22,16 @@ const (
 type SyncthingDeviceScreen struct {
 	ctx         *ScreenContext
 	step        syncDeviceStep
-	device      config.SyncthingDevice // snapshot
-	deviceIndex int                    // index in config
-	viewBtnIdx  int                    // 0=Cancel, 1=Remove
-	confirmIdx  int                    // 0=Go Back, 1=Remove
+	device      installer.SyncthingDevice // live-read snapshot
+	deviceIndex int                       // index in displayed list
+	viewBtnIdx  int                       // 0=Cancel, 1=Remove
+	confirmIdx  int                       // 0=Go Back, 1=Remove
 	removeError string
 }
 
 func NewSyncthingDeviceScreen(
 	ctx *ScreenContext,
-	device config.SyncthingDevice,
+	device installer.SyncthingDevice,
 	index int,
 ) *SyncthingDeviceScreen {
 	return &SyncthingDeviceScreen{
@@ -69,8 +69,7 @@ func (s *SyncthingDeviceScreen) HandleMsg(
 			s.step = syncDeviceStepDetail
 			return s, nil
 		}
-		// Success — close tab (Model already
-		// mutated config and adjusted cursor)
+		// Success — close tab; the model refreshes the live list.
 		return s, emitCloseTab
 	}
 	return s, nil
@@ -154,9 +153,6 @@ func (s *SyncthingDeviceScreen) viewDetail(
 		id = id[:w-7] + "..."
 	}
 	p.mono(id)
-	p.blank()
-	p.field("Paired: ", dev.PairedAt)
-
 	p.appendError(s.removeError)
 
 	return p.renderWithBottomButtons(

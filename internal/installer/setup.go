@@ -190,10 +190,6 @@ func RunInstall(opts InstallOptions) error {
 	cfg := config.Default()
 	cfg.Network = ledger.Context.Network
 	cfg.P2PMode = ledger.Context.InitialP2PMode
-	cfg.SSHPasswordAuthDisabled = !obs.PasswordAuth
-	cfg.SSHPorts = obs.Ports
-	cfg.LNDInstalled = true
-	cfg.Components = "bitcoin+lnd"
 	dec := &InstallDecisions{Obs: obs}
 	if ledger.Context.DbCacheMB != nil {
 		dec.DbCacheMB = *ledger.Context.DbCacheMB
@@ -353,7 +349,7 @@ func RunInstall(opts InstallOptions) error {
 		return nil
 	}
 	// The done screen offered a real choice (live-run fix):
-	// Enter opens the node console here via the identity drop;
+	// Enter opens the node TUI here via the identity drop;
 	// ctrl+c means exit, so exit — just leave the connect
 	// command behind. The handoff degrades to printed
 	// instructions, never to an error; the install is already
@@ -393,8 +389,15 @@ func prepareInstallCompletion(
 	}
 	cfg.DbCache = *ledger.Context.DbCacheMB
 	dec.DbCacheMB = cfg.DbCache
-	if ledger.done("identity.access") && !AdminLoginObserved() {
-		cfg.KeyVerificationPending = true
+	if ledger.done("identity.access") {
+		if !AdminLoginObserved() {
+			if err := ensureKeyVerificationPending(); err != nil {
+				return fmt.Errorf("arm SSH login verification: %w", err)
+			}
+		} else if err := clearKeyVerificationPendingAt(
+			paths.KeyVerificationMarker, 0); err != nil {
+			return fmt.Errorf("clear SSH login verification: %w", err)
+		}
 	}
 	if err := config.Save(cfg); err != nil {
 		return fmt.Errorf("write %s: %w", config.DefaultPath, err)
@@ -429,15 +432,12 @@ func printGeneratedPassword(password string) error {
 	return nil
 }
 
-// finalizeOwnership performs the current config/log handoff. Failure is fatal
-// to completion: the private ledger remains in progress until the TUI can read
-// its current configuration. CONFIG-001 separately owns the root-config
-// authority redesign.
+// finalizeOwnership hands only the operator-facing log to vpn. The system
+// configuration and its parent remain root:vpn and are never made writable by
+// the TUI identity.
 func finalizeOwnership() error {
 	owner := paths.AdminUser + ":" + paths.AdminUser
-	for _, p := range []string{
-		paths.ConfigDir, paths.ConfigFile, paths.LogFile,
-	} {
+	for _, p := range []string{paths.LogFile} {
 		if err := system.SudoRun("chown", owner, p); err != nil {
 			return fmt.Errorf("chown %s to %s: %w", p, owner, err)
 		}
@@ -600,7 +600,7 @@ func buildInstallSteps(
 			Name: "Installing base packages",
 			Fn:   installBasePackages},
 		{Key: "firewall", Name: "Configuring firewall",
-			Fn: func() error { return configureFirewall(cfg) }},
+			Fn: func() error { return configureInitialFirewall(cfg) }},
 		{Key: "base.upgrade",
 			Name: "Upgrading base packages",
 			Fn:   upgradeBasePackages},
@@ -625,7 +625,7 @@ func buildInstallSteps(
 				if err := RebuildTorConfig(cfg); err != nil {
 					return err
 				}
-				return restartTor()
+				return enableAndRestartTor()
 			}},
 		// HARD GATE (IA-2-K): no Tor-dependent network step below —
 		// apt over the socks5h proxy, every DownloadRequireTor —
@@ -728,7 +728,7 @@ func buildInstallSteps(
 				if err := RebuildTorConfig(cfg); err != nil {
 					return err
 				}
-				return restartTor()
+				return enableAndRestartTor()
 			}},
 		{Key: "lnd.configure",
 			Name: "Finalizing LND onion configuration",
@@ -760,7 +760,7 @@ func buildInstallSteps(
 		{Key: "ssh.harden", Phase: PhaseFirstBoot,
 			Name: "Hardening SSH",
 			Fn: func() error {
-				return installSSHHardening(cfg)
+				return installSSHHardening()
 			}},
 		// The runtime privilege boundary. Three steps, all
 		// first-boot (they need the admin user and group to
@@ -778,7 +778,7 @@ func buildInstallSteps(
 			Name: "Enabling the root helper socket",
 			Fn:   installHelperUnits},
 		{Key: "state.stage", Phase: PhaseFirstBoot,
-			Name: "Staging node facts for the console",
+			Name: "Staging node facts for the TUI",
 			Fn:   StageBoardAll},
 		// Formerly a post-TUI special case that warned but
 		// completed anyway (IA-1-16). As a real step it
@@ -791,13 +791,12 @@ func buildInstallSteps(
 	}
 }
 
-// P2PUpgradeSteps returns the install steps for upgrading
-// from Tor-only to hybrid (clearnet+Tor) P2P mode. The
-// caller must set cfg.P2PMode = "hybrid" before running
-// steps (so firewall and LND config include clearnet
-// listeners), and must save config after steps complete.
-// On failure the caller reverts cfg.P2PMode = "tor".
-func P2PUpgradeSteps(
+// UpgradeP2PToHybridSteps returns the one-way post-install transition from
+// Tor-only to hybrid (clearnet+Tor) P2P. The root helper has already required
+// authoritative mode=tor and supplies a validated hybrid desired view. These
+// steps touch only LND's project-owned config, the two P2P-owned UFW rules,
+// and LND itself; the helper owns persistence after every postcondition passes.
+func UpgradeP2PToHybridSteps(
 	cfg *config.AppConfig, publicIPv4 string,
 ) []InstallStep {
 	// Note: we deliberately do NOT manually delete
@@ -810,18 +809,28 @@ func P2PUpgradeSteps(
 	// read the cert during the window between manual
 	// deletion and LND's regeneration.
 	steps := []InstallStep{
+		{Name: "Checking active firewall",
+			Fn: requireActiveUFW},
 		{Name: "Updating LND config",
 			Fn: func() error {
 				return writeLNDConfig(cfg, publicIPv4)
 			}},
-		{Name: "Updating firewall",
-			Fn: func() error {
-				return configureFirewall(cfg)
-			}},
+		{Name: "Adding hybrid P2P firewall rules",
+			Fn: allowHybridP2PFirewallRules},
 		{Name: "Restarting LND",
 			Fn: func() error {
-				return system.SudoRun(
-					"systemctl", "restart", "lnd")
+				if err := system.SudoRun(
+					"systemctl", "restart", "lnd"); err != nil {
+					return err
+				}
+				if !system.IsServiceActive("lnd") {
+					return fmt.Errorf("LND is not active after P2P restart")
+				}
+				return nil
+			}},
+		{Name: "Verifying LND TLS IP certificate",
+			Fn: func() error {
+				return verifyLNDTLSIPSAN(publicIPv4)
 			}},
 	}
 
@@ -831,10 +840,10 @@ func P2PUpgradeSteps(
 // ── Syncthing installation ───────────────────────────────
 
 // SyncthingInstallSteps returns the install step list and a
-// generated password. The caller is responsible for setting
-// cfg.SyncthingInstalled = true before running steps (so Tor
-// and firewall configs include Syncthing), and for saving
-// cfg.SyncthingPassword after steps complete successfully.
+// generated password. The root helper supplies a view with
+// SyncthingEnabled=true so the canonical Tor template includes the add-on;
+// UFW receives only Syncthing's owned rule. The helper stages the password and
+// owns desired-state publication.
 func SyncthingInstallSteps(
 	cfg *config.AppConfig,
 ) ([]InstallStep, string, error) {
@@ -890,15 +899,19 @@ func SyncthingInstallSteps(
 			Fn: func() error {
 				return configureSyncthingAuth(syncPassword)
 			}},
-		{Name: "Configuring firewall",
-			Fn: func() error {
-				return configureFirewall(cfg)
-			}},
+		{Name: "Adding Syncthing firewall rule",
+			Fn: allowSyncthingFirewallRule},
 		{Name: "Rebuilding Tor config",
 			Fn: func() error {
+				baseCfg := *cfg
+				baseCfg.SyncthingEnabled = false
+				if err := verifySyncthingTorPrerequisite(
+					&baseCfg); err != nil {
+					return err
+				}
 				return RebuildTorConfig(cfg)
 			}},
-		{Name: "Restarting Tor", Fn: restartTor},
+		{Name: "Restarting Tor", Fn: restartTorForSyncthing},
 		{Name: "Starting Syncthing", Fn: startSyncthing},
 		{Name: "Registering backup folder",
 			Fn: registerBackupFolder},
@@ -1054,7 +1067,7 @@ func GetVersion() string {
 
 // setupShellEnvironment writes the admin user's cli wrappers.
 // Both run with NO privilege: they are the recovery path a
-// zero-sudo box leans on when the console itself misbehaves,
+// zero-sudo box leans on when the TUI itself misbehaves,
 // so they must work exactly as the admin user.
 //
 //   - bitcoin-cli authenticates with the node's own RPC

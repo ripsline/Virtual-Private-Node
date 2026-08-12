@@ -133,7 +133,7 @@ func StageBoardAll() error {
 		skip func() bool // true = source legitimately absent
 	}
 	cfg, cfgErr := config.Load()
-	haveSyncthing := cfgErr == nil && cfg.SyncthingInstalled
+	haveSyncthing := cfgErr == nil && cfg.SyncthingEnabled
 	haveWallet := false
 	if network, err := macaroonNetworkDir(); err == nil {
 		_, statErr := os.Stat(paths.LNDMacaroon(network))

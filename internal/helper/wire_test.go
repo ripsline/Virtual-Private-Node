@@ -52,10 +52,10 @@ func TestSameMajor(t *testing.T) {
 // keys its whole lifecycle on step indices existing.
 func TestStepListsNonEmpty(t *testing.T) {
 	lists := map[string][]string{
-		"self-update":       SelfUpdateStepNames("0.7.1"),
-		"package-update":    PackageUpdateStepNames(),
-		"set-p2p-mode":      SetP2PModeStepNames(),
-		"syncthing-install": SyncthingInstallStepNames("2.1.1"),
+		"self-update":           SelfUpdateStepNames("0.7.1"),
+		"package-update":        PackageUpdateStepNames(),
+		"upgrade-p2p-to-hybrid": UpgradeP2PToHybridStepNames(),
+		"syncthing-install":     SyncthingInstallStepNames("2.1.1"),
 	}
 	for name, l := range lists {
 		if len(l) == 0 {

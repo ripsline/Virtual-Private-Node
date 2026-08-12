@@ -25,9 +25,11 @@ var expectedMatrix = map[string][]string{
 		paths.StateLNDTLSCert,
 		paths.StateLNDMacaroon,
 	},
-	helper.VerbSetP2PMode: {
-		paths.StateLNDTLSCert,
+	helper.VerbStageLNDMacaroon: {
 		paths.StateLNDMacaroon,
+	},
+	helper.VerbUpgradeP2PToHybrid: {
+		paths.StateLNDTLSCert,
 	},
 	helper.VerbSyncthingInstall: {
 		paths.StateSyncthingAPIKey,
@@ -74,10 +76,11 @@ func TestFreshnessMatrixMatchesRuledTable(t *testing.T) {
 // Syncthing device ID, the SSH password-auth answer) are
 // deliberately NOT here — they are live-read, with no copy.
 var expectedBoardFiles = map[string]bool{
-	paths.StateBitcoindRPCPass: true,
-	paths.StateLNDTLSCert:      true,
-	paths.StateLNDMacaroon:     true,
-	paths.StateSyncthingAPIKey: true,
+	paths.StateBitcoindRPCPass:      true,
+	paths.StateLNDTLSCert:           true,
+	paths.StateLNDMacaroon:          true,
+	paths.StateSyncthingAPIKey:      true,
+	paths.StateSyncthingWebPassword: true,
 }
 
 // Every fact in the matrix must have a stager, every verb in
@@ -224,21 +227,23 @@ func TestPackageUpdateStepNamesAligned(t *testing.T) {
 		helper.PackageUpdateStepNames())
 }
 
-func TestSetP2PModeStepNamesAligned(t *testing.T) {
+func TestUpgradeP2PToHybridStepNamesAligned(t *testing.T) {
 	cfg := config.Default()
 	cfg.P2PMode = "hybrid"
-	cfg.LNDInstalled = true
-	server := stepNames(installer.P2PUpgradeSteps(cfg, "203.0.113.7"))
-	// The verb reports one extra step after the installer's
-	// three: re-staging the regenerated credentials.
-	server = append(server, "Restaging LND credentials")
-	assertNamesEqual(t, helper.VerbSetP2PMode,
-		server, helper.SetP2PModeStepNames())
+	server := stepNames(installer.UpgradeP2PToHybridSteps(
+		cfg, "203.0.113.7"))
+	// The verb reports two root-side completion steps after the installer
+	// transition: staging only the regenerated TLS certificate, then
+	// publishing authoritative desired state.
+	server = append(server, "Restaging LND TLS certificate")
+	server = append(server, "Publishing node configuration")
+	assertNamesEqual(t, helper.VerbUpgradeP2PToHybrid,
+		server, helper.UpgradeP2PToHybridStepNames())
 }
 
 func TestSyncthingInstallStepNamesAligned(t *testing.T) {
 	cfg := config.Default()
-	cfg.SyncthingInstalled = true
+	cfg.SyncthingEnabled = true
 	steps, _, err := installer.SyncthingInstallSteps(cfg)
 	if err != nil {
 		t.Fatal(err)
@@ -247,6 +252,7 @@ func TestSyncthingInstallStepNamesAligned(t *testing.T) {
 	// The verb reports one extra step: staging the new
 	// component's facts.
 	server = append(server, "Staging Syncthing facts")
+	server = append(server, "Publishing node configuration")
 	assertNamesEqual(t, helper.VerbSyncthingInstall,
 		server, helper.SyncthingInstallStepNames(
 			installer.SyncthingVersionStr()))

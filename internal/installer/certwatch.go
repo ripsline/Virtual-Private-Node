@@ -29,7 +29,7 @@ import (
 // service. Pure — unit-tested.
 func lndCertWatchUnits() (pathUnit, serviceUnit string) {
 	pathUnit = fmt.Sprintf(`[Unit]
-Description=Watch the LND TLS certificate for the node console
+Description=Watch the LND TLS certificate for the node TUI
 
 [Path]
 PathChanged=%s

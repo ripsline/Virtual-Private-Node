@@ -3,8 +3,12 @@
 package installer
 
 import (
+	"bytes"
 	"fmt"
+	"os"
+	"os/exec"
 	"strings"
+	"time"
 
 	"github.com/virtualprivatenode/vpn/internal/config"
 	"github.com/virtualprivatenode/vpn/internal/paths"
@@ -53,7 +57,7 @@ HiddenServicePort 8080 127.0.0.1:8080
 `)
 	}
 
-	if cfg.SyncthingInstalled {
+	if cfg.SyncthingEnabled {
 		b.WriteString(`
 # Syncthing web UI (Tor only, HTTP)
 HiddenServiceDir /var/lib/tor/syncthing/
@@ -77,13 +81,123 @@ func RebuildTorConfig(cfg *config.AppConfig) error {
 	return system.SudoRun("chown", "root:debian-tor", paths.Torrc)
 }
 
-func restartTor() error {
-	if err := system.SudoRun("systemctl", "enable", "tor"); err != nil {
+var (
+	torBinaryPresentForAddon = func() bool {
+		_, err := exec.LookPath("tor")
+		return err == nil
+	}
+	torServiceEnabledForAddon = func() bool {
+		return system.RunSilent(
+			"systemctl", "is-enabled", "--quiet", "tor") == nil
+	}
+	torServiceActiveForAddon = func() bool {
+		return system.IsServiceActive("tor")
+	}
+	readTorConfigForAddon      = os.ReadFile
+	readSyncthingOnionForAddon = os.ReadFile
+	sleepForTorAddon           = time.Sleep
+	runTorServiceAction        = func(action string) error {
+		return system.SudoRun("systemctl", action, "tor")
+	}
+)
+
+// enableAndRestartTor belongs to initial installation. That operation owns
+// establishing Tor's boot persistence as part of the base node.
+func enableAndRestartTor() error {
+	if err := runTorServiceAction("enable"); err != nil {
 		return err
 	}
-	return system.SudoRun("systemctl", "restart", "tor")
+	return restartTor()
 }
 
-// RestartTor is the exported wrapper for use by the welcome
-// package during install rollback.
-func RestartTor() error { return restartTor() }
+// restartTor reloads the project-owned canonical torrc without changing the
+// unit's enablement policy. Post-install add-ons may call this only after
+// proving the required base Tor state through the prerequisite below.
+func restartTor() error {
+	return runTorServiceAction("restart")
+}
+
+// verifySyncthingTorPrerequisite refuses add-on mutation unless Tor is the
+// installed, enabled, active base service and its project-owned torrc still
+// matches the authoritative configuration. Syncthing does not silently repair
+// a disabled service or overwrite unexplained base-config divergence.
+func verifySyncthingTorPrerequisite(cfg *config.AppConfig) error {
+	if !torBinaryPresentForAddon() {
+		return fmt.Errorf("Tor is not installed — refusing Syncthing installation")
+	}
+	if !torServiceEnabledForAddon() {
+		return fmt.Errorf("Tor is not enabled — refusing Syncthing installation")
+	}
+	if !torServiceActiveForAddon() {
+		return fmt.Errorf("Tor is not active — refusing Syncthing installation")
+	}
+	current, err := readTorConfigForAddon(paths.Torrc)
+	if err != nil {
+		return fmt.Errorf("read current Tor configuration: %w", err)
+	}
+	if !bytes.Equal(current, []byte(BuildTorConfig(cfg))) {
+		return fmt.Errorf(
+			"Tor configuration does not match the expected base node — " +
+				"refusing Syncthing installation")
+	}
+	return nil
+}
+
+// VerifySyncthingInstallPrerequisites is the root helper's before-mutation
+// gate. UFW and Tor must already be healthy base-node facilities; the optional
+// add-on never installs, enables, or globally repairs either one.
+func VerifySyncthingInstallPrerequisites(cfg *config.AppConfig) error {
+	if err := requireActiveUFW(); err != nil {
+		return err
+	}
+	return verifySyncthingTorPrerequisite(cfg)
+}
+
+func validV3OnionHostname(hostname string) bool {
+	const suffix = ".onion"
+	if len(hostname) != 56+len(suffix) ||
+		!strings.HasSuffix(hostname, suffix) {
+		return false
+	}
+	for _, c := range strings.TrimSuffix(hostname, suffix) {
+		if (c < 'a' || c > 'z') && (c < '2' || c > '7') {
+			return false
+		}
+	}
+	return true
+}
+
+func waitForSyncthingOnion() error {
+	var lastErr error
+	for i := 0; i < 60; i++ {
+		data, err := readSyncthingOnionForAddon(
+			paths.TorSyncthingHostname)
+		if err == nil {
+			hostname := strings.TrimSpace(string(data))
+			if validV3OnionHostname(hostname) {
+				return nil
+			}
+			lastErr = fmt.Errorf(
+				"invalid Syncthing onion hostname %q", hostname)
+		} else {
+			lastErr = err
+		}
+		sleepForTorAddon(time.Second)
+	}
+	return fmt.Errorf(
+		"Syncthing onion hostname was not created after Tor restart: %w",
+		lastErr)
+}
+
+// restartTorForSyncthing applies the already-written canonical configuration,
+// proves Tor returned active, and waits for the new hidden-service identity.
+// It deliberately does not enable Tor.
+func restartTorForSyncthing() error {
+	if err := restartTor(); err != nil {
+		return err
+	}
+	if !torServiceActiveForAddon() {
+		return fmt.Errorf("Tor is not active after Syncthing configuration restart")
+	}
+	return waitForSyncthingOnion()
+}

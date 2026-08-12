@@ -47,7 +47,7 @@ import (
 // paths (same rationale as the HiddenServiceDir strings in tor.go):
 // the control port matches the generated torrc (BuildTorConfig — note
 // the ControlPort stanza is currently inside the HasLND() branch;
-// Run() forces LNDInstalled=true before buildSteps, so it is always
+// LND is mandatory in this install generation, so this gate is always
 // present on the install path), and the cookie path is Debian's
 // packaged tor.service runtime layout.
 const (

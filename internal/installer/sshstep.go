@@ -24,14 +24,13 @@ import (
 	"os"
 	"strings"
 
-	"github.com/virtualprivatenode/vpn/internal/config"
 	"github.com/virtualprivatenode/vpn/internal/logger"
 	"github.com/virtualprivatenode/vpn/internal/paths"
 	"github.com/virtualprivatenode/vpn/internal/system"
 )
 
 // installSSHHardening is the ssh.harden step.
-func installSSHHardening(cfg *config.AppConfig) error {
+func installSSHHardening() error {
 	// 1. Observe — seconds before the write, same process.
 	passwordAuth := ""
 	obs, err := ObserveSSHState()
@@ -47,17 +46,6 @@ func installSSHHardening(cfg *config.AppConfig) error {
 			passwordAuth = "yes"
 		} else {
 			passwordAuth = "no"
-		}
-		// Reality wins over the in-memory observation copied at preflight if
-		// sshd changed during the run.
-		disabled := !obs.PasswordAuth
-		if cfg.SSHPasswordAuthDisabled != disabled {
-			logger.Install(
-				"config said ssh_password_auth_disabled=%v but "+
-					"sshd's effective state is %v — config corrected "+
-					"from observation",
-				cfg.SSHPasswordAuthDisabled, disabled)
-			cfg.SSHPasswordAuthDisabled = disabled
 		}
 	}
 

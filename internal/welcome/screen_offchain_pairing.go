@@ -152,7 +152,7 @@ func (s *PairingScreen) View(
 	cfg := s.ctx.Cfg
 	status := s.ctx.Status
 
-	if !cfg.HasLND() || !cfg.WalletExists() {
+	if !cfg.HasLND() || !s.ctx.walletExists() {
 		p := newPane(w)
 		p.title(theme.Lightning, "⚡ Zeus Wallet")
 		p.dim("Create LND wallet first")

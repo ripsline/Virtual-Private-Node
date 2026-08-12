@@ -436,7 +436,7 @@ func (s *SendScreen) viewInput(w, h int) string {
 	p.title(theme.Header, "⚡ Send Payment")
 
 	if !s.ctx.Cfg.HasLND() ||
-		!s.ctx.Cfg.WalletExists() {
+		!s.ctx.walletExists() {
 		p.dim("Create LND wallet to send.")
 		return p.render()
 	}

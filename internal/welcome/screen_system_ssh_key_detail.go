@@ -46,7 +46,9 @@ func NewSSHKeyDetailScreen(
 
 // ── Screen interface ────────────────────────────────────
 
-func (s *SSHKeyDetailScreen) Init() tea.Cmd { return nil }
+func (s *SSHKeyDetailScreen) Init() tea.Cmd {
+	return fetchSSHPasswordAuthCmd()
+}
 
 func (s *SSHKeyDetailScreen) HandleKey(
 	keyStr string, msg tea.KeyPressMsg,
@@ -68,6 +70,8 @@ func (s *SSHKeyDetailScreen) HandleMsg(
 	msg tea.Msg,
 ) (Screen, tea.Cmd) {
 	switch msg := msg.(type) {
+	case tabActivatedMsg:
+		return s, fetchSSHPasswordAuthCmd()
 	case sshKeyRemoveMsg:
 		if msg.err != nil {
 			s.removeErr = msg.err.Error()
@@ -180,7 +184,8 @@ func (s *SSHKeyDetailScreen) handleConfirmKey(
 	// Hard block: only Go Back is reachable. Clamp
 	// confirmIdx and refuse right-arrow movement.
 	passwordAuthEnabled :=
-		!s.ctx.Cfg.SSHPasswordAuthDisabled
+		s.ctx.State.SSHPasswordAuthKnown &&
+			!s.ctx.State.SSHPasswordAuthDisabled
 	hardBlock := s.keyCount <= 1 && !passwordAuthEnabled
 	maxIdx := 1
 	if hardBlock {
@@ -257,7 +262,8 @@ func (s *SSHKeyDetailScreen) viewConfirm(
 	// actually available. Invariant: never let the
 	// system end up with zero auth methods.
 	passwordAuthEnabled :=
-		!s.ctx.Cfg.SSHPasswordAuthDisabled
+		s.ctx.State.SSHPasswordAuthKnown &&
+			!s.ctx.State.SSHPasswordAuthDisabled
 	isLastKey := s.keyCount <= 1
 	hardBlock := isLastKey && !passwordAuthEnabled
 

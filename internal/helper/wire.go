@@ -10,8 +10,8 @@
 //   - the client the TUI uses to request privileged operations
 //     over the helper's unix socket (client.go);
 //   - the staging-board reader and writer: the root-written
-//     files under /var/lib/vpn/state that carry privileged
-//     facts (onion hostnames, staged credentials) to the
+//     files under /var/lib/vpn/state that carry deliberately staged
+//     credentials and fixed facts to the
 //     admin user without any privileged code running on the
 //     read path (board.go).
 //
@@ -41,8 +41,11 @@ const (
 	VerbStageWalletPassword  = "stage-wallet-password"
 	VerbRemoveWalletPassword = "remove-wallet-password"
 	VerbStageLNDCredentials  = "stage-lnd-credentials"
+	VerbStageLNDMacaroon     = "stage-lnd-macaroon"
 	VerbRebuildSSHConfig     = "rebuild-ssh-config"
-	VerbRebuildTorConfig     = "rebuild-tor-config"
+	// VerifyAdminLogin checks live journal evidence and may clear the
+	// root-private pending marker. It accepts no caller-chosen state.
+	VerbVerifyAdminLogin = "verify-admin-login"
 
 	// Read-only verbs: no parameters, no mutation, a typed
 	// result. They exist for display facts the TUI needs
@@ -51,15 +54,17 @@ const (
 	// operation of ours — keeping a copy of such a fact
 	// would risk rendering it confidently wrong, so no copy
 	// exists and the screens ask here instead.
-	VerbReadNodeAddresses = "read-node-addresses"
-	VerbReadSSHAuth       = "read-ssh-auth"
+	VerbReadNodeAddresses        = "read-node-addresses"
+	VerbReadSSHAuth              = "read-ssh-auth"
+	VerbReadWalletState          = "read-wallet-state"
+	VerbReadKeyVerificationState = "read-key-verification-state"
 
 	// Streaming verbs: step progress events precede the
 	// terminator, and feed the TUI's step renderer.
-	VerbPackageUpdate    = "package-update"
-	VerbSelfUpdate       = "self-update"
-	VerbSetP2PMode       = "set-p2p-mode"
-	VerbSyncthingInstall = "syncthing-install"
+	VerbPackageUpdate      = "package-update"
+	VerbSelfUpdate         = "self-update"
+	VerbUpgradeP2PToHybrid = "upgrade-p2p-to-hybrid"
+	VerbSyncthingInstall   = "syncthing-install"
 )
 
 // Request is the single line a client writes after connecting.
@@ -146,35 +151,12 @@ type RebuildSSHConfigParams struct {
 	PasswordAuthDisabled bool `json:"password_auth_disabled"`
 }
 
-// RebuildTorConfigParams: rewrite torrc from the root-side
-// template and restart Tor. The flags select which of the
-// template's fixed hidden-service blocks are present — no
-// caller-supplied torrc content, ever.
-type RebuildTorConfigParams struct {
-	LND       bool `json:"lnd"`
-	Syncthing bool `json:"syncthing"`
-}
-
-// SetP2PModeParams: switch LND between tor-only and hybrid
-// P2P. For "hybrid" the helper derives the box's public IPv4
-// itself (kernel routing table) — the client cannot supply an
-// address.
-type SetP2PModeParams struct {
-	Mode string `json:"mode"` // "tor" or "hybrid"
-}
-
 // SelfUpdateParams: update the vpn binary to a release version.
 // Validated root-side: strict version shape, and same-major
 // only (a cross-major release requires reading its release
 // notes; the helper refuses it no matter what a client asks).
 type SelfUpdateParams struct {
 	Version string `json:"version"`
-}
-
-// SyncthingInstallResult returns the generated web-UI password
-// for the operator's config.
-type SyncthingInstallResult struct {
-	Password string `json:"password"`
 }
 
 // NodeAddressesResult is the read-node-addresses answer: the
@@ -199,6 +181,26 @@ type NodeAddressesResult struct {
 // verb error as "unavailable" and refuse the risky action.
 type SSHAuthResult struct {
 	PasswordAuthEnabled bool `json:"password_auth_enabled"`
+}
+
+// WalletStateResult is the independent live wallet observation. It is not
+// coupled to any private workflow marker, so a marker read failure cannot make
+// an otherwise readable wallet appear unknown.
+type WalletStateResult struct {
+	WalletExists bool `json:"wallet_exists"`
+}
+
+// KeyVerificationStateResult is the independent root-private workflow-marker
+// observation. Wallet availability never depends on this read succeeding.
+type KeyVerificationStateResult struct {
+	Pending bool `json:"pending"`
+}
+
+// VerifyAdminLoginResult reports the private marker state after the helper
+// checked current sshd journal evidence and, when verified, cleared it.
+type VerifyAdminLoginResult struct {
+	Pending  bool `json:"pending"`
+	Verified bool `json:"verified"`
 }
 
 // ── Version gate (shared by both sides) ──────────────────
@@ -256,13 +258,16 @@ func PackageUpdateStepNames() []string {
 	}
 }
 
-// SetP2PModeStepNames mirrors the server's P2P-mode steps.
-func SetP2PModeStepNames() []string {
+// UpgradeP2PToHybridStepNames mirrors the server's one-way P2P transition.
+func UpgradeP2PToHybridStepNames() []string {
 	return []string{
+		"Checking active firewall",
 		"Updating LND config",
-		"Updating firewall",
+		"Adding hybrid P2P firewall rules",
 		"Restarting LND",
-		"Restaging LND credentials",
+		"Verifying LND TLS IP certificate",
+		"Restaging LND TLS certificate",
+		"Publishing node configuration",
 	}
 }
 
@@ -276,12 +281,13 @@ func SyncthingInstallStepNames(version string) []string {
 		"Creating Syncthing directories",
 		"Creating Syncthing service",
 		"Configuring Syncthing authentication",
-		"Configuring firewall",
+		"Adding Syncthing firewall rule",
 		"Rebuilding Tor config",
 		"Restarting Tor",
 		"Starting Syncthing",
 		"Registering backup folder",
 		"Setting up channel backup watcher",
 		"Staging Syncthing facts",
+		"Publishing node configuration",
 	}
 }

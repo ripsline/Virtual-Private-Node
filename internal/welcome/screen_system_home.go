@@ -196,7 +196,7 @@ func (s *SystemHomeScreen) HandleKey(
 	case "u":
 		if s.focusZone == sysHomeZoneServices &&
 			s.svcName(s.svcCursor) == "lnd" &&
-			s.ctx.Cfg.WalletExists() {
+			s.ctx.walletExists() {
 			screen := NewAutoUnlockScreen(s.ctx)
 			label := "Auto-Unlock"
 			if s.ctx.Cfg.AutoUnlock {
@@ -431,7 +431,7 @@ func (s *SystemHomeScreen) View(
 					theme.Dim.Render(" p2p")
 			}
 			if name == "lnd" &&
-				s.ctx.Cfg.WalletExists() {
+				s.ctx.walletExists() {
 				uLabel := " unlock"
 				if s.ctx.Cfg.AutoUnlock {
 					uLabel = " lock"
@@ -692,7 +692,7 @@ func (s *SystemHomeScreen) serviceBindings() []key.Binding {
 			bind("p", "p2p", "p"))
 	}
 	if s.svcName(s.svcCursor) == "lnd" &&
-		s.ctx.Cfg.WalletExists() {
+		s.ctx.walletExists() {
 		uHelp := "unlock"
 		if s.ctx.Cfg.AutoUnlock {
 			uHelp = "lock"

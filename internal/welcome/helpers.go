@@ -666,6 +666,17 @@ func renderWalletPrompt(
 	return strings.Join(out, "\n")
 }
 
+func renderWalletStateUnavailable(w, h int) string {
+	p := newPane(w)
+	p.title(theme.Warning, "Wallet State Unavailable")
+	p.warn("The TUI could not verify whether an LND wallet exists.")
+	p.blank()
+	p.dim("Wallet actions are disabled rather than guessing.")
+	p.dim("Check: journalctl -u vpn-helperd")
+	return p.renderWithBottomButtons(
+		[]string{"Unavailable"}, 0, false, h)
+}
+
 // renderWaitingForLND renders a vertically and
 // horizontally centered "Waiting for LND..." message.
 func renderWaitingForLND(w, h int) string {

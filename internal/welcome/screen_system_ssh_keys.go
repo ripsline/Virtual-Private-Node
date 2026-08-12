@@ -91,7 +91,9 @@ func NewSSHKeysScreen(
 	}
 }
 
-func (s *SSHKeysScreen) Init() tea.Cmd { return nil }
+func (s *SSHKeysScreen) Init() tea.Cmd {
+	return tea.Batch(listSSHKeysCmd(), fetchSSHPasswordAuthCmd())
+}
 
 func (s *SSHKeysScreen) HandleKey(
 	keyStr string, msg tea.KeyPressMsg,
@@ -182,6 +184,9 @@ func (s *SSHKeysScreen) HandleMsg(
 	msg tea.Msg,
 ) (Screen, tea.Cmd) {
 	switch msg := msg.(type) {
+	case tabActivatedMsg:
+		return s, tea.Batch(
+			listSSHKeysCmd(), fetchSSHPasswordAuthCmd())
 	case sshKeysListMsg:
 		// Refresh from child-screen success. Don't
 		// touch focusZone — the user's cursor stays
@@ -300,21 +305,16 @@ func (s *SSHKeysScreen) viewList(w, h int) string {
 			s.btnIdx, onButtons, w))
 	headerLines = append(headerLines, "")
 
-	// Status line: shows THIS APP'S recorded password
-	// auth setting, and says so — sshd's effective
-	// config can diverge (e.g. a provider's cloud-init
-	// drop-in that disabled password auth before this
-	// app ever ran). The guard that actually protects
-	// key removal derives the live state from sshd
-	// itself; this label must not claim more than the
-	// app can verify.
+	// The status comes from sshd's effective configuration.
 	pwAuthLabel := theme.Success.Render("enabled")
-	if s.ctx.Cfg.SSHPasswordAuthDisabled {
+	if !s.ctx.State.SSHPasswordAuthKnown {
+		pwAuthLabel = theme.Warning.Render("unavailable")
+	} else if s.ctx.State.SSHPasswordAuthDisabled {
 		pwAuthLabel = theme.Warning.Render("disabled")
 	}
 	headerLines = append(headerLines,
 		" "+theme.Label.Render(
-			"Password Auth (app setting): ")+
+			"Effective Password Auth: ")+
 			pwAuthLabel)
 	headerLines = append(headerLines, "")
 

@@ -3,8 +3,11 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"os"
+	"os/user"
+	"strconv"
 
 	"github.com/virtualprivatenode/vpn/internal/config"
 	"github.com/virtualprivatenode/vpn/internal/helperd"
@@ -17,7 +20,7 @@ var version = "dev"
 
 // Explicit dispatch (IA-1-8's fix): what the binary does is
 // decided by what the operator TYPED, never by sniffing box
-// state. `vpn` is the node console; `sudo vpn install` is the
+// state. `vpn` is the node TUI; `sudo vpn install` is the
 // installer; nothing infers one from the other.
 func main() {
 	installer.SetVersion(version)
@@ -95,23 +98,44 @@ func main() {
 	}
 }
 
-// runConsole is the bare `vpn` path: the node console for the
+var errWrongTUIIdentity = errors.New("wrong effective identity for node TUI")
+
+func loadConsoleConfig(
+	euid int,
+	lookup func(string) (*user.User, error),
+	load func() (*config.AppConfig, error),
+) (*config.AppConfig, error) {
+	if euid == 0 {
+		return nil, errWrongTUIIdentity
+	}
+	u, err := lookup(paths.AdminUser)
+	if err != nil {
+		return nil, fmt.Errorf("%w: resolve %q identity: %v",
+			errWrongTUIIdentity, paths.AdminUser, err)
+	}
+	uid, err := strconv.Atoi(u.Uid)
+	if err != nil || uid == 0 || euid != uid {
+		return nil, errWrongTUIIdentity
+	}
+	return load()
+}
+
+// runConsole is the bare `vpn` path: the node TUI for the
 // admin user. Fail-stop on an unloadable config (IA-1-C1): the
 // error names the file and the reason, and Default() is NEVER
 // substituted — a TUI running on defaults would render a
 // mainnet node's screens over a testnet4 node's services and
 // write the wrong answers back on its first save.
 func runConsole() {
-	if os.Geteuid() == 0 {
+	cfg, err := loadConsoleConfig(os.Geteuid(), user.Lookup, config.Load)
+	if errors.Is(err, errWrongTUIIdentity) {
 		fmt.Fprintf(os.Stderr,
-			"  The node console runs as the %q user, not root.\n"+
-				"  Connect with: ssh %s@<your-server-ip>\n"+
+			"  The node TUI runs as the %q user.\n"+
+				"  Connect with: ssh %s@<server-address>\n"+
 				"  (To install or resume an interrupted install: sudo vpn install)\n",
 			paths.AdminUser, paths.AdminUser)
 		os.Exit(1)
 	}
-
-	cfg, err := config.Load()
 	if err != nil {
 		if os.IsNotExist(err) {
 			fmt.Fprintf(os.Stderr,
@@ -128,7 +152,14 @@ func runConsole() {
 		}
 		os.Exit(1)
 	}
-	welcome.Show(cfg, version)
+	prefs, err := config.LoadPreferences()
+	if err != nil {
+		fmt.Fprintf(os.Stderr,
+			"  Warning: TUI preferences are unreadable (%v); using dark theme for this session.\n",
+			err)
+		prefs = config.DefaultPreferences()
+	}
+	welcome.Show(cfg, prefs, version)
 }
 
 type command int
@@ -206,7 +237,7 @@ func usage() string {
 	return `Virtual Private Node
 
 Usage:
-  vpn                open the node console (run as the ` +
+  vpn                open the node TUI (run as the ` +
 		paths.AdminUser + ` user)
   sudo vpn install   start a fresh install or resume a recognized interruption
       --testnet4     use testnet4 instead of mainnet

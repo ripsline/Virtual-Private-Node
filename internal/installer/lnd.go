@@ -7,6 +7,7 @@ import (
 	"crypto/x509"
 	"encoding/pem"
 	"fmt"
+	"net"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -239,15 +240,8 @@ func readRequiredLNDRESTOnion() (string, error) {
 }
 
 func validateLNDRESTOnion(onion string) error {
-	const suffix = ".onion"
-	if len(onion) != 56+len(suffix) ||
-		!strings.HasSuffix(onion, suffix) {
+	if !validV3OnionHostname(onion) {
 		return fmt.Errorf("invalid LND REST onion hostname %q", onion)
-	}
-	for _, c := range strings.TrimSuffix(onion, suffix) {
-		if (c < 'a' || c > 'z') && (c < '2' || c > '7') {
-			return fmt.Errorf("invalid LND REST onion hostname %q", onion)
-		}
 	}
 	return nil
 }
@@ -302,6 +296,60 @@ func verifyCertificateDNSName(certPEM []byte, name string) error {
 	}
 	if foundCertificate {
 		return fmt.Errorf("DNS SAN %q is missing", name)
+	}
+	return fmt.Errorf("no certificate PEM block found")
+}
+
+// verifyLNDTLSIPSAN waits for tlsautorefresh to replace LND's certificate
+// after the hybrid-P2P tlsextraip change and proves that the exact public IP
+// is present before the helper stages the certificate or publishes the mode.
+func verifyLNDTLSIPSAN(publicIPv4 string) error {
+	var lastErr error
+	for i := 0; i < 60; i++ {
+		certPEM, readErr := os.ReadFile(paths.LNDTLSCert)
+		if readErr == nil {
+			lastErr = verifyCertificateIPAddress(certPEM, publicIPv4)
+			if lastErr == nil {
+				return nil
+			}
+		} else {
+			lastErr = readErr
+		}
+		time.Sleep(2 * time.Second)
+	}
+	return fmt.Errorf(
+		"LND TLS certificate does not contain IP SAN %s: %w",
+		publicIPv4, lastErr)
+}
+
+func verifyCertificateIPAddress(certPEM []byte, address string) error {
+	want := net.ParseIP(address)
+	if want == nil {
+		return fmt.Errorf("invalid IP address %q", address)
+	}
+	foundCertificate := false
+	for len(certPEM) > 0 {
+		var block *pem.Block
+		block, certPEM = pem.Decode(certPEM)
+		if block == nil {
+			break
+		}
+		if block.Type != "CERTIFICATE" {
+			continue
+		}
+		foundCertificate = true
+		cert, err := x509.ParseCertificate(block.Bytes)
+		if err != nil {
+			return fmt.Errorf("parse LND TLS certificate: %w", err)
+		}
+		for _, got := range cert.IPAddresses {
+			if got.Equal(want) {
+				return nil
+			}
+		}
+	}
+	if foundCertificate {
+		return fmt.Errorf("IP SAN %q is missing", address)
 	}
 	return fmt.Errorf("no certificate PEM block found")
 }
@@ -392,7 +440,7 @@ func writeLNDServiceFromConfig(cfg *config.AppConfig, username string) error {
 		logger.Install(
 			"auto_unlock is enabled in the config but %s is "+
 				"missing — writing the LND unit without the unlock "+
-				"flag; re-enable auto-unlock from the node console",
+				"flag; re-enable auto-unlock from the node TUI",
 			paths.LNDWalletPassword)
 	}
 	return writeLNDService(username, withUnlock)

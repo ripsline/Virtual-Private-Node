@@ -17,10 +17,9 @@ import (
 // ── The staging board ────────────────────────────────────
 //
 // /var/lib/vpn/state holds one file per privileged FACT the TUI
-// needs to display or use: onion hostnames, the staged bitcoind
-// RPC password, copies of LND's TLS certificate and admin
-// macaroon, Syncthing's API key and device ID, and the observed
-// SSH password-auth state. Root writes them; the admin user
+// needs to use: the staged bitcoind RPC password, copies of LND's TLS
+// certificate and admin macaroon, Syncthing's API key, and the generated
+// Syncthing web password. Root writes them; the admin user
 // (group vpn) reads them; nothing else can see them.
 //
 // The contract that keeps the board trustworthy:
@@ -34,7 +33,7 @@ import (
 //     the feature renders as unavailable with a logged reason,
 //     not a stale or default value. Staleness must surface as
 //     visible breakage.
-//   - nothing wallet-critical lives here. The seed, wallet.db,
+//   - nothing wallet-authoritative lives here. The seed, wallet.db,
 //     and the auto-unlock password file are NOT board facts;
 //     the admin macaroon copy is a revocable credential the
 //     admin user needs to operate the node (it is the same

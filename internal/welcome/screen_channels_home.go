@@ -74,7 +74,7 @@ func (s *ChannelsHomeScreen) HandleKey(
 	case "right":
 		if s.focusZone == chanHomeZoneButtons &&
 			s.ctx.Cfg.HasLND() &&
-			s.ctx.Cfg.WalletExists() &&
+			s.ctx.walletExists() &&
 			s.btnIdx < 2 {
 			s.btnIdx++
 		}
@@ -121,7 +121,10 @@ func (s *ChannelsHomeScreen) HandleKey(
 		return s, emitFocusSidebar
 	case "enter":
 		// No wallet → trigger wallet creation flow
-		if !s.ctx.Cfg.WalletExists() {
+		if !s.ctx.walletKnown() {
+			return s, fetchWalletStateCmd()
+		}
+		if !s.ctx.walletExists() {
 			screen := NewWalletCreateScreen(s.ctx)
 			return s, func() tea.Msg {
 				return openTabMsg{
@@ -183,7 +186,7 @@ func (s *ChannelsHomeScreen) openChannel() (
 ) {
 	cfg := s.ctx.Cfg
 	if s.ctx.LndClient == nil || !cfg.HasLND() ||
-		!cfg.WalletExists() {
+		!s.ctx.walletExists() {
 		return s, nil
 	}
 	// Zero balance: show educational message
@@ -293,7 +296,10 @@ func (s *ChannelsHomeScreen) View(
 	cfg := s.ctx.Cfg
 	status := s.ctx.Status
 
-	if !cfg.HasLND() || !cfg.WalletExists() {
+	if !s.ctx.walletKnown() {
+		return renderWalletStateUnavailable(w, h)
+	}
+	if !cfg.HasLND() || !s.ctx.walletExists() {
 		return renderWalletPrompt(
 			w, h, s.ctx.ContentFocused)
 	}
@@ -510,7 +516,7 @@ func (s *ChannelsHomeScreen) View(
 // ── HelpBindings ────────────────────────────────────────
 
 func (s *ChannelsHomeScreen) HelpBindings() []key.Binding {
-	if !s.ctx.Cfg.WalletExists() {
+	if !s.ctx.walletExists() {
 		return []key.Binding{
 			kEnterCreateWallet,
 			kSidebar,

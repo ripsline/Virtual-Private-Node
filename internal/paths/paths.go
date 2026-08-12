@@ -25,7 +25,7 @@ const (
 	// unreadable reports the feature unavailable and logs
 	// why, never guesses.
 	//
-	// Only facts consumed at MACHINE cadence (per RPC call,
+	// Mostly facts consumed at MACHINE cadence (per RPC call,
 	// per dial) live here — credentials, which fail closed at
 	// the moment of use when stale, so a stale copy cannot
 	// hide. Display facts consumed at HUMAN cadence (onion
@@ -33,19 +33,18 @@ const (
 	// password-auth answer) have no copy at all: a stale copy
 	// of those would render confidently wrong with no failure
 	// to catch it, so the TUI reads them live through the
-	// helper's read-only verbs instead. Every board file
+	// helper's read-only verbs instead. The Syncthing web password is the
+	// one human-cadence exception: Syncthing retains only its hash, so the
+	// install operation stages the generated plaintext once for later display.
+	// Every board file
 	// declares how it stays fresh in the helper's freshness
 	// table (internal/helperd/matrix.go), and a unit test
 	// fails on any file without a declaration.
 	//
-	// The board lives under /var/lib/vpn — NOT under /etc/vpn
-	// — deliberately: /etc/vpn is owned by the admin user (the
-	// TUI writes config.json there), and a directory owner can
-	// replace a subdirectory with a symlink. Root-side board
-	// writes under an admin-owned parent would hand a
-	// compromised admin account a "make root chown an
-	// arbitrary directory" primitive. Every ancestor of the
-	// board is root-owned, so that class cannot arise.
+	// The board lives under /var/lib/vpn rather than /etc/vpn so desired
+	// configuration and staged credentials have separate, auditable
+	// authorities. Both trees have root-controlled ancestors; the TUI can read
+	// the specific group-readable files but cannot replace either directory.
 	VarLibVPN = "/var/lib/vpn"
 	StateDir  = VarLibVPN + "/state"
 
@@ -61,6 +60,7 @@ const (
 	LayoutVersion         = PrivateDir + "/layout-version"
 	InstallStateFile      = PrivateDir + "/install-state.json"
 	PasswordPendingMarker = PrivateDir + "/password-pending"
+	KeyVerificationMarker = PrivateDir + "/key-verification-pending"
 
 	// InstallBootstrap* are short-lived, root-owned indications that
 	// lifecycle authority is being published. The immutable initial install
@@ -87,10 +87,12 @@ const (
 	OldServiceLayoutMark = VarLibVPN + "/service-layout-v1"
 
 	// Staging board files. One fact per file.
-	StateBitcoindRPCPass = StateDir + "/bitcoind-rpc.pass"
-	StateLNDTLSCert      = StateDir + "/lnd-tls.cert"
-	StateLNDMacaroon     = StateDir + "/lnd-admin.macaroon"
-	StateSyncthingAPIKey = StateDir + "/syncthing-api-key"
+	StateBitcoindRPCPass      = StateDir + "/bitcoind-rpc.pass"
+	StateLNDTLSCert           = StateDir + "/lnd-tls.cert"
+	StateLNDMacaroon          = StateDir + "/lnd-admin.macaroon"
+	StateSyncthingAPIKey      = StateDir + "/syncthing-api-key"
+	StateSyncthingWebPassword = StateDir +
+		"/syncthing-web-password"
 
 	LNDConf = "/etc/lnd/lnd.conf"
 	LNDDir  = "/etc/lnd"
@@ -114,7 +116,7 @@ const (
 // that disables IPv6, loopback is always dialed by address.
 const (
 	// LNDGRPCEndpoint is LND's gRPC server. Dialed by the
-	// console's gRPC client, the wallet-creation lncli
+	// TUI's gRPC client, the wallet-creation lncli
 	// invocation, and the shell's lncli wrapper.
 	LNDGRPCEndpoint = "127.0.0.1:10009"
 
@@ -167,6 +169,11 @@ const (
 // LNDMacaroon returns the path to the admin macaroon for a given network.
 func LNDMacaroon(network string) string {
 	return fmt.Sprintf("/var/lib/lnd/data/chain/bitcoin/%s/admin.macaroon", network)
+}
+
+// LNDWalletDB returns LND's authoritative wallet database path for a network.
+func LNDWalletDB(network string) string {
+	return fmt.Sprintf("/var/lib/lnd/data/chain/bitcoin/%s/wallet.db", network)
 }
 
 // ChannelBackup returns the path to the channel backup for a given network.
@@ -278,7 +285,8 @@ const (
 
 	// BinaryPath is where the installer places the running
 	// binary (and where self-update installs new ones).
-	BinaryPath = "/usr/local/bin/vpn"
+	BinaryPath      = "/usr/local/bin/vpn"
+	SyncthingBinary = "/usr/local/bin/syncthing"
 )
 
 // ── Cache ────────────────────────────────────────────────

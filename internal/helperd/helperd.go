@@ -342,6 +342,9 @@ type verbCtx struct {
 // journal keeps the record; only the progress reporting is
 // lost.
 func (ctx *verbCtx) emitStep(i int) {
+	if ctx.conn == nil {
+		return
+	}
 	writeEvent(ctx.conn, &helper.Event{Event: "step", Index: i})
 }
 

@@ -95,8 +95,7 @@ func (s *SyncthingPairScreen) HandleMsg(
 			s.step = syncPairStepInput
 			return s, nil
 		}
-		// Success — Model already mutated config.
-		// Move to post-pair instructions.
+		// Success — the model refreshes the daemon-observed list.
 		s.step = syncPairStepPostPair
 		s.btnIdx = 0
 		s.pairError = ""
@@ -257,6 +256,10 @@ func (s *SyncthingPairScreen) submitPair() (
 	Screen, tea.Cmd,
 ) {
 	deviceID := syncthingIDValue(s.input)
+	if !s.ctx.State.SyncthingDevicesKnown {
+		s.pairError = "Current device list unavailable. Reopen Syncthing and try again."
+		return s, nil
+	}
 	if deviceID == "" {
 		s.pairError = "Paste a Device ID"
 		return s, nil
@@ -277,7 +280,7 @@ func (s *SyncthingPairScreen) submitPair() (
 		}
 	}
 	// Check for duplicate
-	for _, d := range s.ctx.Cfg.SyncthingDevices {
+	for _, d := range s.ctx.State.SyncthingDevices {
 		if d.DeviceID == deviceID {
 			s.pairError =
 				"Device already paired."

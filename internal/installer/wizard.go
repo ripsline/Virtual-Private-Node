@@ -111,7 +111,7 @@ type wizardModel struct {
 	stepsDone, failed bool
 
 	// openConsole records the operator's CHOICE on the done
-	// screen: Enter = open the node console (handoff), ctrl+c
+	// screen: Enter = open the node TUI (handoff), ctrl+c
 	// = just exit. The live run caught the two paths behaving
 	// identically — the hint promised an exit that handed off
 	// anyway.
@@ -377,7 +377,7 @@ func (m wizardModel) viewAccess(p *wizPane) {
 	p.blank()
 	p.text("This node's admin user is '" + paths.AdminUser +
 		"'. Every SSH login as " + paths.AdminUser +
-		" opens the node console.")
+		" opens the node TUI.")
 	p.blank()
 
 	if len(m.keys) == 0 {
@@ -912,12 +912,12 @@ func (m wizardModel) viewDone(p *wizPane) {
 		"terminal:")
 	p.line(" " + theme.Action.Render("   "+sshTarget()))
 	p.blank()
-	p.text("Press Enter to open the node console as user '" +
+	p.text("Press Enter to open the node TUI as user '" +
 		paths.AdminUser + "' on this terminal, or run the " +
 		"command above from a SECOND terminal first to " +
 		"verify your access.")
 	p.blank()
-	p.hint("enter: open the node console   ctrl+c: exit to " +
+	p.hint("enter: open the node TUI   ctrl+c: exit to " +
 		"your shell (your install is saved; connect any time " +
 		"with the command above)")
 }
@@ -1048,7 +1048,9 @@ func runInstallWizard(
 	if err != nil {
 		return RunResult{}, false, err
 	}
-	theme.Init(cfg.Theme != "light")
+	// Installation starts with the built-in dark theme. The operator's TUI
+	// preference is user-owned and is not part of root system configuration.
+	theme.Init(true)
 	m := newWizardModel(cfg, steps, runner, dec, version,
 		persistDbCache, onComplete)
 	p := tea.NewProgram(m)
