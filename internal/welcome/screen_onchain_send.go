@@ -495,7 +495,8 @@ func (s *OnChainSendScreen) handleResultKey(
 			emitCloseTab,
 			listUnspentCmd(s.ctx.LndClient),
 			fetchOnChainTxCmd(s.ctx.LndClient),
-			fetchStatus(s.ctx.Cfg, s.ctx.LndClient))
+			fetchStatus(s.ctx.Cfg, s.ctx.State,
+				s.ctx.LndClient))
 	case "left":
 		return s, emitFocusSidebar
 	case "up", "shift+tab":

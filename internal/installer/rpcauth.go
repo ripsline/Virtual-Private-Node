@@ -2,8 +2,8 @@
 
 package installer
 
-// bitcoind RPC credentials for this node's own tooling (the
-// TUI's chain status probe and the bitcoin-cli shell wrapper).
+// bitcoind RPC credentials for the two local clients: this
+// node's own tooling (the TUI and bitcoin-cli wrapper), and LND.
 //
 // The mechanism is bitcoind's rpcauth option: bitcoin.conf
 // carries only a salted HMAC of the password — an attacker who
@@ -13,8 +13,10 @@ package installer
 // the static credential survives bitcoind restarts without
 // re-reading anything, and gives this node's tooling its own
 // RPC identity (which is what would make per-user method
-// whitelisting possible later). LND is unaffected: it keeps
-// its cookie-file configuration, which bitcoind still writes.
+// whitelisting possible later). LND receives an independent
+// rpcauth identity and keeps its cleartext half only in the
+// protected LND configuration; it never reads bitcoind's data
+// directory, cookie, or configuration file.
 
 import (
 	"crypto/hmac"
@@ -28,9 +30,17 @@ import (
 	"github.com/virtualprivatenode/vpn/internal/paths"
 )
 
-// BitcoindRPCUser is the RPC identity the node's own tooling
-// authenticates as.
-const BitcoindRPCUser = "vpn"
+const (
+	// BitcoindRPCUser is the identity the node's own tooling uses.
+	BitcoindRPCUser = "vpn"
+	// LNDBitcoindRPCUser is LND's independent Bitcoin RPC identity.
+	LNDBitcoindRPCUser = "lnd"
+)
+
+type nodeRPCAuthCredentials struct {
+	lines       []string
+	lndPassword string
+}
 
 // generateRPCAuth produces an rpcauth= line and the matching
 // cleartext password. It reproduces Bitcoin Core's reference
@@ -61,20 +71,24 @@ func generateRPCAuth(user string) (line, password string, err error) {
 	return line, password, nil
 }
 
-// writeRPCAuthCredential regenerates the credential pair and
-// installs BOTH halves: the hashed line is returned for the
-// bitcoin.conf write, the cleartext is staged on the board.
-// The two are only ever replaced together — a conf line
-// without its staged password (or vice versa) would strand
-// every client on an auth error.
-func writeRPCAuthCredential() (rpcauthLine string, err error) {
-	line, password, err := generateRPCAuth(BitcoindRPCUser)
+// writeRPCAuthCredentials regenerates both local identities.
+// The TUI password is staged on the board; the LND password is
+// returned only long enough for the caller to write lnd.conf.
+func writeRPCAuthCredentials() (nodeRPCAuthCredentials, error) {
+	uiLine, uiPassword, err := generateRPCAuth(BitcoindRPCUser)
 	if err != nil {
-		return "", err
+		return nodeRPCAuthCredentials{}, err
+	}
+	lndLine, lndPassword, err := generateRPCAuth(LNDBitcoindRPCUser)
+	if err != nil {
+		return nodeRPCAuthCredentials{}, err
 	}
 	if err := helper.WriteBoard(paths.StateBitcoindRPCPass,
-		[]byte(password+"\n")); err != nil {
-		return "", err
+		[]byte(uiPassword+"\n")); err != nil {
+		return nodeRPCAuthCredentials{}, err
 	}
-	return line, nil
+	return nodeRPCAuthCredentials{
+		lines:       []string{uiLine, lndLine},
+		lndPassword: lndPassword,
+	}, nil
 }

@@ -134,7 +134,7 @@ func printConsoleOnlyInstructions() {
 		"\n  installed and password login over SSH is disabled."+
 		"\n  Log in as %q at your provider console with the"+
 		"\n  login password, then add an SSH key or enable"+
-		"\n  password login from the node console (System)."+
+		"\n  password login from the node TUI (System)."+
 		"\n\n", paths.AdminUser)
 }
 

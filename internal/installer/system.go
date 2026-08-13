@@ -3,6 +3,7 @@
 package installer
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"os/user"
@@ -17,15 +18,59 @@ import (
 // superseded by the preflight's exactly-13 assertion (ruling ix).
 // See preflight.go.
 
-func createSystemUser(username string) error {
+func createSystemUser(username, home string) error {
 	if _, err := user.Lookup(username); err == nil {
 		return nil
+	} else {
+		var unknown user.UnknownUserError
+		if !errors.As(err, &unknown) {
+			return fmt.Errorf("look up system user %s: %w", username, err)
+		}
 	}
 	return system.SudoRun("adduser",
 		"--system", "--group",
-		"--home", paths.BitcoinDataDir,
+		"--home", home,
 		"--shell", "/usr/sbin/nologin",
 		username)
+}
+
+func createSystemGroup(name string) error {
+	if _, err := user.LookupGroup(name); err == nil {
+		return nil
+	} else {
+		var unknown user.UnknownGroupError
+		if !errors.As(err, &unknown) {
+			return fmt.Errorf("look up system group %s: %w", name, err)
+		}
+	}
+	return system.SudoRun("groupadd", "--system", name)
+}
+
+// ensureRootOwnedVarLibVPN revalidates the lifecycle-owned ancestor before a
+// later install step uses it. Creation belongs exclusively to lifecycle
+// initialization; resume never normalizes an unsafe object.
+func ensureRootOwnedVarLibVPN() error {
+	return validateRootDir(paths.VarLibVPN, 0o755)
+}
+
+// createBaseServiceIdentities establishes the fresh-install
+// daemon identity and data-directory boundary. Lifecycle initialization is
+// intentionally earlier than this ledger step.
+func createBaseServiceIdentities() error {
+	if err := ensureRootOwnedVarLibVPN(); err != nil {
+		return err
+	}
+	if err := createSystemUser(
+		bitcoinUser, paths.BitcoinDataDir); err != nil {
+		return err
+	}
+	if err := createSystemUser(lndUser, paths.LNDDataDir); err != nil {
+		return err
+	}
+	if err := createBitcoinDirs(bitcoinUser); err != nil {
+		return err
+	}
+	return createLNDDirs(lndUser)
 }
 
 func createBitcoinDirs(username string) error {
@@ -65,37 +110,74 @@ net.ipv6.conf.lo.disable_ipv6 = 1
 	return system.SudoRunSilent("sysctl", "--system")
 }
 
-// configureFirewall applies the full cfg-derived rule set —
-// idempotent, called at install and again by every TUI flow that
-// changes the port surface (P2P upgrade, Syncthing). Outbound
-// stays default-allow so Tor bootstraps behind default-deny.
+var (
+	observeSSHForFirewall = ObserveSSHState
+	installUFWForFirewall = func() error {
+		return system.SudoRun("apt-get", "install", "-y", "-qq", "ufw")
+	}
+	readUFWDefaultForFirewall = func() (string, error) {
+		return system.SudoRunOutput("cat", paths.UFWDefault)
+	}
+	writeUFWDefaultForFirewall = func(data []byte) error {
+		return system.SudoWriteFile(paths.UFWDefault, data, 0o644)
+	}
+	readUFWStatusForFeature = func() (string, error) {
+		return system.SudoRunOutput(
+			"env", "LC_ALL=C", "ufw", "status")
+	}
+	runFirewallCommand = func(args []string) error {
+		return system.SudoRun(args[0], args[1:]...)
+	}
+)
+
+// configureInitialFirewall establishes the node's global UFW baseline during
+// initial installation. Post-install features must not call it: they add and
+// verify only the rules they own through the narrow helpers below.
 //
-// SSH allow-rules come from cfg.SSHPortsOrDefault() — seeded at
-// install from the preflight sshd observation (ruling xvi(b)).
-// The previous hardcoded 22 was the one real lockout hazard on
-// nonstandard-port boxes: deny-all with only 22 open while sshd
-// listens elsewhere is a DELAYED silent lockout (this session
-// survives; the next connection is refused). A normal box
-// observes {22} and gets byte-identical behavior.
-func configureFirewall(cfg *config.AppConfig) error {
-	if err := system.SudoRun("apt-get", "install",
-		"-y", "-qq", "ufw"); err != nil {
+// The initial operation re-observes sshd immediately before any firewall
+// mutation. Observation failure refuses the rewrite; there is no cached-port
+// or port-22 fallback.
+func configureInitialFirewall(cfg *config.AppConfig) error {
+	if _, err := observeSSHForFirewall(); err != nil {
+		return fmt.Errorf("observe SSH ports before firewall preparation: %w", err)
+	}
+	if err := installUFWForFirewall(); err != nil {
 		return err
 	}
+	// Package installation can take long enough for sshd configuration to
+	// change. Re-observe at the last responsible moment; only this fresh
+	// answer is allowed to shape the rewrite below.
+	obs, err := observeSSHForFirewall()
+	if err != nil {
+		return fmt.Errorf("observe SSH ports before firewall rewrite: %w", err)
+	}
 
-	ufwDefault, err := system.SudoRunOutput("cat", paths.UFWDefault)
+	ufwDefault, err := readUFWDefaultForFirewall()
 	if err == nil {
 		content := strings.ReplaceAll(
 			ufwDefault, "IPV6=yes", "IPV6=no")
-		system.SudoWriteFile(
-			paths.UFWDefault, []byte(content), 0644)
+		if err := writeUFWDefaultForFirewall([]byte(content)); err != nil {
+			return err
+		}
 	}
 
+	commands := buildInitialFirewallCommands(cfg, obs.Ports)
+	for _, args := range commands {
+		if err := runFirewallCommand(args); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func buildInitialFirewallCommands(
+	cfg *config.AppConfig, sshPorts []int,
+) [][]string {
 	commands := [][]string{
 		{"ufw", "default", "deny", "incoming"},
 		{"ufw", "default", "allow", "outgoing"},
 	}
-	for _, p := range cfg.SSHPortsOrDefault() {
+	for _, p := range sshPorts {
 		commands = append(commands,
 			[]string{"ufw", "allow",
 				fmt.Sprintf("%d/tcp", p)})
@@ -111,7 +193,7 @@ func configureFirewall(cfg *config.AppConfig) error {
 	// Syncthing sync protocol — clearnet direct connection.
 	// Mutual TLS with explicit device approval ensures only
 	// paired devices can connect.
-	if cfg.SyncthingInstalled {
+	if cfg.SyncthingEnabled {
 		commands = append(commands,
 			[]string{"ufw", "allow", "22000/tcp"})
 	}
@@ -119,13 +201,84 @@ func configureFirewall(cfg *config.AppConfig) error {
 	commands = append(commands,
 		[]string{"ufw", "--force", "enable"})
 
-	for _, args := range commands {
-		if err := system.SudoRun(
-			args[0], args[1:]...); err != nil {
-			return err
+	return commands
+}
+
+// requireActiveUFW is the shared prerequisite for additive post-install
+// firewall changes. A feature operation never installs, enables, or repairs
+// UFW; an inactive firewall is an inconsistent base-node state that must be
+// reported before the feature mutates anything.
+func requireActiveUFW() error {
+	status, err := readUFWStatusForFeature()
+	if err != nil {
+		return fmt.Errorf("read UFW status: %w", err)
+	}
+	if !ufwStatusActive(status) {
+		return errors.New(
+			"UFW is not active — refusing post-install firewall mutation")
+	}
+	return nil
+}
+
+func ufwStatusActive(status string) bool {
+	for _, line := range strings.Split(status, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		return line == "Status: active"
+	}
+	return false
+}
+
+func ufwAllowsTCPPort(status string, port int) bool {
+	want := fmt.Sprintf("%d/tcp", port)
+	for _, line := range strings.Split(status, "\n") {
+		fields := strings.Fields(line)
+		if len(fields) >= 2 && fields[0] == want && fields[1] == "ALLOW" {
+			return true
+		}
+	}
+	return false
+}
+
+// allowOwnedFirewallRules performs an additive-only UFW change. It rechecks
+// the prerequisite immediately before mutation, adds no defaults or unrelated
+// rules, never enables UFW, and verifies each requested rule from live status
+// before reporting success. A retry is safe because `ufw allow` is idempotent.
+func allowOwnedFirewallRules(ports ...int) error {
+	if err := requireActiveUFW(); err != nil {
+		return err
+	}
+	for _, port := range ports {
+		if err := runFirewallCommand([]string{
+			"ufw", "allow", fmt.Sprintf("%d/tcp", port),
+		}); err != nil {
+			return fmt.Errorf("allow %d/tcp: %w", port, err)
+		}
+	}
+	status, err := readUFWStatusForFeature()
+	if err != nil {
+		return fmt.Errorf("verify UFW rules: %w", err)
+	}
+	if !ufwStatusActive(status) {
+		return errors.New("UFW became inactive while adding feature rules")
+	}
+	for _, port := range ports {
+		if !ufwAllowsTCPPort(status, port) {
+			return fmt.Errorf(
+				"UFW did not report required %d/tcp allow rule", port)
 		}
 	}
 	return nil
+}
+
+func allowHybridP2PFirewallRules() error {
+	return allowOwnedFirewallRules(9735, 8080)
+}
+
+func allowSyncthingFirewallRule() error {
+	return allowOwnedFirewallRules(22000)
 }
 
 func installUnattendedUpgrades() error {
@@ -205,6 +358,6 @@ Acquire::http::Timeout "60";
 Acquire::https::Timeout "60";
 Acquire::Retries "3";
 `
-	return system.SudoWriteFile("/etc/apt/apt.conf.d/99-tor-proxy",
+	return system.SudoWriteFile(paths.AptTorProxy,
 		[]byte(content), 0644)
 }

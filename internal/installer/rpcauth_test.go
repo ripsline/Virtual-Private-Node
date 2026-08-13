@@ -57,3 +57,15 @@ func TestGenerateRPCAuth(t *testing.T) {
 		t.Error("two generations produced identical output")
 	}
 }
+
+func TestBitcoindRPCIdentitiesAreDistinct(t *testing.T) {
+	if BitcoindRPCUser != "vpn" {
+		t.Errorf("TUI RPC user: got %q", BitcoindRPCUser)
+	}
+	if LNDBitcoindRPCUser != "lnd" {
+		t.Errorf("LND RPC user: got %q", LNDBitcoindRPCUser)
+	}
+	if BitcoindRPCUser == LNDBitcoindRPCUser {
+		t.Error("TUI and LND share a Bitcoin RPC identity")
+	}
+}

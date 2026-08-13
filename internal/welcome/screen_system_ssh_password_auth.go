@@ -1,6 +1,8 @@
 package welcome
 
 import (
+	"fmt"
+
 	"charm.land/bubbles/v2/key"
 	tea "charm.land/bubbletea/v2"
 
@@ -32,14 +34,33 @@ type sshPwAuthDoneMsg struct {
 	err      error
 }
 
+type sshPwAuthStateMsg struct {
+	disabled bool
+	err      error
+}
+
 func setSSHPasswordAuthCmd(
-	disabled bool, ctx *ScreenContext,
+	disabled bool,
 ) tea.Cmd {
 	return func() tea.Msg {
-		err := installer.SetSSHPasswordAuth(
-			ctx.Cfg, disabled)
+		err := installer.SetSSHPasswordAuth(disabled)
+		if err == nil {
+			enabled, readErr := installer.EffectiveSSHPasswordAuth()
+			if readErr != nil {
+				err = fmt.Errorf("verify effective SSH password authentication: %w", readErr)
+			} else if disabled == enabled {
+				err = fmt.Errorf("effective SSH password authentication did not change")
+			}
+		}
 		return sshPwAuthDoneMsg{
 			disabled: disabled, err: err}
+	}
+}
+
+func fetchSSHPasswordAuthCmd() tea.Cmd {
+	return func() tea.Msg {
+		enabled, err := installer.EffectiveSSHPasswordAuth()
+		return sshPwAuthStateMsg{disabled: !enabled, err: err}
 	}
 }
 
@@ -60,7 +81,9 @@ func NewSSHPasswordAuthScreen(
 
 // ── Screen interface ────────────────────────────────────
 
-func (s *SSHPasswordAuthScreen) Init() tea.Cmd { return nil }
+func (s *SSHPasswordAuthScreen) Init() tea.Cmd {
+	return fetchSSHPasswordAuthCmd()
+}
 
 func (s *SSHPasswordAuthScreen) HandleKey(
 	keyStr string, msg tea.KeyPressMsg,
@@ -84,6 +107,16 @@ func (s *SSHPasswordAuthScreen) HandleMsg(
 	msg tea.Msg,
 ) (Screen, tea.Cmd) {
 	switch msg := msg.(type) {
+	case tabActivatedMsg:
+		return s, fetchSSHPasswordAuthCmd()
+	case sshPwAuthStateMsg:
+		if msg.err != nil {
+			s.ctx.State.SSHPasswordAuthKnown = false
+			return s, nil
+		}
+		s.ctx.State.SSHPasswordAuthDisabled = msg.disabled
+		s.ctx.State.SSHPasswordAuthKnown = true
+		return s, nil
 	case sshPwAuthDoneMsg:
 		s.step = sshPwAuthStepResult
 		if msg.err != nil {
@@ -173,6 +206,9 @@ func (s *SSHPasswordAuthScreen) handleViewKey(
 		if s.viewBtnIdx == 0 {
 			return s, emitCloseTab
 		}
+		if !s.ctx.State.SSHPasswordAuthKnown {
+			return s, fetchSSHPasswordAuthCmd()
+		}
 		s.step = sshPwAuthStepConfirm
 		s.confirmIdx = 0
 		return s, nil
@@ -187,7 +223,14 @@ func (s *SSHPasswordAuthScreen) viewState(
 	p.title(theme.Header, "SSH Password Authentication")
 	p.blank()
 
-	disabled := s.ctx.Cfg.SSHPasswordAuthDisabled
+	if !s.ctx.State.SSHPasswordAuthKnown {
+		p.warn("Cannot read effective SSH password authentication.")
+		p.dim("Check: journalctl -u vpn-helperd")
+		return p.renderWithBottomButtons(
+			[]string{"Cancel", "Unavailable"}, 0,
+			s.ctx.ContentFocused, h)
+	}
+	disabled := s.ctx.State.SSHPasswordAuthDisabled
 	if disabled {
 		p.field("Status:      ",
 			theme.Warning.Render("disabled"))
@@ -262,11 +305,13 @@ func (s *SSHPasswordAuthScreen) handleConfirmKey(
 			s.step = sshPwAuthStepView
 			return s, nil
 		case 1: // Apply
+			if !s.ctx.State.SSHPasswordAuthKnown {
+				return s, fetchSSHPasswordAuthCmd()
+			}
 			s.step = sshPwAuthStepWorking
 			// Toggle: target is the opposite of current.
-			target := !s.ctx.Cfg.SSHPasswordAuthDisabled
-			return s, setSSHPasswordAuthCmd(
-				target, s.ctx)
+			target := !s.ctx.State.SSHPasswordAuthDisabled
+			return s, setSSHPasswordAuthCmd(target)
 		}
 	}
 	return s, nil
@@ -277,7 +322,7 @@ func (s *SSHPasswordAuthScreen) viewConfirm(
 ) string {
 	p := newPane(w)
 
-	disabled := s.ctx.Cfg.SSHPasswordAuthDisabled
+	disabled := s.ctx.State.SSHPasswordAuthDisabled
 	disabling := !disabled // we're toggling away from current
 
 	if disabling {

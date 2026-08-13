@@ -301,8 +301,7 @@ fi
 // from there — the auto-launch profile and the handoff both
 // depend on that path existing. A source build run as
 // `sudo ./vpn install` gets installed; a binary already at the
-// canonical path (the MIGRATION.md flow installs it in step 1)
-// no-ops.
+// canonical path no-ops.
 func installSelfBinary() error {
 	self, err := os.Executable()
 	if err != nil {

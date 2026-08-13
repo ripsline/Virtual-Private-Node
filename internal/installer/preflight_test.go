@@ -79,6 +79,17 @@ func TestCheckOSReleaseExactlyThirteen(t *testing.T) {
 	}
 }
 
+func TestCheckArchitecture(t *testing.T) {
+	if err := checkArchitecture("amd64"); err != nil {
+		t.Fatalf("amd64 refused: %v", err)
+	}
+	for _, arch := range []string{"arm64", "386", "riscv64", ""} {
+		if err := checkArchitecture(arch); err == nil {
+			t.Errorf("unsupported architecture %q accepted", arch)
+		}
+	}
+}
+
 // ── sudoersFileIncluded ──────────────────────────────────
 
 func TestSudoersFileIncluded(t *testing.T) {

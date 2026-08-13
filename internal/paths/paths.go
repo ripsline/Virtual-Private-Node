@@ -12,25 +12,6 @@ const (
 	ConfigDir  = "/etc/vpn"
 	ConfigFile = "/etc/vpn/config.json"
 
-	// InstallStateFile is the per-step install ledger: which
-	// install steps have completed, keyed by stable step key
-	// (installer/ledger.go). A SEPARATE file from config.json
-	// so a config load failure cannot erase install history,
-	// and so its ownership flips to root with root-dispatched
-	// install without touching config's story.
-	InstallStateFile = "/etc/vpn/install-state.json"
-
-	// PasswordPendingMarker exists while an unattended install
-	// has applied a generated admin password that was never
-	// displayed (the identity step applies early; the print
-	// happens only at the end of a completed run — a failure in
-	// between would otherwise strand a credential nobody has
-	// seen). Written by the identity step on the unattended
-	// path; cleared when the password is finally printed, or
-	// when the operator sets a password of their own from the
-	// node console. Holds no secret — its presence is the fact.
-	PasswordPendingMarker = "/etc/vpn/password-pending"
-
 	BitcoinConf = "/etc/bitcoin/bitcoin.conf"
 	BitcoinDir  = "/etc/bitcoin"
 
@@ -44,7 +25,7 @@ const (
 	// unreadable reports the feature unavailable and logs
 	// why, never guesses.
 	//
-	// Only facts consumed at MACHINE cadence (per RPC call,
+	// Mostly facts consumed at MACHINE cadence (per RPC call,
 	// per dial) live here — credentials, which fail closed at
 	// the moment of use when stale, so a stale copy cannot
 	// hide. Display facts consumed at HUMAN cadence (onion
@@ -52,27 +33,66 @@ const (
 	// password-auth answer) have no copy at all: a stale copy
 	// of those would render confidently wrong with no failure
 	// to catch it, so the TUI reads them live through the
-	// helper's read-only verbs instead. Every board file
+	// helper's read-only verbs instead. The Syncthing web password is the
+	// one human-cadence exception: Syncthing retains only its hash, so the
+	// install operation stages the generated plaintext once for later display.
+	// Every board file
 	// declares how it stays fresh in the helper's freshness
 	// table (internal/helperd/matrix.go), and a unit test
 	// fails on any file without a declaration.
 	//
-	// The board lives under /var/lib/vpn — NOT under /etc/vpn
-	// — deliberately: /etc/vpn is owned by the admin user (the
-	// TUI writes config.json there), and a directory owner can
-	// replace a subdirectory with a symlink. Root-side board
-	// writes under an admin-owned parent would hand a
-	// compromised admin account a "make root chown an
-	// arbitrary directory" primitive. Every ancestor of the
-	// board is root-owned, so that class cannot arise.
+	// The board lives under /var/lib/vpn rather than /etc/vpn so desired
+	// configuration and staged credentials have separate, auditable
+	// authorities. Both trees have root-controlled ancestors; the TUI can read
+	// the specific group-readable files but cannot replace either directory.
 	VarLibVPN = "/var/lib/vpn"
 	StateDir  = VarLibVPN + "/state"
 
+	// PrivateDir contains root-authoritative lifecycle and
+	// security-workflow state. Every ancestor remains root
+	// controlled; the vpn operator cannot replace these files.
+	PrivateDir = VarLibVPN + "/private"
+
+	// LayoutVersion records the exact supported base-install
+	// generation. InstallStateFile is the bounded base-install
+	// progress ledger. PasswordPendingMarker closes the gap
+	// between applying and displaying an unattended password.
+	LayoutVersion         = PrivateDir + "/layout-version"
+	InstallStateFile      = PrivateDir + "/install-state.json"
+	PasswordPendingMarker = PrivateDir + "/password-pending"
+	KeyVerificationMarker = PrivateDir + "/key-verification-pending"
+
+	// InstallBootstrap* are short-lived, root-owned indications that
+	// lifecycle authority is being published. The immutable initial install
+	// context is encoded in the exact path so even an interruption before the
+	// normal private tree exists remains unambiguous. They live beside
+	// VarLibVPN because they must exist before that tree is created.
+	InstallBootstrapPrefix  = "/var/lib/vpn-install-bootstrap-"
+	InstallBootstrapMainnet = InstallBootstrapPrefix +
+		"service-layout-1-mainnet-tor"
+	InstallBootstrapTestnet4 = InstallBootstrapPrefix +
+		"service-layout-1-testnet4-tor"
+
+	// RuntimeDir and InstallLock are transient serialization
+	// state. The stable lock is deliberately separate from the
+	// atomically replaced durable ledger.
+	RuntimeDir  = "/run/vpn"
+	InstallLock = RuntimeDir + "/install.lock"
+
+	// Previous lifecycle paths are recognized only so v0.7.0
+	// can refuse unsupported or conflicting state. They are
+	// never adopted, normalized, or migrated.
+	OldInstallStateFile  = "/etc/vpn/install-state.json"
+	OldPasswordPending   = "/etc/vpn/password-pending"
+	OldServiceLayoutMark = VarLibVPN + "/service-layout-v1"
+
 	// Staging board files. One fact per file.
-	StateBitcoindRPCPass = StateDir + "/bitcoind-rpc.pass"
-	StateLNDTLSCert      = StateDir + "/lnd-tls.cert"
-	StateLNDMacaroon     = StateDir + "/lnd-admin.macaroon"
-	StateSyncthingAPIKey = StateDir + "/syncthing-api-key"
+	StateBitcoindRPCPass      = StateDir + "/bitcoind-rpc.pass"
+	StateLNDTLSCert           = StateDir + "/lnd-tls.cert"
+	StateLNDMacaroon          = StateDir + "/lnd-admin.macaroon"
+	StateSyncthingAPIKey      = StateDir + "/syncthing-api-key"
+	StateSyncthingWebPassword = StateDir +
+		"/syncthing-web-password"
 
 	LNDConf = "/etc/lnd/lnd.conf"
 	LNDDir  = "/etc/lnd"
@@ -96,7 +116,7 @@ const (
 // that disables IPv6, loopback is always dialed by address.
 const (
 	// LNDGRPCEndpoint is LND's gRPC server. Dialed by the
-	// console's gRPC client, the wallet-creation lncli
+	// TUI's gRPC client, the wallet-creation lncli
 	// invocation, and the shell's lncli wrapper.
 	LNDGRPCEndpoint = "127.0.0.1:10009"
 
@@ -117,7 +137,25 @@ const (
 	BitcoinDataDir   = "/var/lib/bitcoin"
 	LNDDataDir       = "/var/lib/lnd"
 	SyncthingDataDir = "/var/lib/syncthing"
-	SyncthingBackup  = "/var/lib/syncthing/lnd-backup"
+
+	// ExportDir is the root-controlled boundary for artifacts that
+	// one service deliberately publishes to another. It is separate
+	// from every daemon's private state.
+	ExportDir = VarLibVPN + "/exports"
+
+	// ExportReadyMarkerName is the installer-owned marker convention
+	// for project exports served from read-only Syncthing folders.
+	// Each export places its own marker inside its folder root.
+	ExportReadyMarkerName = ".vpn-export-ready"
+
+	// LNDBackupStage is private publisher staging. Syncthing cannot
+	// enter it. LNDBackupExport is the send-only folder registered
+	// with Syncthing. Both live beneath ExportDir so publication can
+	// use a same-filesystem atomic rename without traversing
+	// Syncthing's private state.
+	LNDBackupStage        = ExportDir + "/lnd-backup-stage"
+	LNDBackupExport       = ExportDir + "/lnd-backup"
+	LNDBackupExportMarker = LNDBackupExport + "/" + ExportReadyMarkerName
 )
 
 // ── LND files ────────────────────────────────────────────
@@ -133,9 +171,9 @@ func LNDMacaroon(network string) string {
 	return fmt.Sprintf("/var/lib/lnd/data/chain/bitcoin/%s/admin.macaroon", network)
 }
 
-// LNDCookiePath returns the cookie path relative to bitcoin datadir.
-func LNDCookiePath(cookieSuffix string) string {
-	return fmt.Sprintf("%s/%s", BitcoinDataDir, cookieSuffix)
+// LNDWalletDB returns LND's authoritative wallet database path for a network.
+func LNDWalletDB(network string) string {
+	return fmt.Sprintf("/var/lib/lnd/data/chain/bitcoin/%s/wallet.db", network)
 }
 
 // ChannelBackup returns the path to the channel backup for a given network.
@@ -159,11 +197,11 @@ const (
 // ── Systemd ──────────────────────────────────────────────
 
 const (
-	BitcoindService   = "/etc/systemd/system/bitcoind.service"
-	LNDService        = "/etc/systemd/system/lnd.service"
-	SyncthingService  = "/etc/systemd/system/syncthing.service"
-	BackupWatchPath   = "/etc/systemd/system/lnd-backup-watch.path"
-	BackupCopyService = "/etc/systemd/system/lnd-backup-copy.service"
+	BitcoindService     = "/etc/systemd/system/bitcoind.service"
+	LNDService          = "/etc/systemd/system/lnd.service"
+	SyncthingService    = "/etc/systemd/system/syncthing.service"
+	BackupWatchPath     = "/etc/systemd/system/lnd-backup-watch.path"
+	BackupExportService = "/etc/systemd/system/lnd-backup-export.service"
 
 	// The LND TLS certificate watch. LND rewrites tls.cert on
 	// its own (tlsautorefresh in lnd.conf regenerates it at
@@ -212,23 +250,15 @@ const (
 	// loading first = winning.
 	SSHDDropIn = "/etc/ssh/sshd_config.d/00-vpn-hardening.conf"
 
-	// OldSSHDDropIn is the drop-in filename from before the
-	// rlvpn → vpn rename. On a migrated box the stale file
-	// would sort BEFORE SSHDDropIn (r < v) and win every
-	// contested directive under first-match-wins, so the
-	// install SSH step deletes it — the ONLY old-name
-	// artifact the installer removes (ruling xv: everything
-	// else old survives until the operator's verified
-	// teardown). Ordering is binding: observe → write new →
-	// delete old → validate → restart, because a
-	// TUI-disabled PasswordAuthentication lives in THIS
-	// file until the observed value is carried into the
-	// new one.
+	// OldSSHDDropIn is the pre-rename path. Its presence is
+	// lifecycle-conflict evidence; v0.7.0 refuses it and never
+	// deletes, adopts, or rewrites it.
 	OldSSHDDropIn = "/etc/ssh/sshd_config.d/00-rlvpn-hardening.conf"
 
 	Fail2banJail       = "/etc/fail2ban/jail.local"
 	AutoUpgrades       = "/etc/apt/apt.conf.d/20auto-upgrades"
 	UnattendedUpgrades = "/etc/apt/apt.conf.d/50unattended-upgrades"
+	AptTorProxy        = "/etc/apt/apt.conf.d/99-tor-proxy"
 	DisableIPv6Conf    = "/etc/sysctl.d/99-disable-ipv6.conf"
 )
 
@@ -237,9 +267,8 @@ const (
 const (
 	// AdminUser is the node's admin login — same name as the
 	// binary, one name to know (ruling vi: clean break from
-	// the old ripsline user; migrated boxes retire the old
-	// user via MIGRATION.md's operator-run teardown, never
-	// via this binary).
+	// the old ripsline user). Existing old identities are
+	// refused by the fresh-install lifecycle classifier.
 	AdminUser          = "vpn"
 	AdminHome          = "/home/" + AdminUser
 	AdminBashrc        = AdminHome + "/.bashrc"
@@ -256,7 +285,8 @@ const (
 
 	// BinaryPath is where the installer places the running
 	// binary (and where self-update installs new ones).
-	BinaryPath = "/usr/local/bin/vpn"
+	BinaryPath      = "/usr/local/bin/vpn"
+	SyncthingBinary = "/usr/local/bin/syncthing"
 )
 
 // ── Cache ────────────────────────────────────────────────

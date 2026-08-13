@@ -60,6 +60,23 @@ func fetchLatestVersionCmd() tea.Cmd {
 
 // ── Live-read node facts ─────────────────────────────────
 
+func fetchWalletStateCmd() tea.Cmd {
+	return func() tea.Msg {
+		var state helper.WalletStateResult
+		err := helper.Call(helper.VerbReadWalletState, nil, &state)
+		return walletStateMsg{state: state, err: err}
+	}
+}
+
+func fetchKeyVerificationStateCmd() tea.Cmd {
+	return func() tea.Msg {
+		var state helper.KeyVerificationStateResult
+		err := helper.Call(
+			helper.VerbReadKeyVerificationState, nil, &state)
+		return keyVerificationStateMsg{state: state, err: err}
+	}
+}
+
 // fetchNodeAddressesCmd asks the helper's read-node-addresses
 // operation for the node's onion hostnames and Syncthing
 // device ID, live. Screens that display these run this at
@@ -80,6 +97,16 @@ func fetchNodeAddressesCmd(tab tabKind) tea.Cmd {
 }
 
 // ── Syncthing actions ────────────────────────────────────
+
+func fetchSyncthingDevicesCmd() tea.Cmd {
+	return func() tea.Msg {
+		devices, err := installer.ListSyncthingDevices()
+		if err != nil {
+			logger.Status("read Syncthing devices: %v", err)
+		}
+		return syncthingDevicesMsg{devices: devices, err: err}
+	}
+}
 
 func pairSyncthingDeviceCmd(
 	deviceID string,

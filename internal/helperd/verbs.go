@@ -3,6 +3,7 @@
 package helperd
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -49,15 +50,40 @@ var verbs = map[string]verbDef{
 	helper.VerbStageWalletPassword:  {6 * time.Minute, verbStageWalletPassword},
 	helper.VerbRemoveWalletPassword: {6 * time.Minute, verbRemoveWalletPassword},
 	helper.VerbStageLNDCredentials:  {3 * time.Minute, verbStageLNDCredentials},
+	helper.VerbStageLNDMacaroon:     {1 * time.Minute, verbStageLNDMacaroon},
 	helper.VerbRebuildSSHConfig:     {3 * time.Minute, verbRebuildSSHConfig},
-	helper.VerbRebuildTorConfig:     {4 * time.Minute, verbRebuildTorConfig},
 	helper.VerbPackageUpdate:        {30 * time.Minute, verbPackageUpdate},
 	helper.VerbSelfUpdate:           {15 * time.Minute, verbSelfUpdate},
-	helper.VerbSetP2PMode:           {8 * time.Minute, verbSetP2PMode},
+	helper.VerbUpgradeP2PToHybrid:   {8 * time.Minute, verbUpgradeP2PToHybrid},
 	helper.VerbSyncthingInstall:     {30 * time.Minute, verbSyncthingInstall},
 	helper.VerbReadNodeAddresses:    {1 * time.Minute, verbReadNodeAddresses},
 	helper.VerbReadSSHAuth:          {1 * time.Minute, verbReadSSHAuth},
+	helper.VerbReadWalletState:      {1 * time.Minute, verbReadWalletState},
+	helper.VerbReadKeyVerificationState: {
+		1 * time.Minute, verbReadKeyVerificationState,
+	},
+	helper.VerbVerifyAdminLogin: {1 * time.Minute, verbVerifyAdminLogin},
 }
+
+var (
+	loadSystemConfig             = config.Load
+	saveSystemConfig             = config.Save
+	setupAutoUnlock              = installer.SetupAutoUnlock
+	disableAutoUnlock            = installer.DisableAutoUnlock
+	publicIPv4                   = system.PublicIPv4
+	p2pUpgradeSteps              = installer.UpgradeP2PToHybridSteps
+	syncthingInstallSteps        = installer.SyncthingInstallSteps
+	syncthingResiduePresent      = installer.SyncthingResiduePresent
+	verifySyncthingPrerequisites = installer.VerifySyncthingInstallPrerequisites
+	walletExists                 = installer.WalletExists
+	keyVerificationPending       = installer.KeyVerificationPending
+	verifyAdminLogin             = installer.VerifyAdminLogin
+	stageSyncthingWebPassword    = func(password string) error {
+		return helper.WriteBoard(paths.StateSyncthingWebPassword,
+			[]byte(password+"\n"))
+	}
+	restageFacts = restage
+)
 
 // decode unmarshals params strictly: unknown fields are an
 // error, so a client/server drift surfaces as a loud refusal
@@ -71,12 +97,19 @@ func decode(params json.RawMessage, into any) error {
 	return nil
 }
 
+func rejectParams(params json.RawMessage) error {
+	trimmed := bytes.TrimSpace(params)
+	if len(trimmed) == 0 || bytes.Equal(trimmed, []byte("null")) {
+		return nil
+	}
+	return errors.New("this operation accepts no parameters")
+}
+
 // loadConfig reads the node's config root-side. Verbs use it
-// for facts the client must not be able to misstate (network,
-// installed components); the client remains the owner of
-// PERSISTING config changes after a verb succeeds.
+// for facts the client must not be able to misstate. Typed mutating verbs also
+// publish their own desired-state change before returning success.
 func loadConfig() (*config.AppConfig, error) {
-	cfg, err := config.Load()
+	cfg, err := loadSystemConfig()
 	if err != nil {
 		return nil, fmt.Errorf(
 			"read node config: %v — the node may not be "+
@@ -129,14 +162,14 @@ func verbServiceAction(_ *verbCtx, params json.RawMessage) (any, error) {
 	// parameters changed or the certificate nears expiry
 	// (tlsautorefresh in lnd.conf), so a start or restart of
 	// the lnd unit can invalidate the staged certificate copy
-	// the console reads. Re-stage it so the board keeps
+	// the TUI reads. Re-stage it so the board keeps
 	// matching the certificate LND actually serves. The
 	// freshness matrix carries this as service-action's entry;
 	// the unit condition lives here because whether the
 	// invalidation happened depends on a verb parameter, which
 	// the verb-keyed table cannot express alone.
 	if p.Unit == "lnd" && p.Action != "stop" {
-		if err := restage(helper.VerbServiceAction); err != nil {
+		if err := restageFacts(helper.VerbServiceAction); err != nil {
 			return nil, err
 		}
 	}
@@ -227,17 +260,46 @@ func verbStageWalletPassword(_ *verbCtx, params json.RawMessage) (any, error) {
 	if err := validateWalletPassword(p.Password); err != nil {
 		return nil, err
 	}
-	return nil, installer.SetupAutoUnlock(p.Password)
+	cfg, err := loadConfig()
+	if err != nil {
+		return nil, err
+	}
+	if err := setupAutoUnlock(p.Password); err != nil {
+		return nil, err
+	}
+	cfg.AutoUnlock = true
+	if err := saveSystemConfig(cfg); err != nil {
+		return nil, fmt.Errorf("publish auto-unlock setting: %w", err)
+	}
+	return nil, nil
 }
 
 func verbRemoveWalletPassword(_ *verbCtx, _ json.RawMessage) (any, error) {
-	return nil, installer.DisableAutoUnlock()
+	cfg, err := loadConfig()
+	if err != nil {
+		return nil, err
+	}
+	if err := disableAutoUnlock(); err != nil {
+		return nil, err
+	}
+	cfg.AutoUnlock = false
+	if err := saveSystemConfig(cfg); err != nil {
+		return nil, fmt.Errorf("publish auto-unlock setting: %w", err)
+	}
+	return nil, nil
 }
 
 // ── Credential staging ───────────────────────────────────
 
 func verbStageLNDCredentials(_ *verbCtx, _ json.RawMessage) (any, error) {
-	return nil, restage(helper.VerbStageLNDCredentials)
+	return nil, restageFacts(helper.VerbStageLNDCredentials)
+}
+
+// Wallet creation mints only the admin macaroon. Keep that transition narrow;
+// the broader credentials verb remains the repair path for an LND client that
+// cannot know whether its certificate, macaroon, or both became stale.
+func verbStageLNDMacaroon(_ *verbCtx, _ json.RawMessage) (any, error) {
+	return nil, restageFacts(helper.VerbStageLNDMacaroon)
 }
 
 // ── Read-only verbs ──────────────────────────────────────
@@ -295,6 +357,39 @@ func verbReadSSHAuth(_ *verbCtx, _ json.RawMessage) (any, error) {
 	return helper.SSHAuthResult{PasswordAuthEnabled: enabled}, nil
 }
 
+func verbReadWalletState(_ *verbCtx, _ json.RawMessage) (any, error) {
+	cfg, err := loadConfig()
+	if err != nil {
+		return nil, err
+	}
+	wallet, err := walletExists(cfg.Network)
+	if err != nil {
+		return nil, err
+	}
+	return helper.WalletStateResult{WalletExists: wallet}, nil
+}
+
+func verbReadKeyVerificationState(
+	_ *verbCtx, _ json.RawMessage,
+) (any, error) {
+	pending, err := keyVerificationPending()
+	if err != nil {
+		return nil, err
+	}
+	return helper.KeyVerificationStateResult{Pending: pending}, nil
+}
+
+// This is a closed security-workflow mutation, not a caller-directed config
+// write: current sshd journal evidence is the only authority allowed to clear
+// the root-private marker.
+func verbVerifyAdminLogin(_ *verbCtx, _ json.RawMessage) (any, error) {
+	pending, verified, err := verifyAdminLogin()
+	if err != nil {
+		return nil, err
+	}
+	return helper.VerifyAdminLoginResult{Pending: pending, Verified: verified}, nil
+}
+
 // ── Config writers (templates live on this side) ─────────
 
 func verbRebuildSSHConfig(_ *verbCtx, params json.RawMessage) (any, error) {
@@ -305,43 +400,13 @@ func verbRebuildSSHConfig(_ *verbCtx, params json.RawMessage) (any, error) {
 	// The zero-auth lockout guard and the validate-and-restore
 	// sequence live inside RebuildSSHHardeningConfig — at the
 	// write boundary, so every caller inherits them.
-	view := &config.AppConfig{
-		SSHPasswordAuthDisabled: p.PasswordAuthDisabled,
-	}
-	if err := installer.RebuildSSHHardeningConfig(view); err != nil {
+	if err := installer.RebuildSSHHardeningConfig(
+		p.PasswordAuthDisabled); err != nil {
 		return nil, err
 	}
 	// Nothing to re-stage: the effective password-auth answer
 	// is not copied anywhere — readers ask the read-ssh-auth
 	// verb, which queries sshd live.
-	return nil, nil
-}
-
-func verbRebuildTorConfig(_ *verbCtx, params json.RawMessage) (any, error) {
-	var p helper.RebuildTorConfigParams
-	if err := decode(params, &p); err != nil {
-		return nil, err
-	}
-	cfg, err := loadConfig()
-	if err != nil {
-		return nil, err
-	}
-	// The toggles select which fixed template blocks are
-	// present; everything else about the torrc comes from the
-	// root-side template and the node's own config.
-	cfg.LNDInstalled = p.LND
-	cfg.SyncthingInstalled = p.Syncthing
-	if err := installer.RebuildTorConfig(cfg); err != nil {
-		return nil, err
-	}
-	if err := installer.RestartTor(); err != nil {
-		return nil, err
-	}
-	// Nothing to re-stage: onion addresses are not copied
-	// anywhere — readers ask the read-node-addresses verb,
-	// which reads the hostname files live (and a hostname
-	// that newly exists after this rebuild is simply there on
-	// the next read).
 	return nil, nil
 }
 
@@ -411,41 +476,45 @@ func verbSelfUpdate(ctx *verbCtx, params json.RawMessage) (any, error) {
 	return nil, nil
 }
 
-func verbSetP2PMode(ctx *verbCtx, params json.RawMessage) (any, error) {
-	var p helper.SetP2PModeParams
-	if err := decode(params, &p); err != nil {
+func verbUpgradeP2PToHybrid(
+	ctx *verbCtx, params json.RawMessage,
+) (any, error) {
+	if err := rejectParams(params); err != nil {
 		return nil, err
-	}
-	if p.Mode != "tor" && p.Mode != "hybrid" {
-		return nil, fmt.Errorf("unknown P2P mode %q", p.Mode)
 	}
 	cfg, err := loadConfig()
 	if err != nil {
 		return nil, err
 	}
-	publicIP := ""
-	if p.Mode == "hybrid" {
-		// Derived here, from the kernel routing table — the
-		// client cannot supply an address for LND to advertise.
-		publicIP = system.PublicIPv4()
-		if publicIP == "" {
-			return nil, errors.New(
-				"could not determine this box's public IPv4 " +
-					"address — hybrid mode needs one")
-		}
+	if cfg.P2PMode != "tor" {
+		return nil, fmt.Errorf(
+			"hybrid P2P upgrade requires authoritative mode tor; current mode is %q",
+			cfg.P2PMode)
 	}
-	cfg.P2PMode = p.Mode
-	steps := installer.P2PUpgradeSteps(cfg, publicIP)
+	// Derived here, from the kernel routing table — the client cannot supply
+	// an address for LND to advertise.
+	publicIP := publicIPv4()
+	if publicIP == "" {
+		return nil, errors.New(
+			"could not determine this box's public IPv4 " +
+				"address — hybrid mode needs one")
+	}
+	cfg.P2PMode = "hybrid"
+	steps := p2pUpgradeSteps(cfg, publicIP)
 	if err := runSteps(ctx, steps); err != nil {
 		return nil, err
 	}
 	// The mode switch makes LND regenerate its TLS certificate
 	// (the cert's contents change), so the staged copy is now
 	// stale — re-stage it, reported as one more step.
-	if err := restage(helper.VerbSetP2PMode); err != nil {
+	if err := restageFacts(helper.VerbUpgradeP2PToHybrid); err != nil {
 		return nil, err
 	}
 	ctx.emitStep(len(steps))
+	if err := saveSystemConfig(cfg); err != nil {
+		return nil, fmt.Errorf("publish P2P setting: %w", err)
+	}
+	ctx.emitStep(len(steps) + 1)
 	return nil, nil
 }
 
@@ -454,20 +523,40 @@ func verbSyncthingInstall(ctx *verbCtx, _ json.RawMessage) (any, error) {
 	if err != nil {
 		return nil, err
 	}
-	cfg.SyncthingInstalled = true
-	steps, password, err := installer.SyncthingInstallSteps(cfg)
+	if cfg.SyncthingEnabled {
+		return nil, errors.New("Syncthing is already enabled")
+	}
+	residue, err := syncthingResiduePresent()
+	if err != nil {
+		return nil, err
+	}
+	if residue {
+		return nil, errors.New("Syncthing add-on residue exists while desired enablement is false — refusing to modify it; ADDON-001 recovery is not implemented")
+	}
+	if err := verifySyncthingPrerequisites(cfg); err != nil {
+		return nil, err
+	}
+	cfg.SyncthingEnabled = true
+	steps, password, err := syncthingInstallSteps(cfg)
 	if err != nil {
 		return nil, err
 	}
 	if err := runSteps(ctx, steps); err != nil {
 		return nil, err
 	}
-	// Stage the facts the admin user needs from the new
-	// component: API key, device ID, and the new onion
-	// hostname — reported as one more step.
-	if err := restage(helper.VerbSyncthingInstall); err != nil {
+	// Stage the two credentials the admin user needs from the new component:
+	// the API key and generated Web password. The device ID and onion hostname
+	// remain live reads; the Tor step above already proved the onion exists.
+	if err := restageFacts(helper.VerbSyncthingInstall); err != nil {
 		return nil, err
 	}
+	if err := stageSyncthingWebPassword(password); err != nil {
+		return nil, fmt.Errorf("stage Syncthing Web password: %w", err)
+	}
 	ctx.emitStep(len(steps))
-	return helper.SyncthingInstallResult{Password: password}, nil
+	if err := saveSystemConfig(cfg); err != nil {
+		return nil, fmt.Errorf("publish Syncthing setting: %w", err)
+	}
+	ctx.emitStep(len(steps) + 1)
+	return nil, nil
 }

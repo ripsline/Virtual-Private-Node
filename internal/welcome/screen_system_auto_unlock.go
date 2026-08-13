@@ -8,7 +8,6 @@ import (
 	"charm.land/bubbles/v2/textinput"
 	tea "charm.land/bubbletea/v2"
 
-	"github.com/virtualprivatenode/vpn/internal/config"
 	"github.com/virtualprivatenode/vpn/internal/installer"
 	"github.com/virtualprivatenode/vpn/internal/theme"
 )
@@ -389,24 +388,26 @@ func (s *AutoUnlockScreen) HandleMsg(
 			s.resultErr = m.err
 			return s, nil
 		}
-		s.ctx.Cfg.AutoUnlock = true
-		s.state = auState_doneOK
-		return s, func() tea.Msg {
-			config.Save(s.ctx.Cfg)
-			return refreshStatusMsg{}
+		if err := reloadSystemConfig(s.ctx.Cfg); err != nil {
+			s.state = auState_doneErr
+			s.resultErr = err
+			return s, nil
 		}
+		s.state = auState_doneOK
+		return s, func() tea.Msg { return refreshStatusMsg{} }
 	case autoUnlockDisableDoneMsg:
 		if m.err != nil {
 			s.state = auState_doneErr
 			s.resultErr = m.err
 			return s, nil
 		}
-		s.ctx.Cfg.AutoUnlock = false
-		s.state = auState_doneOK
-		return s, func() tea.Msg {
-			config.Save(s.ctx.Cfg)
-			return refreshStatusMsg{}
+		if err := reloadSystemConfig(s.ctx.Cfg); err != nil {
+			s.state = auState_doneErr
+			s.resultErr = err
+			return s, nil
 		}
+		s.state = auState_doneOK
+		return s, func() tea.Msg { return refreshStatusMsg{} }
 	case tea.PasteMsg:
 		if s.mode != autoUnlockEnable ||
 			s.state != auState_form {

@@ -41,9 +41,8 @@ import (
 // vpnReleaseFP is the primary fingerprint of the vpn
 // release signing key.
 // Source: generated locally; public key hosted at
-// keys.openpgp.org. Cross-check: the fingerprint in
-// MIGRATION.md (Step 1) — the SAME key signed every release
-// under the old name.
+// keys.openpgp.org. Cross-check: docs/verifying.md publishes the
+// same fingerprint used for manual release verification.
 const vpnReleaseFP = "AFA0EBACDC9A4C4AA7B0154AC97CE10F170BA5FE"
 
 // bitcoinCoreSigners are the trusted Bitcoin Core builder keys.

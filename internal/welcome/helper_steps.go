@@ -5,6 +5,7 @@ package welcome
 import (
 	"fmt"
 
+	"github.com/virtualprivatenode/vpn/internal/config"
 	"github.com/virtualprivatenode/vpn/internal/helper"
 	"github.com/virtualprivatenode/vpn/internal/installer"
 )
@@ -54,4 +55,22 @@ func buildHelperSteps(
 		}
 	}
 	return steps
+}
+
+func appendConfigReloadStep(
+	steps []installer.InstallStep, cfg *config.AppConfig,
+) []installer.InstallStep {
+	return append(steps, installer.InstallStep{
+		Name: "Reloading node configuration",
+		Fn:   func() error { return reloadSystemConfig(cfg) },
+	})
+}
+
+func reloadSystemConfig(cfg *config.AppConfig) error {
+	fresh, err := config.Load()
+	if err != nil {
+		return fmt.Errorf("reload node configuration: %w", err)
+	}
+	*cfg = *fresh
+	return nil
 }

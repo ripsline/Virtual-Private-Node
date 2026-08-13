@@ -7,6 +7,7 @@ import (
 
 	"github.com/virtualprivatenode/vpn/internal/config"
 	"github.com/virtualprivatenode/vpn/internal/helper"
+	"github.com/virtualprivatenode/vpn/internal/installer"
 	"github.com/virtualprivatenode/vpn/internal/lndrpc"
 	"github.com/virtualprivatenode/vpn/internal/logger"
 	"github.com/virtualprivatenode/vpn/internal/theme"
@@ -120,6 +121,16 @@ type nodeAddressesMsg struct {
 	err   error
 }
 
+type walletStateMsg struct {
+	state helper.WalletStateResult
+	err   error
+}
+
+type keyVerificationStateMsg struct {
+	state helper.KeyVerificationStateResult
+	err   error
+}
+
 type syncthingPairedMsg struct {
 	deviceID string
 	err      error
@@ -127,6 +138,10 @@ type syncthingPairedMsg struct {
 type syncthingRemovedMsg struct {
 	deviceID string
 	err      error
+}
+type syncthingDevicesMsg struct {
+	devices []installer.SyncthingDevice
+	err     error
 }
 type channelOpenResultMsg struct {
 	txid string
@@ -240,7 +255,6 @@ type peerOption struct {
 
 type statusMsg struct {
 	services                     map[string]bool
-	walletDetected               bool
 	diskTotal, diskUsed, diskPct string
 	ramTotal, ramUsed, ramPct    string
 	btcSize, lndSize             string
@@ -268,6 +282,8 @@ type statusMsg struct {
 
 type Model struct {
 	cfg       *config.AppConfig
+	prefs     *config.Preferences
+	state     *RuntimeState
 	lndClient *lndrpc.Client
 	version   string
 	subview   wSubview
@@ -320,35 +336,34 @@ type Model struct {
 }
 
 func NewModel(
-	cfg *config.AppConfig, version string,
+	cfg *config.AppConfig, prefs *config.Preferences,
+	state *RuntimeState, version string,
 ) Model {
-	theme.Init(cfg.Theme != "light")
+	theme.Init(prefs.Theme != "light")
 	// Invariant — load-bearing for the wallet-create
 	// flow: lndClient stays nil until a wallet exists.
 	// The walletCreatedMsg handler in update.go is the
 	// only code path that creates lndClient post-launch,
-	// and it runs in the same Update tick that flips
-	// cfg.WalletCreated to true. Together these prevent
-	// statusMsg from racing walletCreatedMsg: see the
-	// walletDetected branch in status.go (gated on
-	// lndClient != nil) and the statusMsg handler in
-	// update.go (gated on !cfg.WalletExists via the
-	// same guard in the fetcher). If a future change
+	// and it runs in the same Update tick that records the live wallet as
+	// present. Together these prevent
+	// statusMsg from racing walletCreatedMsg. If a future change
 	// ever needs lndClient earlier — e.g. to read a
 	// macaroon before wallet creation — the walletExec
 	// → walletCreatedMsg → tab transform sequence needs
 	// to be re-audited for the two handlers interleaving.
 	var client *lndrpc.Client
-	if cfg.HasLND() && cfg.WalletExists() {
+	if cfg.HasLND() && state.WalletKnown && state.WalletExists {
 		client = lndrpc.New(cfg.Network)
 	}
 	m := Model{
-		cfg: cfg, lndClient: client, version: version,
+		cfg: cfg, prefs: prefs, state: state,
+		lndClient: client, version: version,
 		subview: svNone, fetchInFlight: true,
 		nav: NewNavSidebar(),
 	}
 	m.screenCtx = &ScreenContext{
 		Cfg:       cfg,
+		State:     state,
 		LndClient: client,
 		Version:   version,
 	}
@@ -373,16 +388,16 @@ func serviceNames(cfg *config.AppConfig) []string {
 	if cfg.HasLND() {
 		names = append(names, "lnd")
 	}
-	if cfg.SyncthingInstalled {
+	if cfg.SyncthingEnabled {
 		names = append(names, "syncthing")
 	}
 	return names
 }
 
-func (m Model) saveCfg() {
-	if err := config.Save(m.cfg); err != nil {
+func (m Model) savePreferences() {
+	if err := config.SavePreferences(m.prefs); err != nil {
 		logger.TUI(
-			"ERROR: failed to save config: %v", err)
+			"ERROR: failed to save TUI preferences: %v", err)
 	}
 }
 
@@ -390,15 +405,21 @@ func (m Model) pollInterval() time.Duration {
 	if m.status == nil {
 		return 3 * time.Second
 	}
+	if !m.state.WalletKnown || !m.state.KeyVerificationKnown {
+		return 5 * time.Second
+	}
 	if !m.status.lndResponding && m.cfg.HasLND() &&
-		m.cfg.WalletExists() {
+		m.state.WalletKnown && m.state.WalletExists {
 		return 5 * time.Second
 	}
 	return 60 * time.Second
 }
 
-func Show(cfg *config.AppConfig, version string) {
-	m := NewModel(cfg, version)
+func Show(
+	cfg *config.AppConfig, prefs *config.Preferences, version string,
+) {
+	state := observeRuntimeState(cfg)
+	m := NewModel(cfg, prefs, state, version)
 	p := tea.NewProgram(m)
 	result, _ := p.Run()
 	final := result.(Model)
@@ -408,9 +429,44 @@ func Show(cfg *config.AppConfig, version string) {
 	}
 }
 
+func observeRuntimeState(cfg *config.AppConfig) *RuntimeState {
+	state := &RuntimeState{}
+	var wallet helper.WalletStateResult
+	if err := helper.Call(
+		helper.VerbReadWalletState, nil, &wallet); err != nil {
+		logger.TUI("read live wallet state: %v", err)
+	} else {
+		state.WalletExists = wallet.WalletExists
+		state.WalletKnown = true
+	}
+	var verification helper.KeyVerificationStateResult
+	if err := helper.Call(
+		helper.VerbReadKeyVerificationState,
+		nil, &verification); err != nil {
+		logger.TUI("read key-verification state: %v", err)
+	} else {
+		state.KeyVerificationPending = verification.Pending
+		state.KeyVerificationKnown = true
+	}
+	if enabled, err := installer.EffectiveSSHPasswordAuth(); err != nil {
+		logger.TUI("read live SSH password authentication: %v", err)
+	} else {
+		state.SSHPasswordAuthDisabled = !enabled
+		state.SSHPasswordAuthKnown = true
+	}
+	if cfg.SyncthingEnabled {
+		state.SyncthingDevices, state.SyncthingDevicesErr =
+			installer.ListSyncthingDevices()
+		state.SyncthingDevicesKnown = state.SyncthingDevicesErr == nil
+	}
+	return state
+}
+
 func (m Model) Init() tea.Cmd {
 	return tea.Batch(
-		fetchStatus(m.cfg, m.lndClient),
+		fetchStatus(m.cfg, m.state, m.lndClient),
+		fetchWalletStateCmd(),
+		fetchKeyVerificationStateCmd(),
 		fetchLatestVersionCmd(),
 		tickEveryCmd(m.pollInterval()))
 }

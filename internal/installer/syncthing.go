@@ -9,7 +9,9 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"os/user"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -21,6 +23,46 @@ import (
 	"github.com/virtualprivatenode/vpn/internal/paths"
 	"github.com/virtualprivatenode/vpn/internal/system"
 )
+
+var syncthingResiduePaths = []string{
+	paths.SyncthingBinary,
+	paths.SyncthingDir,
+	paths.SyncthingDataDir,
+	paths.SyncthingService,
+	paths.StateSyncthingAPIKey,
+	paths.StateSyncthingWebPassword,
+	paths.TorSyncthing,
+	paths.TorSyncthingSync,
+	paths.BackupWatchPath,
+	paths.BackupExportService,
+	paths.LNDBackupStage,
+	paths.LNDBackupExport,
+}
+
+// SyncthingResiduePresent conservatively detects known add-on artifacts before
+// a fresh install attempt. It does not classify, adopt, clean, or repair them;
+// any evidence causes the helper to refuse without mutation so ADDON-001 can
+// define recovery later.
+func SyncthingResiduePresent() (bool, error) {
+	for _, path := range syncthingResiduePaths {
+		if _, err := os.Lstat(path); err == nil {
+			return true, nil
+		} else if !os.IsNotExist(err) {
+			return false, fmt.Errorf("inspect Syncthing residue %s: %w", path, err)
+		}
+	}
+	if _, err := user.Lookup(syncthingUser); err == nil {
+		return true, nil
+	} else if _, ok := err.(user.UnknownUserError); !ok {
+		return false, fmt.Errorf("inspect Syncthing user: %w", err)
+	}
+	if _, err := user.LookupGroup(backupGroup); err == nil {
+		return true, nil
+	} else if _, ok := err.(user.UnknownGroupError); !ok {
+		return false, fmt.Errorf("inspect Syncthing backup group: %w", err)
+	}
+	return false, nil
+}
 
 // downloadSyncthing fetches the pinned release tarball and its
 // clearsigned checksum file from GitHub over Tor.
@@ -64,17 +106,41 @@ func extractAndInstallSyncthing(version, workDir string) error {
 		src, "/usr/local/bin/")
 }
 
-func createSyncthingDirs() error {
-	dirs := []struct {
-		path  string
-		owner string
-		mode  os.FileMode
-	}{
-		{paths.SyncthingDir, systemUser + ":" + systemUser, 0750},
-		{paths.SyncthingDataDir, systemUser + ":" + systemUser, 0750},
-		{paths.SyncthingBackup, systemUser + ":" + systemUser, 0750},
+type syncthingDirSpec struct {
+	path  string
+	owner string
+	mode  os.FileMode
+}
+
+func syncthingDirSpecs() []syncthingDirSpec {
+	return []syncthingDirSpec{
+		{paths.SyncthingDir,
+			syncthingUser + ":" + syncthingUser, 0700},
+		{paths.SyncthingDataDir,
+			syncthingUser + ":" + syncthingUser, 0700},
+		// The project-owned parent is the only cross-service
+		// boundary. Syncthing receives group traversal here, never
+		// through its own private state.
+		{paths.ExportDir,
+			"root:" + backupGroup, 0750},
+		// Only the lnd-run publisher can enter private staging.
+		{paths.LNDBackupStage,
+			lndUser + ":" + lndUser, 0700},
+		// The publisher owns the final send-only folder. Syncthing
+		// can traverse and read through the backup group but has no
+		// write bit on the directory or published file.
+		{paths.LNDBackupExport,
+			lndUser + ":" + backupGroup, 0750},
+		// Syncthing requires a marker in every folder it serves. A
+		// custom, installer-owned marker lets it validate this folder
+		// without receiving the write access used to create .stfolder.
+		{paths.LNDBackupExportMarker,
+			"root:" + backupGroup, 0750},
 	}
-	for _, d := range dirs {
+}
+
+func createSyncthingDirs() error {
+	for _, d := range syncthingDirSpecs() {
 		if err := system.SudoRun("mkdir", "-p", d.path); err != nil {
 			return err
 		}
@@ -97,8 +163,8 @@ func createSyncthingDirs() error {
 // STNODEFAULTFOLDER=1 prevents creation of the default ~/Sync
 // folder on first run. --no-restart + Restart=on-failure keeps
 // lifecycle ownership with systemd (existing posture).
-func writeSyncthingService() error {
-	content := fmt.Sprintf(`[Unit]
+func syncthingServiceUnit() string {
+	return fmt.Sprintf(`[Unit]
 Description=Syncthing File Synchronization
 After=network-online.target tor.service
 Wants=network-online.target
@@ -107,6 +173,7 @@ Wants=network-online.target
 Type=simple
 User=%s
 Group=%s
+SupplementaryGroups=%s
 Environment=STNOUPGRADE=1
 Environment=STNODEFAULTFOLDER=1
 ExecStart=/usr/local/bin/syncthing serve --no-browser --no-restart --config=/etc/syncthing --data=/var/lib/syncthing
@@ -117,9 +184,12 @@ RestartForceExitStatus=3 4
 
 [Install]
 WantedBy=multi-user.target
-`, systemUser, systemUser)
+`, syncthingUser, syncthingUser, backupGroup)
+}
+
+func writeSyncthingService() error {
 	return system.SudoWriteFile(paths.SyncthingService,
-		[]byte(content), 0644)
+		[]byte(syncthingServiceUnit()), 0644)
 }
 
 // configureSyncthingAuth provisions Syncthing's identity and
@@ -137,7 +207,7 @@ WantedBy=multi-user.target
 // before the daemon ever starts.
 func configureSyncthingAuth(password string) error {
 	system.SudoRunSilent("chown",
-		systemUser+":"+systemUser, paths.SyncthingDir)
+		syncthingUser+":"+syncthingUser, paths.SyncthingDir)
 
 	// 1. Crypto identity only: TLS cert/key + device ID. The
 	//    generated config.xml is read for its identity values,
@@ -147,7 +217,7 @@ func configureSyncthingAuth(password string) error {
 	//    that generates the identity. runuser (util-linux)
 	//    drops from root to the service user; this box has no
 	//    sudo rules to borrow.
-	if err := system.SudoRun("runuser", "-u", systemUser, "--",
+	if err := system.SudoRun("runuser", "-u", syncthingUser, "--",
 		"/usr/local/bin/syncthing",
 		"generate", "--home="+paths.SyncthingDir); err != nil {
 		return fmt.Errorf("syncthing generate: %w", err)
@@ -201,7 +271,7 @@ func configureSyncthingAuth(password string) error {
 		return err
 	}
 	if err := system.SudoRun("chown",
-		systemUser+":"+systemUser,
+		syncthingUser+":"+syncthingUser,
 		paths.SyncthingConfigXML); err != nil {
 		return err
 	}
@@ -234,7 +304,7 @@ func verifySyncthingConfig() error {
 	//     the probe works in any environment that can run the
 	//     daemon itself.
 	verOut, err := system.RunContext(10*time.Second,
-		"runuser", "-u", systemUser, "--",
+		"runuser", "-u", syncthingUser, "--",
 		"/usr/local/bin/syncthing", "--version")
 	if err != nil {
 		return fmt.Errorf("syncthing --version: %w", err)
@@ -299,37 +369,21 @@ func verifySyncthingConfig() error {
 
 func setupChannelBackupWatcher(cfg *config.AppConfig) error {
 	network := cfg.Network
-	if cfg.IsMainnet() {
-		network = "mainnet"
+	if err := config.ValidateNetwork(network); err != nil {
+		return fmt.Errorf("configure LND backup publisher: %w", err)
 	}
-	backupSource := paths.ChannelBackup(network)
-	backupDest := paths.SyncthingBackup + "/channel.backup"
 
-	pathUnit := fmt.Sprintf(`[Unit]
-Description=Watch LND channel backup
-
-[Path]
-PathChanged=%s
-Unit=lnd-backup-copy.service
-
-[Install]
-WantedBy=multi-user.target
-`, backupSource)
+	pathUnit, exportService, err := channelBackupUnits(network)
+	if err != nil {
+		return err
+	}
 	if err := system.SudoWriteFile(paths.BackupWatchPath,
 		[]byte(pathUnit), 0644); err != nil {
 		return err
 	}
 
-	copyService := fmt.Sprintf(`[Unit]
-Description=Copy LND channel backup
-
-[Service]
-Type=oneshot
-User=%s
-ExecStart=/bin/cp %s %s
-`, systemUser, backupSource, backupDest)
-	if err := system.SudoWriteFile(paths.BackupCopyService,
-		[]byte(copyService), 0644); err != nil {
+	if err := system.SudoWriteFile(paths.BackupExportService,
+		[]byte(exportService), 0644); err != nil {
 		return err
 	}
 
@@ -345,11 +399,57 @@ ExecStart=/bin/cp %s %s
 		return err
 	}
 
-	// Copy existing backup if present
-	system.SudoRunSilent("cp", backupSource, backupDest)
-	system.SudoRunSilent("chown",
-		systemUser+":"+systemUser, backupDest)
+	// If a backup already exists, copy it through the same
+	// least-privilege unit that handles future changes. A node
+	// without a wallet/channel backup yet is a normal no-op.
+	if _, err := os.Stat(paths.ChannelBackup(network)); err == nil {
+		if err := system.SudoRun("systemctl", "start",
+			"lnd-backup-export.service"); err != nil {
+			return err
+		}
+	} else if !os.IsNotExist(err) {
+		return fmt.Errorf("inspect LND channel backup: %w", err)
+	}
 	return nil
+}
+
+// channelBackupUnits renders the watcher and the only service
+// allowed to cross from LND state into the project-owned export.
+// The normal lnd.service has no backup-group access, and Syncthing
+// has no access to /var/lib/lnd or the private staging directory.
+// The service accepts only the closed network selector; every
+// filesystem path is fixed inside the publisher implementation.
+func channelBackupUnits(network string) (
+	pathUnit, exportService string, err error,
+) {
+	if err := config.ValidateNetwork(network); err != nil {
+		return "", "", fmt.Errorf(
+			"render LND backup units: %w", err)
+	}
+	backupSource := paths.ChannelBackup(network)
+	pathUnit = fmt.Sprintf(`[Unit]
+Description=Watch LND channel backup
+
+[Path]
+PathChanged=%s
+Unit=lnd-backup-export.service
+
+[Install]
+WantedBy=multi-user.target
+`, backupSource)
+
+	exportService = fmt.Sprintf(`[Unit]
+Description=Export LND channel backup
+
+[Service]
+Type=oneshot
+User=%s
+Group=%s
+SupplementaryGroups=%s
+UMask=0027
+ExecStart=%s publish-lnd-backup %s
+`, lndUser, lndUser, backupGroup, paths.BinaryPath, network)
+	return pathUnit, exportService, nil
 }
 
 // stopSyncthingFailSafe stops AND disables Syncthing. Used on
@@ -456,10 +556,19 @@ func registerBackupFolder() error {
 		return fmt.Errorf("get API key: %w", err)
 	}
 
-	// Check if folder already exists
+	// Check for the exact folder ID. Searching the raw JSON for
+	// a substring can confuse an unrelated label or longer ID
+	// for the required folder.
 	existing, err := syncthingAPIGet(apiKey,
 		"/rest/config/folders")
-	if err == nil && strings.Contains(existing, "lnd-backup") {
+	if err != nil {
+		return fmt.Errorf("list folders: %w", err)
+	}
+	registered, err := backupFolderRegistered(existing)
+	if err != nil {
+		return fmt.Errorf("parse folders: %w", err)
+	}
+	if registered {
 		return nil
 	}
 
@@ -469,16 +578,7 @@ func registerBackupFolder() error {
 		return fmt.Errorf("cannot determine local device ID")
 	}
 
-	folder := fmt.Sprintf(`{
-        "id": "lnd-backup",
-        "label": "LND Channel Backup",
-        "path": "%s",
-        "type": "sendonly",
-        "rescanIntervalS": 10,
-        "fsWatcherEnabled": true,
-        "fsWatcherDelayS": 1,
-        "devices": [{"deviceID": %q}]
-    }`, paths.SyncthingBackup, localID)
+	folder := renderBackupFolderConfig(localID)
 
 	if err := syncthingAPIPost(apiKey,
 		"/rest/config/folders", folder); err != nil {
@@ -489,7 +589,93 @@ func registerBackupFolder() error {
 	return nil
 }
 
+func renderBackupFolderConfig(localID string) string {
+	return fmt.Sprintf(`{
+        "id": "lnd-backup",
+        "label": "LND Channel Backup",
+        "path": %q,
+        "type": "sendonly",
+        "markerName": %q,
+        "rescanIntervalS": 10,
+        "fsWatcherEnabled": true,
+        "fsWatcherDelayS": 1,
+        "devices": [{"deviceID": %q}]
+    }`, paths.LNDBackupExport, paths.ExportReadyMarkerName, localID)
+}
+
+func backupFolderRegistered(foldersJSON string) (bool, error) {
+	var folders []struct {
+		ID string `json:"id"`
+	}
+	if err := json.Unmarshal([]byte(foldersJSON), &folders); err != nil {
+		return false, err
+	}
+	for _, folder := range folders {
+		if folder.ID == "lnd-backup" {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
 // ── Syncthing Device Pairing ─────────────────────────────
+
+type SyncthingDevice struct {
+	Name     string
+	DeviceID string
+}
+
+// ListSyncthingDevices reads the daemon's effective device list at screen
+// cadence. It excludes this node's own identity and returns the current names,
+// including changes made through Syncthing's Web UI.
+func ListSyncthingDevices() ([]SyncthingDevice, error) {
+	apiKey, err := getSyncthingAPIKey()
+	if err != nil {
+		return nil, fmt.Errorf("get API key: %w", err)
+	}
+	raw, err := syncthingAPIGet(apiKey, "/rest/config/devices")
+	if err != nil {
+		return nil, err
+	}
+	localID := GetSyncthingDeviceID()
+	if localID == "" {
+		return nil, fmt.Errorf("local Syncthing device ID unavailable")
+	}
+	return parseSyncthingDevices([]byte(raw), localID)
+}
+
+func parseSyncthingDevices(
+	raw []byte, localID string,
+) ([]SyncthingDevice, error) {
+	seen := make(map[string]bool)
+	var entries []struct {
+		DeviceID string `json:"deviceID"`
+		Name     string `json:"name"`
+	}
+	if err := json.Unmarshal(raw, &entries); err != nil {
+		return nil, fmt.Errorf("decode Syncthing devices: %w", err)
+	}
+	devices := make([]SyncthingDevice, 0, len(entries))
+	for _, entry := range entries {
+		id := strings.TrimSpace(entry.DeviceID)
+		if id == "" || id == localID || seen[id] {
+			continue
+		}
+		seen[id] = true
+		name := strings.TrimSpace(entry.Name)
+		if name == "" {
+			name = "Syncthing device"
+		}
+		devices = append(devices, SyncthingDevice{Name: name, DeviceID: id})
+	}
+	sort.Slice(devices, func(i, j int) bool {
+		if devices[i].Name == devices[j].Name {
+			return devices[i].DeviceID < devices[j].DeviceID
+		}
+		return devices[i].Name < devices[j].Name
+	})
+	return devices, nil
+}
 
 // GetSyncthingDeviceID returns this node's Syncthing device
 // ID. As root it parses Syncthing's config XML (works even
@@ -739,8 +925,8 @@ func addDeviceToBackupFolder(
 	}
 
 	for i, f := range folders {
-		if f.Path == paths.SyncthingBackup ||
-			f.Path == paths.SyncthingBackup+"/" {
+		if f.Path == paths.LNDBackupExport ||
+			f.Path == paths.LNDBackupExport+"/" {
 			// Check if device already added
 			for _, d := range f.Devices {
 				if d.DeviceID == deviceID {

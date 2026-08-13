@@ -81,7 +81,7 @@ type walletExecDoneMsg struct{ err error }
 type walletCreatedMsg struct{}
 
 // walletStageFailedMsg reports that the wallet exists but the
-// helper could not stage its credentials for this console.
+// helper could not stage its credentials for this TUI.
 type walletStageFailedMsg struct{ err error }
 
 type WalletCreateScreen struct {
@@ -180,6 +180,17 @@ func (s *WalletCreateScreen) HandleKey(
 func (s *WalletCreateScreen) startWaitingForLND() (
 	Screen, tea.Cmd,
 ) {
+	if !s.ctx.walletKnown() {
+		s.step = walletErr
+		s.resultErr = fmt.Errorf(
+			"wallet state is unavailable; refusing to create a wallet")
+		return s, nil
+	}
+	if s.ctx.walletExists() {
+		s.step = walletErr
+		s.resultErr = fmt.Errorf("an LND wallet already exists")
+		return s, nil
+	}
 	s.step = walletWaiting
 	return s, waitForLNDCmd()
 }
@@ -219,11 +230,11 @@ func (s *WalletCreateScreen) HandleMsg(
 		}
 		// Success. Wallet creation just minted this node's
 		// admin macaroon — have the helper stage copies for
-		// this console BEFORE the Model builds the gRPC
+		// this TUI BEFORE the Model builds the gRPC
 		// client that reads them.
 		return s, func() tea.Msg {
 			if err := helper.Call(
-				helper.VerbStageLNDCredentials,
+				helper.VerbStageLNDMacaroon,
 				nil, nil); err != nil {
 				return walletStageFailedMsg{err: err}
 			}
@@ -234,8 +245,8 @@ func (s *WalletCreateScreen) HandleMsg(
 		s.step = walletErr
 		s.resultErr = fmt.Errorf(
 			"the wallet was created, but its credentials "+
-				"could not be staged for this console: %v — "+
-				"the console cannot reach the wallet until "+
+				"could not be staged for this TUI: %v — "+
+				"the TUI cannot reach the wallet until "+
 				"that is resolved", m.err)
 		return s, nil
 	}

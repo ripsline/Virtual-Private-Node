@@ -5,8 +5,6 @@ package installer
 import (
 	"strings"
 	"testing"
-
-	"github.com/virtualprivatenode/vpn/internal/config"
 )
 
 // realistic excerpt of sshd -T output: lowercase keywords,
@@ -108,18 +106,14 @@ func TestParsePasswordAuth(t *testing.T) {
 }
 
 func TestBuildSSHHardeningConfig(t *testing.T) {
-	cfg := config.Default()
-
-	cfg.SSHPasswordAuthDisabled = false
-	enabled := BuildSSHHardeningConfig(cfg)
+	enabled := BuildSSHHardeningConfig(false)
 	if !strings.Contains(enabled,
 		"PasswordAuthentication yes\n") {
 		t.Fatalf("enabled config missing "+
 			"'PasswordAuthentication yes':\n%s", enabled)
 	}
 
-	cfg.SSHPasswordAuthDisabled = true
-	disabled := BuildSSHHardeningConfig(cfg)
+	disabled := BuildSSHHardeningConfig(true)
 	if !strings.Contains(disabled,
 		"PasswordAuthentication no\n") {
 		t.Fatalf("disabled config missing "+
@@ -191,16 +185,13 @@ func TestBuildHardeningDropInOmission(t *testing.T) {
 }
 
 // The TUI-era builder and the install builder must render the
-// SAME body for the same auth state — a migrated box's later
+// SAME body for the same auth state — an interrupted install's later
 // TUI rebuild may not churn the file.
 func TestBuildersAgree(t *testing.T) {
-	cfg := config.Default()
-	cfg.SSHPasswordAuthDisabled = true
-	if BuildSSHHardeningConfig(cfg) != buildHardeningDropIn("no") {
+	if BuildSSHHardeningConfig(true) != buildHardeningDropIn("no") {
 		t.Error("builders disagree for disabled state")
 	}
-	cfg.SSHPasswordAuthDisabled = false
-	if BuildSSHHardeningConfig(cfg) != buildHardeningDropIn("yes") {
+	if BuildSSHHardeningConfig(false) != buildHardeningDropIn("yes") {
 		t.Error("builders disagree for enabled state")
 	}
 }

@@ -48,12 +48,6 @@ func setUserPasswordCmd(
 	return func() tea.Msg {
 		err := installer.SetUserPassword(
 			username, newPassword)
-		if err == nil {
-			// The operator now holds a password they chose, so
-			// any record of a never-displayed generated password
-			// is obsolete (see installer/passwordpending.go).
-			installer.ClearPasswordPendingMarker()
-		}
 		return changePwDoneMsg{err: err}
 	}
 }

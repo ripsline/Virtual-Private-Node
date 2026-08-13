@@ -65,7 +65,7 @@ func (s *WalletHomeScreen) HandleKey(
 	case "right":
 		if s.focusZone == walletHomeZoneButtons &&
 			s.ctx.Cfg.HasLND() &&
-			s.ctx.Cfg.WalletExists() &&
+			s.ctx.walletExists() &&
 			s.btnIdx < 2 {
 			s.btnIdx++
 		}
@@ -112,7 +112,10 @@ func (s *WalletHomeScreen) HandleKey(
 		return s, emitFocusSidebar
 	case "enter":
 		// No wallet → trigger wallet creation flow
-		if !s.ctx.Cfg.WalletExists() {
+		if !s.ctx.walletKnown() {
+			return s, fetchWalletStateCmd()
+		}
+		if !s.ctx.walletExists() {
 			screen := NewWalletCreateScreen(s.ctx)
 			return s, func() tea.Msg {
 				return openTabMsg{
@@ -179,7 +182,7 @@ func (s *WalletHomeScreen) openSend() (
 ) {
 	cfg := s.ctx.Cfg
 	if s.ctx.LndClient == nil || !cfg.HasLND() ||
-		!cfg.WalletExists() {
+		!s.ctx.walletExists() {
 		return s, nil
 	}
 	screen := NewSendScreen(s.ctx)
@@ -197,7 +200,7 @@ func (s *WalletHomeScreen) openReceive() (
 ) {
 	cfg := s.ctx.Cfg
 	if s.ctx.LndClient == nil || !cfg.HasLND() ||
-		!cfg.WalletExists() {
+		!s.ctx.walletExists() {
 		return s, nil
 	}
 	screen := NewReceiveScreen(s.ctx)
@@ -244,7 +247,10 @@ func (s *WalletHomeScreen) View(
 	cfg := s.ctx.Cfg
 	status := s.ctx.Status
 
-	if !cfg.HasLND() || !cfg.WalletExists() {
+	if !s.ctx.walletKnown() {
+		return renderWalletStateUnavailable(w, h)
+	}
+	if !cfg.HasLND() || !s.ctx.walletExists() {
 		return renderWalletPrompt(
 			w, h, s.ctx.ContentFocused)
 	}
@@ -485,7 +491,7 @@ func (s *WalletHomeScreen) View(
 // ── HelpBindings ────────────────────────────────────────
 
 func (s *WalletHomeScreen) HelpBindings() []key.Binding {
-	if !s.ctx.Cfg.WalletExists() {
+	if !s.ctx.walletExists() {
 		return []key.Binding{
 			kEnterCreateWallet,
 			kSidebar,

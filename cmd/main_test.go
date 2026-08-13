@@ -2,7 +2,14 @@
 
 package main
 
-import "testing"
+import (
+	"errors"
+	"os/user"
+	"strings"
+	"testing"
+
+	"github.com/virtualprivatenode/vpn/internal/config"
+)
 
 // Explicit dispatch: the command line alone decides the mode.
 func TestParseArgs(t *testing.T) {
@@ -66,5 +73,69 @@ func TestParseArgs(t *testing.T) {
 	if _, _, err := parseArgs(
 		[]string{"stage-lnd-cert", "--flag"}); err == nil {
 		t.Error("stage-lnd-cert with arguments accepted")
+	}
+
+	for _, network := range []string{"mainnet", "testnet4"} {
+		cmd, opts, err = parseArgs(
+			[]string{"publish-lnd-backup", network})
+		if err != nil || cmd != cmdPublishLNDBackup ||
+			opts.Network != network {
+			t.Errorf("publisher %s: got (%v,%+v,%v)",
+				network, cmd, opts, err)
+		}
+	}
+	for _, args := range [][]string{
+		{"publish-lnd-backup"},
+		{"publish-lnd-backup", "signet"},
+		{"publish-lnd-backup", "mainnet", "/tmp/destination"},
+	} {
+		if _, _, err := parseArgs(args); err == nil {
+			t.Errorf("invalid publisher arguments accepted: %v", args)
+		}
+	}
+}
+
+func TestConsoleIdentityCheckedBeforeConfigurationLoad(t *testing.T) {
+	lookup := func(string) (*user.User, error) {
+		return &user.User{Uid: "1001", Username: "vpn"}, nil
+	}
+	loaded := false
+	load := func() (*config.AppConfig, error) {
+		loaded = true
+		return config.Default(), nil
+	}
+	for _, euid := range []int{0, 1000} {
+		loaded = false
+		if _, err := loadConsoleConfig(euid, lookup, load); !errors.Is(err, errWrongTUIIdentity) {
+			t.Errorf("euid %d error = %v", euid, err)
+		}
+		if loaded {
+			t.Errorf("euid %d opened configuration", euid)
+		}
+	}
+	loaded = false
+	cfg, err := loadConsoleConfig(1001, lookup, load)
+	if err != nil || cfg == nil || !loaded {
+		t.Fatalf("vpn identity did not load config: cfg=%v loaded=%v err=%v", cfg, loaded, err)
+	}
+}
+
+func TestConsoleIdentityLookupFailureDoesNotLoadConfig(t *testing.T) {
+	loaded := false
+	_, err := loadConsoleConfig(1001,
+		func(string) (*user.User, error) { return nil, errors.New("lookup failed") },
+		func() (*config.AppConfig, error) { loaded = true; return config.Default(), nil })
+	if !errors.Is(err, errWrongTUIIdentity) || loaded {
+		t.Fatalf("lookup failure: loaded=%v err=%v", loaded, err)
+	}
+}
+
+func TestUsageDescribesFreshInstallAndResume(t *testing.T) {
+	text := usage()
+	if strings.Contains(text, "install or reinstall") {
+		t.Fatal("usage still advertises reinstall")
+	}
+	if !strings.Contains(text, "resume a recognized interruption") {
+		t.Fatal("usage does not describe supported resume")
 	}
 }

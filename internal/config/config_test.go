@@ -1,245 +1,226 @@
-// internal/config/config_test.go
-
 package config
 
 import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
-func TestDefaultValues(t *testing.T) {
-	cfg := Default()
-
-	if cfg.Network != "mainnet" {
-		t.Errorf("Network: got %q, want %q", cfg.Network, "mainnet")
-	}
-	if cfg.Components != "bitcoin" {
-		t.Errorf("Components: got %q, want %q", cfg.Components, "bitcoin")
-	}
-	if cfg.PruneSize != 25 {
-		t.Errorf("PruneSize: got %d, want %d", cfg.PruneSize, 25)
-	}
-	if cfg.P2PMode != "tor" {
-		t.Errorf("P2PMode: got %q, want %q", cfg.P2PMode, "tor")
-	}
-	if cfg.AutoUnlock {
-		t.Error("AutoUnlock: expected false")
-	}
-	if cfg.LNDInstalled {
-		t.Error("LNDInstalled: expected false")
-	}
-	if cfg.SyncthingInstalled {
-		t.Error("SyncthingInstalled: expected false")
-	}
-	if cfg.InstallComplete {
-		t.Error("InstallComplete: expected false")
-	}
-	if cfg.InstallVersion != "" {
-		t.Error("InstallVersion: expected empty")
-	}
-	if cfg.WalletCreated {
-		t.Error("WalletCreated: expected false")
-	}
-	// Password auth must default to ENABLED (false).
-	// The SSH lockout guards fail safe only because a
-	// fresh or clobbered config yields this value; a
-	// future change flipping the default would turn a
-	// config-load failure into a possible lockout.
-	if cfg.SSHPasswordAuthDisabled {
-		t.Error("SSHPasswordAuthDisabled: expected false " +
-			"(password auth enabled by default)")
+func testStore(t *testing.T) *Store {
+	t.Helper()
+	dir := filepath.Join(t.TempDir(), "etc-vpn")
+	return &Store{
+		Dir:      dir,
+		Path:     filepath.Join(dir, "config.json"),
+		OwnerUID: os.Geteuid(),
+		GroupGID: os.Getegid(),
 	}
 }
 
-func TestHasLND(t *testing.T) {
+func TestDefaultSystemConfig(t *testing.T) {
 	cfg := Default()
-	if cfg.HasLND() {
-		t.Error("default config should not have LND")
+	if cfg.Schema != SystemSchema || cfg.Network != "mainnet" ||
+		cfg.PruneSize != 25 || cfg.DbCache != 512 ||
+		cfg.P2PMode != "tor" || cfg.AutoUnlock || cfg.SyncthingEnabled {
+		t.Fatalf("unexpected defaults: %+v", cfg)
 	}
-	cfg.LNDInstalled = true
 	if !cfg.HasLND() {
-		t.Error("config with LNDInstalled=true should have LND")
+		t.Fatal("LND must be part of the base installation")
 	}
 }
 
-func TestIsMainnet(t *testing.T) {
-	tests := []struct {
-		network string
-		want    bool
-	}{
-		{"mainnet", true},
-		{"testnet4", false},
-		{"", false},
-		{"signet", false},
+func TestSystemConfigContainsOnlyDesiredNonSecretFields(t *testing.T) {
+	data, err := json.Marshal(Default())
+	if err != nil {
+		t.Fatal(err)
 	}
-	for _, tt := range tests {
-		cfg := &AppConfig{Network: tt.network}
-		if got := cfg.IsMainnet(); got != tt.want {
-			t.Errorf("IsMainnet(%q): got %v, want %v",
-				tt.network, got, tt.want)
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(data, &raw); err != nil {
+		t.Fatal(err)
+	}
+	if len(raw) != len(systemFields) {
+		t.Fatalf("serialized %d fields, want %d: %s", len(raw), len(systemFields), data)
+	}
+	for name := range systemFields {
+		if _, ok := raw[name]; !ok {
+			t.Errorf("missing desired field %q", name)
+		}
+	}
+	for _, forbidden := range []string{
+		"components", "lnd_installed", "wallet_created",
+		"syncthing_installed", "syncthing_password",
+		"syncthing_devices", "theme", "ssh_ports",
+		"key_verification_pending", "ssh_password_auth_disabled",
+	} {
+		if _, ok := raw[forbidden]; ok {
+			t.Errorf("authority-mixed field %q remains", forbidden)
 		}
 	}
 }
 
-func TestNetworkConfigRouting(t *testing.T) {
-	mainnet := &AppConfig{Network: "mainnet"}
-	if mainnet.NetworkConfig().RPCPort != 8332 {
-		t.Errorf("mainnet RPCPort: got %d, want 8332",
-			mainnet.NetworkConfig().RPCPort)
-	}
-
-	testnet := &AppConfig{Network: "testnet4"}
-	if testnet.NetworkConfig().RPCPort != 48332 {
-		t.Errorf("testnet4 RPCPort: got %d, want 48332",
-			testnet.NetworkConfig().RPCPort)
-	}
-}
-
-func TestJSONRoundTrip(t *testing.T) {
-	original := &AppConfig{
-		InstallComplete:    true,
-		InstallVersion:     "0.2.2",
-		Network:            "testnet4",
-		Components:         "bitcoin+lnd",
-		PruneSize:          50,
-		P2PMode:            "hybrid",
-		AutoUnlock:         true,
-		LNDInstalled:       true,
-		WalletCreated:      true,
-		SyncthingInstalled: true,
-		SyncthingPassword:  "def456",
-	}
-
-	data, err := json.Marshal(original)
+func TestDecodeSystemStrict(t *testing.T) {
+	valid := `{"schema":1,"network":"testnet4","prune_size_gb":25,"db_cache_mb":1024,"p2p_mode":"hybrid","auto_unlock_enabled":true,"syncthing_enabled":false}`
+	cfg, err := decodeSystem([]byte(valid))
 	if err != nil {
-		t.Fatalf("marshal: %v", err)
+		t.Fatalf("valid config: %v", err)
+	}
+	if cfg.Network != "testnet4" || cfg.DbCache != 1024 ||
+		cfg.P2PMode != "hybrid" || !cfg.AutoUnlock || cfg.SyncthingEnabled {
+		t.Fatalf("decoded wrong values: %+v", cfg)
 	}
 
-	loaded := &AppConfig{}
-	if err := json.Unmarshal(data, loaded); err != nil {
-		t.Fatalf("unmarshal: %v", err)
+	cases := map[string]string{
+		"malformed":          `{`,
+		"not object":         `[]`,
+		"unknown":            strings.TrimSuffix(valid, `}`) + `,"extra":1}`,
+		"duplicate":          strings.Replace(valid, `"schema":1`, `"schema":1,"schema":1`, 1),
+		"missing":            strings.Replace(valid, `"network":"testnet4",`, ``, 1),
+		"future schema":      strings.Replace(valid, `"schema":1`, `"schema":2`, 1),
+		"bad network":        strings.Replace(valid, `"testnet4"`, `"signet"`, 1),
+		"bad p2p":            strings.Replace(valid, `"hybrid"`, `"clearnet"`, 1),
+		"bad db cache":       strings.Replace(valid, `1024`, `999`, 1),
+		"zero prune":         strings.Replace(valid, `"prune_size_gb":25`, `"prune_size_gb":0`, 1),
+		"trailing value":     valid + ` {}`,
+		"wrong boolean type": strings.Replace(valid, `"syncthing_enabled":false`, `"syncthing_enabled":"false"`, 1),
 	}
-
-	if loaded.Network != original.Network {
-		t.Errorf("Network: got %q, want %q",
-			loaded.Network, original.Network)
-	}
-	if loaded.PruneSize != original.PruneSize {
-		t.Errorf("PruneSize: got %d, want %d",
-			loaded.PruneSize, original.PruneSize)
-	}
-	if loaded.SyncthingPassword != original.SyncthingPassword {
-		t.Errorf("SyncthingPassword: got %q, want %q",
-			loaded.SyncthingPassword, original.SyncthingPassword)
-	}
-	if !loaded.AutoUnlock {
-		t.Error("AutoUnlock: expected true")
+	for name, input := range cases {
+		t.Run(name, func(t *testing.T) {
+			if _, err := decodeSystem([]byte(input)); err == nil {
+				t.Fatalf("accepted %s", input)
+			}
+		})
 	}
 }
 
-func TestOmitEmptyPasswords(t *testing.T) {
+func TestStoreSaveLoadAndMetadata(t *testing.T) {
+	store := testStore(t)
 	cfg := Default()
-	data, err := json.Marshal(cfg)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	raw := make(map[string]interface{})
-	json.Unmarshal(data, &raw)
-
-	if _, exists := raw["syncthing_password"]; exists {
-		t.Error("empty SyncthingPassword should be omitted from JSON")
-	}
-}
-
-func TestStoreSaveAndLoad(t *testing.T) {
-	tmpDir := t.TempDir()
-	store := &Store{
-		Dir:  tmpDir,
-		Path: filepath.Join(tmpDir, "config.json"),
-	}
-
-	cfg := Default()
-	cfg.PruneSize = 75
-	cfg.LNDInstalled = true
 	cfg.Network = "testnet4"
-
+	cfg.DbCache = 2048
+	cfg.SyncthingEnabled = true
 	if err := store.Save(cfg); err != nil {
 		t.Fatalf("save: %v", err)
 	}
-
+	for path, want := range map[string]os.FileMode{
+		store.Dir: 0o750, store.Path: 0o640,
+	} {
+		info, err := os.Lstat(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if info.Mode().Perm() != want {
+			t.Errorf("%s mode %04o, want %04o", path, info.Mode().Perm(), want)
+		}
+	}
 	loaded, err := store.Load()
 	if err != nil {
 		t.Fatalf("load: %v", err)
 	}
-
-	if loaded.PruneSize != 75 {
-		t.Errorf("PruneSize: got %d, want 75", loaded.PruneSize)
-	}
-	if !loaded.LNDInstalled {
-		t.Error("LNDInstalled: expected true")
-	}
-	if loaded.Network != "testnet4" {
-		t.Errorf("Network: got %q, want testnet4", loaded.Network)
+	if loaded.Network != "testnet4" || loaded.DbCache != 2048 || !loaded.SyncthingEnabled {
+		t.Fatalf("loaded wrong config: %+v", loaded)
 	}
 }
 
-func TestStoreLoadMissingFile(t *testing.T) {
-	store := &Store{
-		Dir:  t.TempDir(),
-		Path: "/nonexistent/config.json",
-	}
-	_, err := store.Load()
-	if err == nil {
-		t.Error("expected error loading nonexistent file")
-	}
-}
-
-func TestStoreLoadInvalidJSON(t *testing.T) {
-	tmpDir := t.TempDir()
-	tmpPath := filepath.Join(tmpDir, "config.json")
-	os.WriteFile(tmpPath, []byte("not json"), 0600)
-
-	store := &Store{Dir: tmpDir, Path: tmpPath}
-	_, err := store.Load()
-	if err == nil {
-		t.Error("expected error loading invalid JSON")
-	}
-}
-
-func TestStoreLoadInvalidNetwork(t *testing.T) {
-	tmpDir := t.TempDir()
-	tmpPath := filepath.Join(tmpDir, "config.json")
-	badCfg := `{"network": "bogus", "components": "bitcoin", "prune_size": 25, "p2p_mode": "tor"}`
-	os.WriteFile(tmpPath, []byte(badCfg), 0600)
-
-	store := &Store{Dir: tmpDir, Path: tmpPath}
-	_, err := store.Load()
-	if err == nil {
-		t.Error("expected error loading config with invalid network")
-	}
-}
-
-func TestStoreSaveFilePermissions(t *testing.T) {
-	tmpDir := t.TempDir()
-	store := &Store{
-		Dir:  tmpDir,
-		Path: filepath.Join(tmpDir, "config.json"),
-	}
-
+func TestStoreAtomicallyReplacesConfig(t *testing.T) {
+	store := testStore(t)
 	if err := store.Save(Default()); err != nil {
 		t.Fatal(err)
 	}
-
-	info, err := os.Stat(store.Path)
+	before, err := os.Stat(store.Path)
 	if err != nil {
 		t.Fatal(err)
 	}
+	cfg := Default()
+	cfg.P2PMode = "hybrid"
+	if err := store.Save(cfg); err != nil {
+		t.Fatal(err)
+	}
+	after, err := os.Stat(store.Path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if os.SameFile(before, after) {
+		t.Fatal("config inode was modified in place instead of replaced")
+	}
+	loaded, err := store.Load()
+	if err != nil || loaded.P2PMode != "hybrid" {
+		t.Fatalf("replacement not readable: %+v, %v", loaded, err)
+	}
+}
 
-	perm := info.Mode().Perm()
-	if perm != 0600 {
-		t.Errorf("file permissions: got %o, want 0600", perm)
+func TestStoreRefusesUnsafeObjects(t *testing.T) {
+	t.Run("directory symlink", func(t *testing.T) {
+		base := t.TempDir()
+		realDir := filepath.Join(base, "real")
+		if err := os.Mkdir(realDir, 0o750); err != nil {
+			t.Fatal(err)
+		}
+		store := &Store{Dir: filepath.Join(base, "link"), Path: filepath.Join(base, "link", "config.json"), OwnerUID: os.Geteuid(), GroupGID: os.Getegid()}
+		if err := os.Symlink(realDir, store.Dir); err != nil {
+			t.Fatal(err)
+		}
+		if err := store.Save(Default()); err == nil {
+			t.Fatal("saved through directory symlink")
+		}
+	})
+
+	t.Run("destination symlink", func(t *testing.T) {
+		store := testStore(t)
+		if err := os.Mkdir(store.Dir, 0o750); err != nil {
+			t.Fatal(err)
+		}
+		target := filepath.Join(t.TempDir(), "target")
+		if err := os.WriteFile(target, []byte("protected"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Symlink(target, store.Path); err != nil {
+			t.Fatal(err)
+		}
+		if err := store.Save(Default()); err == nil {
+			t.Fatal("replaced destination symlink")
+		}
+		data, _ := os.ReadFile(target)
+		if string(data) != "protected" {
+			t.Fatal("symlink target changed")
+		}
+	})
+
+	t.Run("load wrong mode", func(t *testing.T) {
+		store := testStore(t)
+		if err := store.Save(Default()); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Chmod(store.Path, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := store.Load(); err == nil {
+			t.Fatal("loaded config with wrong mode")
+		}
+	})
+}
+
+func TestStoreRefusesInvalidConfigBeforeMutation(t *testing.T) {
+	store := testStore(t)
+	cfg := Default()
+	cfg.P2PMode = "bogus"
+	if err := store.Save(cfg); err == nil {
+		t.Fatal("saved invalid config")
+	}
+	if _, err := os.Lstat(store.Dir); !os.IsNotExist(err) {
+		t.Fatalf("invalid save mutated filesystem: %v", err)
+	}
+}
+
+func TestNetworkConfigRouting(t *testing.T) {
+	mainnet := Default()
+	if mainnet.NetworkConfig().RPCPort != 8332 {
+		t.Fatalf("mainnet RPC port %d", mainnet.NetworkConfig().RPCPort)
+	}
+	testnet := Default()
+	testnet.Network = "testnet4"
+	if testnet.NetworkConfig().RPCPort != 48332 {
+		t.Fatalf("testnet4 RPC port %d", testnet.NetworkConfig().RPCPort)
 	}
 }

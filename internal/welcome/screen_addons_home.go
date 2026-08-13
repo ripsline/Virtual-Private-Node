@@ -62,7 +62,7 @@ func (s *AddonsHomeScreen) handleEnter() (
 ) {
 	cfg := s.ctx.Cfg
 
-	if cfg.SyncthingInstalled {
+	if cfg.SyncthingEnabled {
 		screen := NewSyncthingDetailScreen(s.ctx)
 		return s, func() tea.Msg {
 			return openTabMsg{
@@ -72,7 +72,7 @@ func (s *AddonsHomeScreen) handleEnter() (
 			}
 		}
 	}
-	if cfg.HasLND() && cfg.WalletExists() {
+	if cfg.HasLND() && s.ctx.walletExists() {
 		screen := NewSyncthingInstallScreen(s.ctx)
 		return s, func() tea.Msg {
 			return openTabMsg{
@@ -140,17 +140,24 @@ func (s *AddonsHomeScreen) View(
 	syncSelected := isFocused && s.cursor == 0
 
 	var syncStat1, syncStat2 string
-	if cfg.SyncthingInstalled {
+	if cfg.SyncthingEnabled {
 		syncStat1 = theme.GreenDot.Render("●") +
-			" " + theme.Good.Render("Installed")
-		syncStat2 = theme.Dim.Render(fmt.Sprintf(
-			"%d paired",
-			len(cfg.SyncthingDevices)))
+			" " + theme.Good.Render("Enabled")
+		if s.ctx.State.SyncthingDevicesKnown {
+			syncStat2 = theme.Dim.Render(fmt.Sprintf(
+				"%d paired",
+				len(s.ctx.State.SyncthingDevices)))
+		} else {
+			syncStat2 = theme.Warn.Render("Device list unavailable")
+		}
 	} else {
 		syncStat1 = theme.RedDot.Render("●") +
-			" " + theme.Dim.Render("Not installed")
+			" " + theme.Dim.Render("Not enabled")
 		syncStat2 = ""
-		if !cfg.WalletExists() {
+		if !s.ctx.walletKnown() {
+			syncStat2 = theme.Warn.Render(
+				"Wallet state unavailable")
+		} else if !s.ctx.walletExists() {
 			syncStat2 = theme.Warn.Render(
 				"Requires LND wallet")
 		}

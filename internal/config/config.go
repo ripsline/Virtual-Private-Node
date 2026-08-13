@@ -3,270 +3,352 @@
 package config
 
 import (
+	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"os"
-	"time"
+	"os/user"
+	"path/filepath"
+	"strconv"
+	"syscall"
 
 	"github.com/virtualprivatenode/vpn/internal/paths"
 )
 
-// Defaults — used by production code
 const (
 	DefaultDir  = paths.ConfigDir
 	DefaultPath = paths.ConfigFile
+
+	SystemSchema = 1
 )
 
-// AppConfig holds the application state persisted to disk.
-//
-// Security note: passwords (SyncthingPassword) are stored in plaintext. This is a
-// deliberate tradeoff for a single-user dedicated node. The config file
-// has 0600 permissions, and the machine runs a single non-root user.
-// Alternatives (OS keyring, encrypted vault) add complexity without
-// meaningful security benefit on a dedicated node where the attacker
-// model is remote access, not local privilege escalation.
+// AppConfig is the root-owned, non-secret desired system configuration.
+// It deliberately contains no live daemon observations, credentials,
+// installer lifecycle state, security-workflow markers, or TUI preferences.
 type AppConfig struct {
-	InstallComplete    bool              `json:"install_complete"`
-	InstallVersion     string            `json:"install_version,omitempty"`
-	Network            string            `json:"network"`
-	Components         string            `json:"components"`
-	PruneSize          int               `json:"prune_size"`
-	P2PMode            string            `json:"p2p_mode"`
-	AutoUnlock         bool              `json:"auto_unlock"`
-	LNDInstalled       bool              `json:"lnd_installed"`
-	WalletCreated      bool              `json:"wallet_created"`
-	SyncthingInstalled bool              `json:"syncthing_installed"`
-	SyncthingPassword  string            `json:"syncthing_password,omitempty"`
-	SyncthingDevices   []SyncthingDevice `json:"syncthing_devices,omitempty"`
-	Theme              string            `json:"theme,omitempty"`
-
-	// DbCache is bitcoind's dbcache in MB, chosen at the
-	// install hardware-fit step (ruling viii) from detected
-	// RAM. Zero means "never set" — DbCacheMB() falls back
-	// to the historical 512 so configs from older installs
-	// keep their exact behavior.
-	DbCache int `json:"dbcache,omitempty"`
-
-	// SSHPorts holds sshd's OBSERVED listening ports,
-	// recorded at install preflight (ruling xvi(b)). The
-	// firewall allow-rules derive from this — never from a
-	// hardcoded 22, which on a nonstandard-port box was a
-	// delayed silent lockout hazard (deny-all enabled with
-	// only 22 open, next connection refused). Empty means
-	// "never observed" (pre-rename configs):
-	// SSHPortsOrDefault falls back to 22, byte-identical to
-	// the old behavior.
-	SSHPorts []int `json:"ssh_ports,omitempty"`
-
-	// KeyVerificationPending is set at install completion
-	// and cleared when the TUI observes a real sshd login
-	// for the admin user (journal evidence). While set, the
-	// TUI shows the first-run banner asking the operator to
-	// verify access from a SECOND terminal before trusting
-	// the in-session handoff console as their only way in.
-	KeyVerificationPending bool `json:"key_verification_pending,omitempty"`
-
-	// SSHPasswordAuthDisabled mirrors the value
-	// 00-vpn-hardening.conf writes for sshd's
-	// PasswordAuthentication directive. False = password
-	// auth enabled (matches debian default and the
-	// bootstrap-written drop-in, which is silent on the
-	// directive). True = password auth disabled by the
-	// TUI's SSH Password Auth screen.
-	SSHPasswordAuthDisabled bool `json:"ssh_password_auth_disabled,omitempty"`
+	Schema           int    `json:"schema"`
+	Network          string `json:"network"`
+	PruneSize        int    `json:"prune_size_gb"`
+	DbCache          int    `json:"db_cache_mb"`
+	P2PMode          string `json:"p2p_mode"`
+	AutoUnlock       bool   `json:"auto_unlock_enabled"`
+	SyncthingEnabled bool   `json:"syncthing_enabled"`
 }
 
-type SyncthingDevice struct {
-	Name     string `json:"name"`
-	DeviceID string `json:"device_id"`
-	PairedAt string `json:"paired_at"`
-}
-
-// Store handles reading/writing config to disk.
+// Store reads and atomically publishes one system-configuration file. The
+// production store requires root for writes and resolves the vpn group at the
+// moment of use. Tests use explicit numeric ownership under an isolated path.
 type Store struct {
-	Dir  string
-	Path string
+	Dir              string
+	Path             string
+	OwnerUID         int
+	GroupGID         int
+	GroupName        string
+	RequireRootWrite bool
 }
 
 func DefaultStore() *Store {
-	return &Store{Dir: DefaultDir, Path: DefaultPath}
+	return &Store{
+		Dir:              DefaultDir,
+		Path:             DefaultPath,
+		OwnerUID:         0,
+		GroupName:        paths.AdminUser,
+		RequireRootWrite: true,
+	}
 }
 
 func Default() *AppConfig {
 	return &AppConfig{
-		Network:    "mainnet",
-		Components: "bitcoin",
-		PruneSize:  25,
-		P2PMode:    "tor",
+		Schema:    SystemSchema,
+		Network:   "mainnet",
+		PruneSize: 25,
+		DbCache:   512,
+		P2PMode:   "tor",
 	}
 }
 
-func (s *Store) Load() (*AppConfig, error) {
-	data, err := os.ReadFile(s.Path)
+func (s *Store) ownership() (int, int, error) {
+	if s.GroupName == "" {
+		return s.OwnerUID, s.GroupGID, nil
+	}
+	g, err := user.LookupGroup(s.GroupName)
+	if err != nil {
+		return 0, 0, fmt.Errorf("resolve group %q: %w", s.GroupName, err)
+	}
+	gid, err := strconv.Atoi(g.Gid)
+	if err != nil {
+		return 0, 0, fmt.Errorf("group %q has non-numeric gid %q", s.GroupName, g.Gid)
+	}
+	return s.OwnerUID, gid, nil
+}
+
+func fileOwner(info os.FileInfo) (int, int, error) {
+	st, ok := info.Sys().(*syscall.Stat_t)
+	if !ok {
+		return 0, 0, errors.New("filesystem does not expose numeric ownership")
+	}
+	return int(st.Uid), int(st.Gid), nil
+}
+
+func validateObject(path string, wantDir bool, mode os.FileMode, uid, gid int) error {
+	info, err := os.Lstat(path)
+	if err != nil {
+		return err
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		return fmt.Errorf("%s is a symlink", path)
+	}
+	if wantDir {
+		if !info.IsDir() {
+			return fmt.Errorf("%s is not a directory", path)
+		}
+	} else if !info.Mode().IsRegular() {
+		return fmt.Errorf("%s is not a regular file", path)
+	}
+	if info.Mode().Perm() != mode {
+		return fmt.Errorf("%s mode is %04o, want %04o", path, info.Mode().Perm(), mode)
+	}
+	gotUID, gotGID, err := fileOwner(info)
+	if err != nil {
+		return fmt.Errorf("stat ownership for %s: %w", path, err)
+	}
+	if gotUID != uid || gotGID != gid {
+		return fmt.Errorf("%s owner is %d:%d, want %d:%d", path, gotUID, gotGID, uid, gid)
+	}
+	return nil
+}
+
+var systemFields = map[string]bool{
+	"schema":              true,
+	"network":             true,
+	"prune_size_gb":       true,
+	"db_cache_mb":         true,
+	"p2p_mode":            true,
+	"auto_unlock_enabled": true,
+	"syncthing_enabled":   true,
+}
+
+func decodeObject(data []byte, allowed map[string]bool) (map[string]json.RawMessage, error) {
+	dec := json.NewDecoder(bytes.NewReader(data))
+	tok, err := dec.Token()
 	if err != nil {
 		return nil, err
 	}
-	var cfg AppConfig
-	if err := json.Unmarshal(data, &cfg); err != nil {
+	if delim, ok := tok.(json.Delim); !ok || delim != '{' {
+		return nil, errors.New("top-level JSON value must be an object")
+	}
+	fields := make(map[string]json.RawMessage, len(allowed))
+	for dec.More() {
+		tok, err := dec.Token()
+		if err != nil {
+			return nil, err
+		}
+		name, ok := tok.(string)
+		if !ok {
+			return nil, errors.New("object key is not a string")
+		}
+		if !allowed[name] {
+			return nil, fmt.Errorf("unknown field %q", name)
+		}
+		if _, exists := fields[name]; exists {
+			return nil, fmt.Errorf("duplicate field %q", name)
+		}
+		var raw json.RawMessage
+		if err := dec.Decode(&raw); err != nil {
+			return nil, err
+		}
+		fields[name] = raw
+	}
+	if _, err := dec.Token(); err != nil {
 		return nil, err
 	}
-	if err := ValidateNetwork(cfg.Network); err != nil {
+	if err := dec.Decode(new(any)); !errors.Is(err, io.EOF) {
+		if err == nil {
+			return nil, errors.New("multiple top-level JSON values")
+		}
+		return nil, err
+	}
+	for name := range allowed {
+		if _, ok := fields[name]; !ok {
+			return nil, fmt.Errorf("missing field %q", name)
+		}
+	}
+	return fields, nil
+}
+
+func decodeSystem(data []byte) (*AppConfig, error) {
+	if _, err := decodeObject(data, systemFields); err != nil {
+		return nil, fmt.Errorf("config: %w", err)
+	}
+	var cfg AppConfig
+	if err := json.Unmarshal(data, &cfg); err != nil {
+		return nil, fmt.Errorf("config: %w", err)
+	}
+	if err := cfg.Validate(); err != nil {
 		return nil, fmt.Errorf("config: %w", err)
 	}
 	return &cfg, nil
 }
 
-// Save writes the config to disk atomically.
-// Writes to a temp file in the same directory, fsyncs, then renames.
-// This ensures the config file is never partially written.
-func (s *Store) Save(cfg *AppConfig) error {
-	if err := os.MkdirAll(s.Dir, 0750); err != nil {
+func (c *AppConfig) Validate() error {
+	if c.Schema != SystemSchema {
+		return fmt.Errorf("unsupported schema %d", c.Schema)
+	}
+	if err := ValidateNetwork(c.Network); err != nil {
 		return err
 	}
+	if c.PruneSize < 1 || c.PruneSize > 10_000 {
+		return fmt.Errorf("prune size %d GB is outside 1..10000", c.PruneSize)
+	}
+	switch c.DbCache {
+	case 512, 1024, 2048:
+	default:
+		return fmt.Errorf("db cache %d MB is not one of 512, 1024, 2048", c.DbCache)
+	}
+	if c.P2PMode != "tor" && c.P2PMode != "hybrid" {
+		return fmt.Errorf("unknown P2P mode %q", c.P2PMode)
+	}
+	return nil
+}
+
+func (s *Store) Load() (*AppConfig, error) {
+	uid, gid, err := s.ownership()
+	if err != nil {
+		return nil, err
+	}
+	if err := validateObject(s.Dir, true, 0o750, uid, gid); err != nil {
+		return nil, fmt.Errorf("config directory: %w", err)
+	}
+	if err := validateObject(s.Path, false, 0o640, uid, gid); err != nil {
+		return nil, fmt.Errorf("config file: %w", err)
+	}
+	data, err := os.ReadFile(s.Path)
+	if err != nil {
+		return nil, err
+	}
+	return decodeSystem(data)
+}
+
+// Save validates and atomically publishes the desired system configuration.
+// The production store can only be written by root. The parent is verified as
+// a real root-controlled directory, the existing destination (if any) must be
+// the expected regular file, and the replacement is synchronized before and
+// after rename.
+func (s *Store) Save(cfg *AppConfig) error {
+	if s.RequireRootWrite && os.Geteuid() != 0 {
+		return errors.New("system configuration may only be written by root")
+	}
+	if err := cfg.Validate(); err != nil {
+		return fmt.Errorf("refuse invalid config: %w", err)
+	}
+	uid, gid, err := s.ownership()
+	if err != nil {
+		return err
+	}
+	created := false
+	if err := os.Mkdir(s.Dir, 0o750); err != nil {
+		if !os.IsExist(err) {
+			return fmt.Errorf("create config directory: %w", err)
+		}
+	} else {
+		created = true
+	}
+	if created {
+		if err := os.Chown(s.Dir, uid, gid); err != nil {
+			return fmt.Errorf("chown config directory: %w", err)
+		}
+	}
+	info, err := os.Lstat(s.Dir)
+	if err != nil {
+		return fmt.Errorf("stat config directory: %w", err)
+	}
+	if info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
+		return fmt.Errorf("config directory %s is not a real directory", s.Dir)
+	}
+	gotUID, gotGID, err := fileOwner(info)
+	if err != nil {
+		return err
+	}
+	if gotUID != uid || gotGID != gid {
+		return fmt.Errorf("config directory %s owner is %d:%d, want %d:%d", s.Dir, gotUID, gotGID, uid, gid)
+	}
+	if err := os.Chmod(s.Dir, 0o750); err != nil {
+		return fmt.Errorf("chmod config directory: %w", err)
+	}
+	if existing, err := os.Lstat(s.Path); err == nil {
+		if existing.Mode()&os.ModeSymlink != 0 || !existing.Mode().IsRegular() {
+			return fmt.Errorf("config destination %s is not a regular file", s.Path)
+		}
+		if existing.Mode().Perm() != 0o640 {
+			return fmt.Errorf("config destination %s mode is %04o, want 0640", s.Path, existing.Mode().Perm())
+		}
+		existingUID, existingGID, ownErr := fileOwner(existing)
+		if ownErr != nil {
+			return ownErr
+		}
+		if existingUID != uid || existingGID != gid {
+			return fmt.Errorf("config destination %s owner is %d:%d, want %d:%d", s.Path, existingUID, existingGID, uid, gid)
+		}
+	} else if !os.IsNotExist(err) {
+		return fmt.Errorf("stat config destination: %w", err)
+	}
+
 	data, err := json.MarshalIndent(cfg, "", "  ")
 	if err != nil {
 		return err
 	}
+	data = append(data, '\n')
 	tmp, err := os.CreateTemp(s.Dir, ".config-*.tmp")
 	if err != nil {
 		return fmt.Errorf("create temp config: %w", err)
 	}
 	tmpPath := tmp.Name()
-
-	if _, err := tmp.Write(data); err != nil {
+	defer os.Remove(tmpPath)
+	fail := func(stage string, err error) error {
 		tmp.Close()
-		os.Remove(tmpPath)
-		return err
+		return fmt.Errorf("%s temp config: %w", stage, err)
 	}
-	if err := tmp.Chmod(0600); err != nil {
-		tmp.Close()
-		os.Remove(tmpPath)
-		return err
+	if _, err := tmp.Write(data); err != nil {
+		return fail("write", err)
+	}
+	if err := tmp.Chmod(0o640); err != nil {
+		return fail("chmod", err)
+	}
+	if err := tmp.Chown(uid, gid); err != nil {
+		return fail("chown", err)
 	}
 	if err := tmp.Sync(); err != nil {
-		tmp.Close()
-		os.Remove(tmpPath)
-		return err
+		return fail("sync", err)
 	}
-	tmp.Close()
-
-	return os.Rename(tmpPath, s.Path)
-}
-
-func Load() (*AppConfig, error) {
-	return DefaultStore().Load()
-}
-
-// RawFieldPresent reports whether the config file on disk
-// contains the given JSON key at the top level. Needed where
-// "absent" and "zero value" must be told apart on omitempty
-// fields — the migration rule (commit-6 addendum 2026-07-17):
-// an install seeds a field from observation ONLY when the
-// operator's carried-over config never answered it; a present
-// value is a prior answer and is never clobbered. A missing or
-// unreadable file simply reports absent.
-func RawFieldPresent(key string) bool {
-	data, err := os.ReadFile(DefaultPath)
+	if err := tmp.Close(); err != nil {
+		return fmt.Errorf("close temp config: %w", err)
+	}
+	if err := os.Rename(tmpPath, s.Path); err != nil {
+		return fmt.Errorf("publish config: %w", err)
+	}
+	dir, err := os.Open(filepath.Clean(s.Dir))
 	if err != nil {
-		return false
+		return fmt.Errorf("open config directory for sync: %w", err)
 	}
-	return rawFieldPresent(data, key)
-}
-
-// rawFieldPresent is the pure half of RawFieldPresent —
-// unit-tested.
-func rawFieldPresent(data []byte, key string) bool {
-	var m map[string]json.RawMessage
-	if err := json.Unmarshal(data, &m); err != nil {
-		return false
+	defer dir.Close()
+	if err := dir.Sync(); err != nil {
+		return fmt.Errorf("sync config directory: %w", err)
 	}
-	_, ok := m[key]
-	return ok
+	return nil
 }
 
-func Save(cfg *AppConfig) error {
-	return DefaultStore().Save(cfg)
-}
+func Load() (*AppConfig, error) { return DefaultStore().Load() }
+func Save(cfg *AppConfig) error { return DefaultStore().Save(cfg) }
 
-func (c *AppConfig) HasLND() bool {
-	return c.LNDInstalled
-}
+// LND is mandatory in the v0.7.0 base installation.
+func (c *AppConfig) HasLND() bool { return true }
 
-// DbCacheMB returns the dbcache value for bitcoin.conf: the
-// hardware-fit choice when one was recorded, else the
-// historical default (512), so configs that predate the
-// hardware-fit step render byte-identical bitcoin.conf.
-func (c *AppConfig) DbCacheMB() int {
-	if c.DbCache > 0 {
-		return c.DbCache
-	}
-	return 512
-}
+func (c *AppConfig) DbCacheMB() int { return c.DbCache }
 
-// SSHPortsOrDefault returns the observed sshd ports for
-// firewall allow-rules, falling back to 22 when no
-// observation was ever recorded (pre-rename configs).
-func (c *AppConfig) SSHPortsOrDefault() []int {
-	if len(c.SSHPorts) > 0 {
-		return c.SSHPorts
-	}
-	return []int{22}
-}
-
-func (c *AppConfig) IsMainnet() bool {
-	return c.Network == "mainnet"
-}
-
-func (c *AppConfig) WalletExists() bool {
-	return c.WalletCreated
-}
+func (c *AppConfig) IsMainnet() bool { return c.Network == "mainnet" }
 
 func (c *AppConfig) NetworkConfig() *NetworkConfig {
 	return NetworkConfigFromName(c.Network)
-}
-
-// ── State mutations ──────────────────────────────────────
-//
-// Named methods on *AppConfig for state transitions that
-// callers otherwise inline. Each one encapsulates the
-// "construct a record, append/update/remove in slice"
-// operation so callers can't accidentally forget a field
-// or reach into slice internals.
-//
-// These methods do NOT call Save — persistence is the
-// caller's responsibility. The split keeps mutation and
-// persistence composable (e.g. two mutations then one
-// save, or a mutation applied speculatively then reverted
-// without a disk write).
-//
-// See go-style-review.md Q4 and design-decisions.md for
-// the rationale behind this pattern.
-
-// AddSyncthingDevice appends a new device record with an
-// auto-generated Name ("Device N" where N is the new
-// device's 1-indexed position) and today's date.
-func (c *AppConfig) AddSyncthingDevice(deviceID string) {
-	c.SyncthingDevices = append(c.SyncthingDevices,
-		SyncthingDevice{
-			Name: fmt.Sprintf("Device %d",
-				len(c.SyncthingDevices)+1),
-			DeviceID: deviceID,
-			PairedAt: time.Now().Format("2006-01-02"),
-		})
-}
-
-// RemoveSyncthingDevice deletes the device with the given
-// ID from the list. Returns true if a device was removed,
-// false if no device had that ID. Caller uses the bool to
-// decide whether to Save.
-func (c *AppConfig) RemoveSyncthingDevice(deviceID string) bool {
-	for i, d := range c.SyncthingDevices {
-		if d.DeviceID == deviceID {
-			c.SyncthingDevices = append(
-				c.SyncthingDevices[:i],
-				c.SyncthingDevices[i+1:]...)
-			return true
-		}
-	}
-	return false
 }

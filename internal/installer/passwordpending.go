@@ -16,11 +16,12 @@ package installer
 // box but was never displayed". A completing unattended pass
 // that finds it re-applies its own freshly generated password
 // and prints that one instead. The operator setting a password
-// of their own from the node console clears it too — at that
+// of their own from the node TUI clears it too — at that
 // point they hold a credential they chose. The file carries no
 // secret; plaintext passwords exist only in process memory.
 
 import (
+	"fmt"
 	"os"
 
 	"github.com/virtualprivatenode/vpn/internal/logger"
@@ -31,7 +32,7 @@ import (
 const passwordPendingNote = `An unattended install applied a generated admin login password
 that has not been displayed yet. A completed unattended run
 resolves this automatically; setting a new password from the
-node console also clears it.
+node TUI also clears it.
 `
 
 // markPasswordPending records that a generated password was
@@ -46,8 +47,20 @@ func markPasswordPending() error {
 
 // passwordPending reports whether the marker is present.
 func passwordPending() bool {
-	_, err := os.Stat(paths.PasswordPendingMarker)
+	_, err := os.Lstat(paths.PasswordPendingMarker)
 	return err == nil
+}
+
+// clearPasswordPendingMarkerStrict is used only by installer completion. A
+// terminal ledger may never be published while this marker remains, so cleanup
+// failure is an installation failure rather than a warning.
+func clearPasswordPendingMarkerStrict() error {
+	if err := os.Remove(paths.PasswordPendingMarker); err != nil &&
+		!os.IsNotExist(err) {
+		return fmt.Errorf("remove password-pending marker %s: %w",
+			paths.PasswordPendingMarker, err)
+	}
+	return nil
 }
 
 // ClearPasswordPendingMarker removes the marker. Best-effort by
@@ -60,8 +73,8 @@ func ClearPasswordPendingMarker() {
 	if err := os.Remove(paths.PasswordPendingMarker); err != nil &&
 		!os.IsNotExist(err) {
 		logger.Install(
-			"WARNING: could not remove %s (%v) — a later install "+
-				"re-run may re-apply and print a fresh password",
+			"WARNING: could not remove %s (%v) — password-delivery "+
+				"state remains pending",
 			paths.PasswordPendingMarker, err)
 	}
 }

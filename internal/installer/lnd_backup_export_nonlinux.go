@@ -1,0 +1,20 @@
+//go:build !linux
+
+package installer
+
+import (
+	"fmt"
+
+	"github.com/virtualprivatenode/vpn/internal/config"
+)
+
+// PublishLNDBackup is available only on the certified Linux target because
+// its path-resolution and publication guarantees use Linux openat2.
+func PublishLNDBackup(network string) error {
+	if err := config.ValidateNetwork(network); err != nil {
+		return err
+	}
+	return fmt.Errorf(
+		"LND backup publication is supported only on Linux, not %q",
+		network)
+}

@@ -5,28 +5,31 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 
-	"github.com/virtualprivatenode/vpn/internal/installer"
+	"github.com/virtualprivatenode/vpn/internal/helper"
 	"github.com/virtualprivatenode/vpn/internal/lndrpc"
+	"github.com/virtualprivatenode/vpn/internal/logger"
 	"github.com/virtualprivatenode/vpn/internal/theme"
 )
 
 // ── First-run verification banner (ruling xvi) ───────────
 //
-// While cfg.KeyVerificationPending is set, the layout shows a
+// While the root-private verification marker exists, the layout shows a
 // banner asking the operator to verify SSH access from a SECOND
 // terminal. It clears only on journal evidence of a real sshd
 // login for the admin user — the in-session handoff console is
 // deliberately not evidence. The check rides the status tick and
 // costs one privileged journal read per poll while pending.
 
-type adminLoginVerifiedMsg struct{}
+type adminLoginVerifiedMsg struct {
+	pending bool
+	err     error
+}
 
 func checkAdminLoginCmd() tea.Cmd {
 	return func() tea.Msg {
-		if installer.AdminLoginObserved() {
-			return adminLoginVerifiedMsg{}
-		}
-		return nil
+		var result helper.VerifyAdminLoginResult
+		err := helper.Call(helper.VerbVerifyAdminLogin, nil, &result)
+		return adminLoginVerifiedMsg{pending: result.Pending, err: err}
 	}
 }
 
@@ -104,13 +107,19 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.height = msg.Height
 	case tea.ResumeMsg:
 		m.fetchInFlight = true
-		if m.cfg.HasLND() && m.cfg.WalletExists() &&
+		if m.cfg.HasLND() && m.state.WalletKnown &&
+			m.state.WalletExists &&
 			m.lndClient != nil {
-			return m, tea.Sequence(
-				fetchStatus(m.cfg, m.lndClient),
-				fetchPaymentHistoryCmd(m.lndClient))
+			return m, tea.Batch(
+				fetchStatus(m.cfg, m.state, m.lndClient),
+				fetchPaymentHistoryCmd(m.lndClient),
+				fetchWalletStateCmd(),
+				fetchKeyVerificationStateCmd())
 		}
-		return m, fetchStatus(m.cfg, m.lndClient)
+		return m, tea.Batch(
+			fetchStatus(m.cfg, m.state, m.lndClient),
+			fetchWalletStateCmd(),
+			fetchKeyVerificationStateCmd())
 	case tea.KeyPressMsg:
 		return m.handleKey(msg)
 	case tea.PasteMsg:
@@ -204,7 +213,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.subview = svFullURL
 		return m, nil
 	case refreshStatusMsg:
-		return m, fetchStatus(m.cfg, m.lndClient)
+		return m, fetchStatus(m.cfg, m.state, m.lndClient)
 	case clearUtxoSelectionMsg:
 		m.clearUtxoSelection()
 		return m, nil
@@ -280,26 +289,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case svcActionDoneMsg:
 		m.routeToSectionScreen(secSystem, msg)
-		return m, fetchStatus(m.cfg, m.lndClient)
+		return m, fetchStatus(m.cfg, m.state, m.lndClient)
 	case pkgUpdateDoneMsg:
 		m.routeToSectionScreen(secSystem, msg)
-		return m, fetchStatus(m.cfg, m.lndClient)
+		return m, fetchStatus(m.cfg, m.state, m.lndClient)
 	case statusMsg:
 		m.fetchInFlight = false
 		m.status = &msg
 		m.screenCtx.Status = m.status
-		// walletDetected can only fire when lndClient
-		// is non-nil (see status.go). lndClient stays
-		// nil until walletCreatedMsg runs — so during
-		// the wallet-create flow this branch is dead,
-		// and the in-place tab transform in
-		// walletCreatedMsg is the only path that moves
-		// the user off the wallet-create screen. See
-		// the invariant comment in NewModel.
-		if msg.walletDetected && !m.cfg.WalletCreated {
-			m.cfg.WalletCreated = true
-			m.saveCfg()
-		}
 		return m, nil
 	case latestVersionMsg:
 		m.latestVersion = string(msg)
@@ -309,22 +306,49 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Live-read answer — deliver to the screen that asked
 		// (it recorded which tab kind it lives on).
 		return m.dispatchToTab(msg.tab, msg)
+	case walletStateMsg:
+		if msg.err != nil {
+			m.state.WalletKnown = false
+			logger.TUI("read live wallet state: %v", msg.err)
+			return m, nil
+		}
+		m.state.WalletExists = msg.state.WalletExists
+		m.state.WalletKnown = true
+		if m.state.WalletExists && m.lndClient == nil &&
+			m.cfg.HasLND() {
+			m.lndClient = lndrpc.New(m.cfg.Network)
+			m.screenCtx.LndClient = m.lndClient
+			return m, fetchStatus(m.cfg, m.state, m.lndClient)
+		}
+		return m, nil
+	case keyVerificationStateMsg:
+		if msg.err != nil {
+			m.state.KeyVerificationKnown = false
+			logger.TUI("read key-verification state: %v", msg.err)
+			return m, nil
+		}
+		m.state.KeyVerificationPending = msg.state.Pending
+		m.state.KeyVerificationKnown = true
+		return m, nil
+	case syncthingWebPasswordMsg:
+		return m.dispatchToTab(tabSyncthingWebUI, msg)
 	case syncthingPairedMsg:
+		rm, cmd := m.dispatchToTab(tabSyncthingPair, msg)
 		if msg.err == nil {
-			m.cfg.AddSyncthingDevice(msg.deviceID)
-			m.saveCfg()
+			return rm, tea.Batch(cmd, fetchSyncthingDevicesCmd())
 		}
-		// Route to screen for step/error state
-		return m.dispatchToTab(tabSyncthingPair, msg)
+		return rm, cmd
 	case syncthingRemovedMsg:
+		rm, cmd := m.dispatchToTab(tabSyncthingDevice, msg)
 		if msg.err == nil {
-			if m.cfg.RemoveSyncthingDevice(msg.deviceID) {
-				m.saveCfg()
-			}
+			return rm, tea.Batch(cmd, fetchSyncthingDevicesCmd())
 		}
-		// Route to screen — screen emits closeTab
-		// on success, sets error on failure
-		return m.dispatchToTab(tabSyncthingDevice, msg)
+		return rm, cmd
+	case syncthingDevicesMsg:
+		m.state.SyncthingDevices = msg.devices
+		m.state.SyncthingDevicesErr = msg.err
+		m.state.SyncthingDevicesKnown = msg.err == nil
+		return m, nil
 	case channelOpenResultMsg:
 		return m.dispatchToTab(tabOpenChannel, msg)
 	case coUtxoListMsg:
@@ -465,16 +489,19 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case sshKeyRemoveMsg:
 		return m.dispatchToTab(tabSSHKeyDetail, msg)
 	case sshPwAuthDoneMsg:
-		// Persist only when the operation succeeded. On
-		// failure SetSSHPasswordAuth restored the
-		// in-memory value, so there is nothing new to
-		// save — and saving would durably record a value
-		// for an operation that failed. Same pattern as
-		// syncthingRemovedMsg.
 		if msg.err == nil {
-			m.saveCfg()
+			m.state.SSHPasswordAuthDisabled = msg.disabled
+			m.state.SSHPasswordAuthKnown = true
 		}
 		return m.dispatchToTab(tabSSHPasswordAuth, msg)
+	case sshPwAuthStateMsg:
+		if msg.err != nil {
+			m.state.SSHPasswordAuthKnown = false
+		} else {
+			m.state.SSHPasswordAuthDisabled = msg.disabled
+			m.state.SSHPasswordAuthKnown = true
+		}
+		return m, nil
 	case changePwDoneMsg:
 		return m.dispatchToTab(tabSSHChangePassword, msg)
 	case walletLNDReadyMsg:
@@ -482,16 +509,16 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case walletExecDoneMsg:
 		return m.dispatchToTab(tabWalletCreate, msg)
 	case walletCreatedMsg:
-		// Wallet was successfully created. Persist
-		// the flag, create the lndClient (it didn't
+		// Wallet was successfully created. Record the live result and create
+		// the lndClient (it didn't
 		// exist before this point because NewModel
 		// only constructs it when the wallet already
 		// exists), and transform the wallet creation
 		// tab in place into an AutoUnlockScreen so
 		// the user goes straight from "I SAVED MY
 		// SEED" into auto-unlock setup.
-		m.cfg.WalletCreated = true
-		m.saveCfg()
+		m.state.WalletExists = true
+		m.state.WalletKnown = true
 		if m.lndClient == nil && m.cfg.HasLND() {
 			m.lndClient = lndrpc.New(m.cfg.Network)
 			m.screenCtx.LndClient = m.lndClient
@@ -507,18 +534,20 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.tabs[i].Label = "Auto-Unlock"
 				m.tabs[i].Screen = newScreen
 				return m, tea.Batch(
-					fetchStatus(m.cfg, m.lndClient),
+					fetchStatus(m.cfg, m.state, m.lndClient),
 					newScreen.Init(),
 				)
 			}
 		}
 		// Tab not found (shouldn't happen, but be
 		// defensive). Just refresh status.
-		return m, fetchStatus(m.cfg, m.lndClient)
+		return m, fetchStatus(m.cfg, m.state, m.lndClient)
 	case adminLoginVerifiedMsg:
-		if m.cfg.KeyVerificationPending {
-			m.cfg.KeyVerificationPending = false
-			m.saveCfg()
+		if msg.err != nil {
+			logger.TUI("verify admin login: %v", msg.err)
+		} else {
+			m.state.KeyVerificationPending = msg.pending
+			m.state.KeyVerificationKnown = true
 		}
 		return m, nil
 	case tickMsg:
@@ -527,10 +556,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.fetchInFlight = true
 		cmds := []tea.Cmd{
-			fetchStatus(m.cfg, m.lndClient),
+			fetchStatus(m.cfg, m.state, m.lndClient),
+			fetchWalletStateCmd(),
+			fetchKeyVerificationStateCmd(),
 			tickEveryCmd(m.pollInterval()),
 		}
-		if m.cfg.KeyVerificationPending {
+		if m.state.KeyVerificationKnown &&
+			m.state.KeyVerificationPending {
 			cmds = append(cmds, checkAdminLoginCmd())
 		}
 		return m, tea.Batch(cmds...)
@@ -773,8 +805,8 @@ func (m Model) handleSidebarKey(
 		if m.nav.IsOnThemeToggle() {
 			if key == "enter" {
 				mode := theme.Toggle()
-				m.cfg.Theme = mode
-				m.saveCfg()
+				m.prefs.Theme = mode
+				m.savePreferences()
 				m.nav.UpdateThemeLabel()
 			}
 			return m, nil
@@ -801,7 +833,7 @@ func (m Model) previewSection(
 	switch sec {
 	case secChannels:
 		return m,
-			fetchStatus(m.cfg, m.lndClient)
+			fetchStatus(m.cfg, m.state, m.lndClient)
 	case secWallet:
 		return m,
 			fetchPaymentHistoryCmd(m.lndClient)

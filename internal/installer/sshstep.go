@@ -2,23 +2,10 @@
 
 package installer
 
-// The install-path SSH hardening step (ruling xvi(a) + ruling
-// xv's binding order). What the retired bootstrap script did with
-// a heredoc, done with the observation discipline the sprint
-// built:
-//
-//	observe → write new drop-in → delete old drop-in →
-//	validate → restart
-//
-// The order is BINDING. On a migrated box, a TUI-disabled
-// PasswordAuthentication lives in the OLD drop-in
-// (00-rlvpn-hardening.conf) — deleting it before the observed
-// value is captured into the new file would re-manufacture the
-// day-one cfg lie in reverse (ruling xv). And because the old
-// name sorts before the new one (r < v, first-match-wins), the
-// brief window where both files exist is safe precisely because
-// the new file carries the observed — that is, identical —
-// value.
+// The install-path SSH hardening step observes effective state, writes the
+// current project drop-in, validates the merged configuration, and restarts
+// sshd. Prior rlvpn drop-ins are lifecycle conflicts and never reach this step;
+// v0.7.0 does not delete or migrate them.
 //
 // Directive election (ruling xvi(a)): the new drop-in writes
 // PasswordAuthentication EXPLICITLY with the value observed
@@ -37,14 +24,13 @@ import (
 	"os"
 	"strings"
 
-	"github.com/virtualprivatenode/vpn/internal/config"
 	"github.com/virtualprivatenode/vpn/internal/logger"
 	"github.com/virtualprivatenode/vpn/internal/paths"
 	"github.com/virtualprivatenode/vpn/internal/system"
 )
 
 // installSSHHardening is the ssh.harden step.
-func installSSHHardening(cfg *config.AppConfig) error {
+func installSSHHardening() error {
 	// 1. Observe — seconds before the write, same process.
 	passwordAuth := ""
 	obs, err := ObserveSSHState()
@@ -61,63 +47,25 @@ func installSSHHardening(cfg *config.AppConfig) error {
 		} else {
 			passwordAuth = "no"
 		}
-		// Reality wins over any carried-over claim: on a
-		// migrated box the two agree by construction (the old
-		// drop-in still stands at observation time); if they
-		// ever disagree, the cfg was the lie — correct it and
-		// say so.
-		disabled := !obs.PasswordAuth
-		if cfg.SSHPasswordAuthDisabled != disabled {
-			logger.Install(
-				"config said ssh_password_auth_disabled=%v but "+
-					"sshd's effective state is %v — config corrected "+
-					"from observation",
-				cfg.SSHPasswordAuthDisabled, disabled)
-			cfg.SSHPasswordAuthDisabled = disabled
-		}
 	}
 
-	// Capture both files' prior state so a failed validation
-	// restores the box byte-for-byte: the new-name drop-in
-	// (usually absent) and the old-name drop-in (present only
-	// on migrated boxes).
+	// Capture the current project file so validation failure can restore it.
 	prevNew, prevNewExists, err := readDropIn(paths.SSHDDropIn)
 	if err != nil {
 		return fmt.Errorf("read current sshd drop-in: %w", err)
 	}
-	prevOld, prevOldExists, err := readDropIn(paths.OldSSHDDropIn)
-	if err != nil {
-		return fmt.Errorf("read old sshd drop-in: %w", err)
-	}
-
-	// 2. Write the new drop-in.
+	// 2. Write the current drop-in.
 	content := buildHardeningDropIn(passwordAuth)
 	if err := system.SudoWriteFile(
 		paths.SSHDDropIn, []byte(content), 0644); err != nil {
 		return fmt.Errorf("write sshd drop-in: %w", err)
 	}
 
-	// 3. Delete the old-name drop-in (the rename's ONLY
-	// old-artifact removal — ruling xv).
-	if prevOldExists {
-		if err := system.SudoRun(
-			"rm", "-f", paths.OldSSHDDropIn); err != nil {
-			return fmt.Errorf(
-				"remove old drop-in %s: %w",
-				paths.OldSSHDDropIn, err)
-		}
-		logger.Install("removed stale drop-in %s (rename)",
-			paths.OldSSHDDropIn)
-	}
-
-	// 4. Validate the merged config BEFORE any restart; restore
-	// both files on rejection, so sshd keeps running its
-	// current, valid config.
+	// 3. Validate the merged config before any restart.
 	if out, err := system.SudoRunCombinedOutput(
 		"sshd", "-t"); err != nil {
 		detail := strings.TrimSpace(out)
-		restoreErr := restoreDropIns(
-			prevNew, prevNewExists, prevOld, prevOldExists)
+		restoreErr := restoreDropIn(prevNew, prevNewExists)
 		if restoreErr != nil {
 			return fmt.Errorf(
 				"sshd rejected the new config (%s) and restoring "+
@@ -131,7 +79,7 @@ func installSSHHardening(cfg *config.AppConfig) error {
 				"restored, sshd not restarted: %s", detail)
 	}
 
-	// 5. Restart.
+	// 4. Restart.
 	if err := restartSSHD(); err != nil {
 		return err
 	}
@@ -162,31 +110,10 @@ func readDropIn(path string) ([]byte, bool, error) {
 	return data, true, nil
 }
 
-// restoreDropIns puts both drop-in files back to their captured
-// pre-step state.
-func restoreDropIns(
-	prevNew []byte, newExisted bool,
-	prevOld []byte, oldExisted bool,
-) error {
-	var firstErr error
+// restoreDropIn puts the current project drop-in back to its captured state.
+func restoreDropIn(prevNew []byte, newExisted bool) error {
 	if newExisted {
-		if err := system.SudoWriteFile(
-			paths.SSHDDropIn, prevNew, 0644); err != nil {
-			firstErr = err
-		}
-	} else {
-		if err := system.SudoRun(
-			"rm", "-f", paths.SSHDDropIn); err != nil &&
-			firstErr == nil {
-			firstErr = err
-		}
+		return system.SudoWriteFile(paths.SSHDDropIn, prevNew, 0644)
 	}
-	if oldExisted {
-		if err := system.SudoWriteFile(
-			paths.OldSSHDDropIn, prevOld, 0644); err != nil &&
-			firstErr == nil {
-			firstErr = err
-		}
-	}
-	return firstErr
+	return system.SudoRun("rm", "-f", paths.SSHDDropIn)
 }

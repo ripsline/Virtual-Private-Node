@@ -8,15 +8,14 @@ import (
 	"os"
 	"strings"
 
-	"github.com/virtualprivatenode/vpn/internal/config"
 	"github.com/virtualprivatenode/vpn/internal/helper"
 	"github.com/virtualprivatenode/vpn/internal/paths"
 	"github.com/virtualprivatenode/vpn/internal/system"
 )
 
 // BuildSSHHardeningConfig generates the complete contents
-// of /etc/ssh/sshd_config.d/00-vpn-hardening.conf from
-// AppConfig. Pure function — no side effects. (The 00-
+// of /etc/ssh/sshd_config.d/00-vpn-hardening.conf from the
+// requested closed-set state. Pure function — no side effects. (The 00-
 // prefix is load-bearing: sshd applies the first match
 // per directive, so this drop-in must sort before a
 // provider's 50-cloud-init.conf to win contested
@@ -30,9 +29,9 @@ import (
 // Password Auth screen runs, this function takes over and
 // the drop-in stays the authoritative source for password
 // auth state.
-func BuildSSHHardeningConfig(cfg *config.AppConfig) string {
+func BuildSSHHardeningConfig(disabled bool) string {
 	passwordAuth := "yes"
-	if cfg.SSHPasswordAuthDisabled {
+	if disabled {
 		passwordAuth = "no"
 	}
 	return buildHardeningDropIn(passwordAuth)
@@ -73,8 +72,8 @@ X11Forwarding no
 //     sshd from starting at all — a total lockout. On
 //     validation failure the previous drop-in content is
 //     restored and sshd keeps running its current config.
-func RebuildSSHHardeningConfig(cfg *config.AppConfig) error {
-	if cfg.SSHPasswordAuthDisabled {
+func RebuildSSHHardeningConfig(disabled bool) error {
+	if disabled {
 		keys, err := ListAuthorizedKeys()
 		if err != nil {
 			return fmt.Errorf(
@@ -106,7 +105,7 @@ func RebuildSSHHardeningConfig(cfg *config.AppConfig) error {
 		}
 	}
 
-	content := BuildSSHHardeningConfig(cfg)
+	content := BuildSSHHardeningConfig(disabled)
 	if err := system.SudoWriteFile(
 		paths.SSHDDropIn, []byte(content), 0644); err != nil {
 		return fmt.Errorf(
@@ -153,35 +152,20 @@ func restorePreviousDropIn(prev []byte, existed bool) error {
 		paths.SSHDDropIn, prev, 0644)
 }
 
-// SetSSHPasswordAuth flips the password-auth flag in cfg and
-// rebuilds the drop-in. On ANY failure the in-memory flag is
-// restored, keeping cfg, disk, and sshd in agreement.
-//
 // As root the rebuild runs directly; from the unprivileged TUI
 // it is requested from the helper as the typed
 // rebuild-ssh-config operation — the drop-in template, the
 // zero-auth lockout guard, and the validate-and-restore
 // sequence all live on the root side either way (the write
 // boundary), so every caller passes through them.
-func SetSSHPasswordAuth(
-	cfg *config.AppConfig, disabled bool,
-) error {
-	prev := cfg.SSHPasswordAuthDisabled
-	cfg.SSHPasswordAuthDisabled = disabled
-	var err error
+func SetSSHPasswordAuth(disabled bool) error {
 	if os.Geteuid() == 0 {
-		err = RebuildSSHHardeningConfig(cfg)
-	} else {
-		err = helper.Call(helper.VerbRebuildSSHConfig,
-			helper.RebuildSSHConfigParams{
-				PasswordAuthDisabled: disabled,
-			}, nil)
+		return RebuildSSHHardeningConfig(disabled)
 	}
-	if err != nil {
-		cfg.SSHPasswordAuthDisabled = prev
-		return err
-	}
-	return nil
+	return helper.Call(helper.VerbRebuildSSHConfig,
+		helper.RebuildSSHConfigParams{
+			PasswordAuthDisabled: disabled,
+		}, nil)
 }
 
 // EffectiveSSHPasswordAuth reports whether sshd's effective

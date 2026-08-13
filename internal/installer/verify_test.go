@@ -519,8 +519,7 @@ func TestReleaseKeyFingerprint(t *testing.T) {
 			len(vpnReleaseFP))
 	}
 
-	// Cross-check: must match the value baked into
-	// the fingerprint published in MIGRATION.md (Step 1).
+	// Cross-check: must match the value published in docs/verifying.md.
 	expected := "AFA0EBACDC9A4C4AA7B0154AC97CE10F170BA5FE"
 	if vpnReleaseFP != expected {
 		t.Errorf("release FP = %s, want %s",

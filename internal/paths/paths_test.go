@@ -4,6 +4,7 @@ package paths
 
 import (
 	"net"
+	"strings"
 	"testing"
 )
 
@@ -36,5 +37,83 @@ func TestLoopbackEndpointsAreLiteralIPv4(t *testing.T) {
 		if port == "" {
 			t.Errorf("%s = %q: missing port", name, ep)
 		}
+	}
+}
+
+func TestLifecycleStateUsesPrivateBoundary(t *testing.T) {
+	for name, path := range map[string]string{
+		"layout version":  LayoutVersion,
+		"install ledger":  InstallStateFile,
+		"password marker": PasswordPendingMarker,
+	} {
+		if !strings.HasPrefix(path, PrivateDir+"/") {
+			t.Errorf("%s %q is not below %q", name, path, PrivateDir)
+		}
+		if strings.HasPrefix(path, ConfigDir+"/") {
+			t.Errorf("%s %q is below config directory", name, path)
+		}
+	}
+	if InstallLock != RuntimeDir+"/install.lock" {
+		t.Errorf("install lock %q is not below runtime dir", InstallLock)
+	}
+	if InstallLock == InstallStateFile {
+		t.Error("stable lock and replaceable ledger share a path")
+	}
+	for network, path := range map[string]string{
+		"mainnet":  InstallBootstrapMainnet,
+		"testnet4": InstallBootstrapTestnet4,
+	} {
+		if !strings.HasPrefix(path, InstallBootstrapPrefix) {
+			t.Errorf("%s bootstrap path %q is outside /var/lib", network, path)
+		}
+		if strings.HasPrefix(path, VarLibVPN+"/") {
+			t.Errorf("%s bootstrap path %q is below the tree it precedes",
+				network, path)
+		}
+		if !strings.Contains(path, "-"+network+"-") {
+			t.Errorf("%s bootstrap path %q does not encode its network",
+				network, path)
+		}
+	}
+	if InstallBootstrapMainnet == InstallBootstrapTestnet4 {
+		t.Error("mainnet and testnet4 share a bootstrap path")
+	}
+	if InstallBootstrapPrefix != "/var/lib/vpn-install-bootstrap-" {
+		t.Errorf("bootstrap prefix is %q", InstallBootstrapPrefix)
+	}
+}
+
+func TestLNDBackupUsesProjectOwnedExportBoundary(t *testing.T) {
+	for name, got := range map[string]string{
+		"stage":  LNDBackupStage,
+		"export": LNDBackupExport,
+	} {
+		if !strings.HasPrefix(got, ExportDir+"/") {
+			t.Errorf("%s path %q is not below export boundary %q",
+				name, got, ExportDir)
+		}
+		if strings.HasPrefix(got, SyncthingDataDir+"/") {
+			t.Errorf("%s path %q is below Syncthing private state",
+				name, got)
+		}
+	}
+	if pathDir := strings.TrimSuffix(
+		LNDBackupStage, "/lnd-backup-stage"); pathDir != ExportDir {
+		t.Errorf("stage and export boundary disagree: %q, %q",
+			pathDir, ExportDir)
+	}
+	if BackupExportService !=
+		"/etc/systemd/system/lnd-backup-export.service" {
+		t.Errorf("backup export service path is %q",
+			BackupExportService)
+	}
+	if ExportReadyMarkerName != ".vpn-export-ready" {
+		t.Errorf("export marker convention is %q",
+			ExportReadyMarkerName)
+	}
+	if LNDBackupExportMarker !=
+		LNDBackupExport+"/"+ExportReadyMarkerName {
+		t.Errorf("LND backup export marker path is %q",
+			LNDBackupExportMarker)
 	}
 }

@@ -4,6 +4,8 @@ import (
 	"charm.land/bubbles/v2/key"
 	tea "charm.land/bubbletea/v2"
 
+	"github.com/virtualprivatenode/vpn/internal/helper"
+	"github.com/virtualprivatenode/vpn/internal/paths"
 	"github.com/virtualprivatenode/vpn/internal/theme"
 )
 
@@ -17,12 +19,28 @@ import (
 // screen's lifetime.
 
 type SyncthingWebUIScreen struct {
-	ctx         *ScreenContext
-	btnIdx      int // 0=Full URL, 1=Show/Hide Password
-	showSecrets bool
-	syncOnion   string
-	fetched     bool // the live read answered
-	fetchErr    bool // ...with an error (already logged)
+	ctx             *ScreenContext
+	btnIdx          int // 0=Full URL, 1=Show/Hide Password
+	showSecrets     bool
+	syncOnion       string
+	fetched         bool // the live read answered
+	fetchErr        bool // ...with an error (already logged)
+	password        string
+	passwordFetched bool
+	passwordErr     bool
+}
+
+type syncthingWebPasswordMsg struct {
+	password string
+	err      error
+}
+
+func fetchSyncthingWebPasswordCmd() tea.Cmd {
+	return func() tea.Msg {
+		password, err := helper.ReadBoardString(
+			paths.StateSyncthingWebPassword)
+		return syncthingWebPasswordMsg{password: password, err: err}
+	}
 }
 
 func NewSyncthingWebUIScreen(
@@ -36,7 +54,10 @@ func NewSyncthingWebUIScreen(
 // ── Screen interface ────────────────────────────────────
 
 func (s *SyncthingWebUIScreen) Init() tea.Cmd {
-	return fetchNodeAddressesCmd(tabSyncthingWebUI)
+	return tea.Batch(
+		fetchNodeAddressesCmd(tabSyncthingWebUI),
+		fetchSyncthingWebPasswordCmd(),
+	)
 }
 
 func (s *SyncthingWebUIScreen) HandleKey(
@@ -96,11 +117,18 @@ func (s *SyncthingWebUIScreen) HandleMsg(
 	case tabActivatedMsg:
 		// Re-entering the tab re-asks: screen entry is the
 		// cadence at which live-read facts are read.
-		return s, fetchNodeAddressesCmd(tabSyncthingWebUI)
+		return s, tea.Batch(
+			fetchNodeAddressesCmd(tabSyncthingWebUI),
+			fetchSyncthingWebPasswordCmd(),
+		)
 	case nodeAddressesMsg:
 		s.syncOnion = msg.addrs.SyncthingOnion
 		s.fetched = true
 		s.fetchErr = msg.err != nil
+	case syncthingWebPasswordMsg:
+		s.password = msg.password
+		s.passwordFetched = true
+		s.passwordErr = msg.err != nil
 	}
 	return s, nil
 }
@@ -138,15 +166,18 @@ func (s *SyncthingWebUIScreen) View(
 	p.blank()
 	p.monoField("User: ", "admin")
 
-	if s.ctx.Cfg.SyncthingPassword != "" {
+	if s.password != "" {
 		if s.showSecrets {
-			p.monoField("Pass: ",
-				s.ctx.Cfg.SyncthingPassword)
+			p.monoField("Pass: ", s.password)
 		} else {
 			p.line(" " +
 				theme.Label.Render("Pass: ") +
 				theme.Dim.Render("••••••••"))
 		}
+	} else if !s.passwordFetched {
+		p.dim("Reading staged web UI password...")
+	} else if s.passwordErr {
+		p.warn("Web UI password unavailable — check helper journal")
 	}
 
 	showLabel := "Show Password"

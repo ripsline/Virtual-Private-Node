@@ -102,7 +102,10 @@ func (s *OnChainHomeScreen) HandleKey(
 		return s, emitFocusSidebar
 	case "enter":
 		// No wallet → trigger wallet creation flow
-		if !s.ctx.Cfg.WalletExists() {
+		if !s.ctx.walletKnown() {
+			return s, fetchWalletStateCmd()
+		}
+		if !s.ctx.walletExists() {
 			screen := NewWalletCreateScreen(s.ctx)
 			return s, func() tea.Msg {
 				return openTabMsg{
@@ -141,7 +144,7 @@ func (s *OnChainHomeScreen) handleRight() (
 	switch s.focusZone {
 	case ocHomeZoneButtons:
 		if s.ctx.Cfg.HasLND() &&
-			s.ctx.Cfg.WalletExists() &&
+			s.ctx.walletExists() &&
 			s.btnIdx < 1 {
 			s.btnIdx++
 		}
@@ -506,7 +509,10 @@ func (s *OnChainHomeScreen) View(
 
 	// ── Fixed header ─────────────────────────────
 
-	if !cfg.HasLND() || !cfg.WalletExists() {
+	if !s.ctx.walletKnown() {
+		return renderWalletStateUnavailable(w, h)
+	}
+	if !cfg.HasLND() || !s.ctx.walletExists() {
 		return renderWalletPrompt(
 			w, h, s.ctx.ContentFocused)
 	}
@@ -974,7 +980,7 @@ func (s *OnChainHomeScreen) renderLabelPopup(
 // ── HelpBindings ────────────────────────────────────────
 
 func (s *OnChainHomeScreen) HelpBindings() []key.Binding {
-	if !s.ctx.Cfg.WalletExists() {
+	if !s.ctx.walletExists() {
 		return []key.Binding{
 			kEnterCreateWallet,
 			kSidebar,

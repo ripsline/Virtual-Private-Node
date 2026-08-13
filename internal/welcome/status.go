@@ -15,7 +15,10 @@ import (
 	tea "charm.land/bubbletea/v2"
 )
 
-func fetchStatus(cfg *config.AppConfig, lndClient *lndrpc.Client) tea.Cmd {
+func fetchStatus(
+	cfg *config.AppConfig, state *RuntimeState, lndClient *lndrpc.Client,
+) tea.Cmd {
+	walletExists := state != nil && state.WalletKnown && state.WalletExists
 	return func() tea.Msg {
 		s := statusMsg{services: make(map[string]bool)}
 		var wg sync.WaitGroup
@@ -82,7 +85,7 @@ func fetchStatus(cfg *config.AppConfig, lndClient *lndrpc.Client) tea.Cmd {
 		// gRPC connection is stale, the RPC fails
 		// with "Unavailable" and handleError triggers
 		// Reconnect() automatically.
-		if cfg.HasLND() && lndClient != nil {
+		if cfg.HasLND() && walletExists && lndClient != nil {
 			wg.Add(1)
 			go func() {
 				defer wg.Done()
@@ -108,14 +111,11 @@ func fetchStatus(cfg *config.AppConfig, lndClient *lndrpc.Client) tea.Cmd {
 					s.lndChannels = lndInfo.Channels
 					s.lndSyncedChain = lndInfo.SyncedChain
 					s.lndSyncedGraph = lndInfo.SyncedGraph
-					if !cfg.WalletExists() && lndInfo.Pubkey != "" {
-						s.walletDetected = true
-					}
 				}
 				mu.Unlock()
 			}()
 
-			if cfg.WalletExists() {
+			if walletExists {
 				wg.Add(1)
 				go func() {
 					defer wg.Done()

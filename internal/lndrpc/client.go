@@ -72,8 +72,8 @@ func (c *Client) connect() error {
 //
 // allowHeal enables the staged-credential self-heal: LND can
 // regenerate its TLS certificate OUTSIDE any helper operation
-// (an automatic restart after a crash, a reboot, a config
-// change applied by a reinstall), and its macaroon can be
+// (an automatic restart after a crash, a reboot, or a typed
+// configuration change), and its macaroon can be
 // recreated the same way — and the staged board copies then no
 // longer match what LND accepts. That staleness reliably
 // surfaces exactly here, as a failed test call. The heal keys

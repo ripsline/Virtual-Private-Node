@@ -846,7 +846,7 @@ func (s *ChannelOpenScreen) viewInput(
 	p.title(theme.Header, "Open Channel")
 
 	if !s.ctx.Cfg.HasLND() ||
-		!s.ctx.Cfg.WalletExists() {
+		!s.ctx.walletExists() {
 		p.dim("Create wallet first.")
 		return p.render()
 	}

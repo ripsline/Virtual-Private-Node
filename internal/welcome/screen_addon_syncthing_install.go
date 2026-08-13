@@ -4,17 +4,15 @@ import (
 	"charm.land/bubbles/v2/key"
 	tea "charm.land/bubbletea/v2"
 
-	"github.com/virtualprivatenode/vpn/internal/config"
 	"github.com/virtualprivatenode/vpn/internal/helper"
 	"github.com/virtualprivatenode/vpn/internal/installer"
-	"github.com/virtualprivatenode/vpn/internal/logger"
 	"github.com/virtualprivatenode/vpn/internal/theme"
 )
 
 // ── SyncthingInstallScreen ─────────────────────────────
 // Flow: confirm → install progress → done.
 // Opens as a tab from AddonsHomeScreen when Syncthing is
-// not installed and the user presses Enter.
+// not enabled and the user presses Enter.
 
 type syncInstallStep int
 
@@ -32,9 +30,6 @@ type SyncthingInstallScreen struct {
 
 	// Progress step — embedded screen
 	progress *InstallProgressScreen
-
-	// Filled by the helper operation's result on success
-	result helper.SyncthingInstallResult
 }
 
 func NewSyncthingInstallScreen(
@@ -112,21 +107,18 @@ func (s *SyncthingInstallScreen) HandleKey(
 func (s *SyncthingInstallScreen) startInstall() (
 	Screen, tea.Cmd,
 ) {
-	cfg := s.ctx.Cfg
-
-	// Set installed for this session's screens; the on-disk
-	// save happens only on success. The install itself —
+	// The install itself —
 	// download, verification, service, Tor rebuild, staging —
 	// runs on the root side of the helper boundary as one
-	// operation; the generated web-UI password comes back in
-	// the operation's result.
-	cfg.SyncthingInstalled = true
+	// operation. The generated web-UI password is staged for
+	// the TUI and is never returned in the helper response.
 
 	steps := buildHelperSteps(
 		helper.VerbSyncthingInstall, nil,
 		helper.SyncthingInstallStepNames(
 			installer.SyncthingVersionStr()),
-		&s.result)
+		nil)
+	steps = appendConfigReloadStep(steps, s.ctx.Cfg)
 
 	s.progress = NewInstallProgressScreen(
 		s.ctx, steps, s.onInstallDone, s.onInstallFail)
@@ -135,29 +127,14 @@ func (s *SyncthingInstallScreen) startInstall() (
 }
 
 func (s *SyncthingInstallScreen) onInstallDone() tea.Cmd {
-	return func() tea.Msg {
-		cfg := s.ctx.Cfg
-		cfg.SyncthingPassword = s.result.Password
-		config.Save(cfg)
-		return refreshStatusMsg{}
-	}
+	return tea.Batch(
+		func() tea.Msg { return refreshStatusMsg{} },
+		fetchSyncthingDevicesCmd(),
+	)
 }
 
 func (s *SyncthingInstallScreen) onInstallFail() tea.Cmd {
 	return func() tea.Msg {
-		cfg := s.ctx.Cfg
-		cfg.SyncthingInstalled = false
-		// Roll the Tor config back to the pre-install shape
-		// (the failed operation may have added Syncthing's
-		// hidden service before dying).
-		if err := helper.Call(helper.VerbRebuildTorConfig,
-			helper.RebuildTorConfigParams{
-				LND:       cfg.HasLND(),
-				Syncthing: false,
-			}, nil); err != nil {
-			logger.Install("syncthing rollback: %v", err)
-		}
-		config.Save(cfg)
 		return refreshStatusMsg{}
 	}
 }

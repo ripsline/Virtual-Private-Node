@@ -5,6 +5,7 @@ import (
 	tea "charm.land/bubbletea/v2"
 
 	"github.com/virtualprivatenode/vpn/internal/config"
+	"github.com/virtualprivatenode/vpn/internal/installer"
 	"github.com/virtualprivatenode/vpn/internal/lndrpc"
 )
 
@@ -48,12 +49,36 @@ type Screen interface {
 
 type ScreenContext struct {
 	Cfg            *config.AppConfig
+	State          *RuntimeState
 	LndClient      *lndrpc.Client
 	Status         *statusMsg
 	HasTabs        bool   // varies by section; Model sets before calling View/HelpBindings
 	ContentFocused bool   // true when content pane has focus (not tab bar, not sidebar)
 	Version        string // set once at construction
 	LatestVersion  string // updated by latestVersionMsg handler
+}
+
+// RuntimeState contains facts whose authority is the live system rather than
+// config.json. Known flags make read failures explicit so risky actions can
+// fail closed instead of guessing.
+type RuntimeState struct {
+	WalletExists            bool
+	WalletKnown             bool
+	KeyVerificationPending  bool
+	KeyVerificationKnown    bool
+	SSHPasswordAuthDisabled bool
+	SSHPasswordAuthKnown    bool
+	SyncthingDevices        []installer.SyncthingDevice
+	SyncthingDevicesErr     error
+	SyncthingDevicesKnown   bool
+}
+
+func (c *ScreenContext) walletExists() bool {
+	return c.State != nil && c.State.WalletKnown && c.State.WalletExists
+}
+
+func (c *ScreenContext) walletKnown() bool {
+	return c.State != nil && c.State.WalletKnown
 }
 
 // ── OnChainContext ───────────────────────────────────────

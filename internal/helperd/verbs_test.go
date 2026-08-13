@@ -4,11 +4,14 @@ package helperd
 
 import (
 	"encoding/json"
+	"errors"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/virtualprivatenode/vpn/internal/config"
 	"github.com/virtualprivatenode/vpn/internal/helper"
+	"github.com/virtualprivatenode/vpn/internal/installer"
 )
 
 // Every verb on the menu carries a deadline: an operation with
@@ -43,18 +46,22 @@ func TestVerbMenuIsExactlyTheRuledSet(t *testing.T) {
 		helper.VerbStageWalletPassword,
 		helper.VerbRemoveWalletPassword,
 		helper.VerbStageLNDCredentials,
+		helper.VerbStageLNDMacaroon,
 		helper.VerbRebuildSSHConfig,
-		helper.VerbRebuildTorConfig,
 		helper.VerbPackageUpdate,
 		helper.VerbSelfUpdate,
-		helper.VerbSetP2PMode,
+		helper.VerbUpgradeP2PToHybrid,
 		helper.VerbSyncthingInstall,
-		// Read-only verbs: no parameters, no mutation. They
+		// Live-read verbs have no parameters or mutation. The verification
+		// verb also has no parameters but may clear its private marker. They
 		// serve the live-read display facts (onion addresses,
 		// the Syncthing device ID, the SSH password-auth
 		// answer), which keep no board copy.
 		helper.VerbReadNodeAddresses,
 		helper.VerbReadSSHAuth,
+		helper.VerbReadWalletState,
+		helper.VerbReadKeyVerificationState,
+		helper.VerbVerifyAdminLogin,
 	}
 	if len(verbs) != len(want) {
 		t.Errorf("verb menu has %d entries, want %d",
@@ -64,6 +71,232 @@ func TestVerbMenuIsExactlyTheRuledSet(t *testing.T) {
 		if _, ok := verbs[v]; !ok {
 			t.Errorf("menu is missing %s", v)
 		}
+	}
+}
+
+func withConfigVerbTestDeps(t *testing.T) {
+	t.Helper()
+	oldLoad := loadSystemConfig
+	oldSave := saveSystemConfig
+	oldSetup := setupAutoUnlock
+	oldDisable := disableAutoUnlock
+	oldIP := publicIPv4
+	oldP2P := p2pUpgradeSteps
+	oldSync := syncthingInstallSteps
+	oldResidue := syncthingResiduePresent
+	oldPrerequisites := verifySyncthingPrerequisites
+	oldWallet := walletExists
+	oldKeyPending := keyVerificationPending
+	oldVerifyLogin := verifyAdminLogin
+	oldStagePassword := stageSyncthingWebPassword
+	oldRestage := restageFacts
+	verifySyncthingPrerequisites = func(*config.AppConfig) error { return nil }
+	t.Cleanup(func() {
+		loadSystemConfig = oldLoad
+		saveSystemConfig = oldSave
+		setupAutoUnlock = oldSetup
+		disableAutoUnlock = oldDisable
+		publicIPv4 = oldIP
+		p2pUpgradeSteps = oldP2P
+		syncthingInstallSteps = oldSync
+		syncthingResiduePresent = oldResidue
+		verifySyncthingPrerequisites = oldPrerequisites
+		walletExists = oldWallet
+		keyVerificationPending = oldKeyPending
+		verifyAdminLogin = oldVerifyLogin
+		stageSyncthingWebPassword = oldStagePassword
+		restageFacts = oldRestage
+	})
+}
+
+func TestAutoUnlockPersistenceFailuresAreOperationFailures(t *testing.T) {
+	withConfigVerbTestDeps(t)
+	wantErr := errors.New("injected config save failure")
+	var saved *config.AppConfig
+	loadSystemConfig = func() (*config.AppConfig, error) { return config.Default(), nil }
+	saveSystemConfig = func(cfg *config.AppConfig) error { saved = cfg; return wantErr }
+	setupAutoUnlock = func(string) error { return nil }
+	disableAutoUnlock = func() error { return nil }
+
+	if _, err := verbStageWalletPassword(&verbCtx{}, raw(t,
+		helper.StageWalletPasswordParams{Password: "correct horse"})); !errors.Is(err, wantErr) {
+		t.Fatalf("enable error = %v, want injected save failure", err)
+	}
+	if saved == nil || !saved.AutoUnlock {
+		t.Fatalf("enable did not attempt desired-state publication: %+v", saved)
+	}
+
+	loadSystemConfig = func() (*config.AppConfig, error) {
+		cfg := config.Default()
+		cfg.AutoUnlock = true
+		return cfg, nil
+	}
+	saved = nil
+	if _, err := verbRemoveWalletPassword(&verbCtx{}, nil); !errors.Is(err, wantErr) {
+		t.Fatalf("disable error = %v, want injected save failure", err)
+	}
+	if saved == nil || saved.AutoUnlock {
+		t.Fatalf("disable did not attempt desired-state publication: %+v", saved)
+	}
+}
+
+func TestP2PPersistenceFailureIsOperationFailure(t *testing.T) {
+	withConfigVerbTestDeps(t)
+	wantErr := errors.New("injected config save failure")
+	loadSystemConfig = func() (*config.AppConfig, error) { return config.Default(), nil }
+	saveSystemConfig = func(*config.AppConfig) error { return wantErr }
+	publicIPv4 = func() string { return "203.0.113.7" }
+	p2pUpgradeSteps = func(*config.AppConfig, string) []installer.InstallStep {
+		return []installer.InstallStep{{Name: "apply", Fn: func() error { return nil }}}
+	}
+	restageFacts = func(string) error { return nil }
+	if _, err := verbUpgradeP2PToHybrid(
+		&verbCtx{}, nil); !errors.Is(err, wantErr) {
+		t.Fatalf("error = %v, want injected save failure", err)
+	}
+}
+
+func TestSyncthingStagesPasswordButNeverReturnsIt(t *testing.T) {
+	withConfigVerbTestDeps(t)
+	loadSystemConfig = func() (*config.AppConfig, error) { return config.Default(), nil }
+	saveSystemConfig = func(cfg *config.AppConfig) error {
+		if !cfg.SyncthingEnabled {
+			t.Fatal("published config does not enable Syncthing")
+		}
+		return nil
+	}
+	syncthingResiduePresent = func() (bool, error) { return false, nil }
+	syncthingInstallSteps = func(*config.AppConfig) ([]installer.InstallStep, string, error) {
+		return []installer.InstallStep{{Name: "apply", Fn: func() error { return nil }}}, "secret-web-password", nil
+	}
+	restageFacts = func(string) error { return nil }
+	staged := ""
+	stageSyncthingWebPassword = func(password string) error { staged = password; return nil }
+	result, err := verbSyncthingInstall(&verbCtx{}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if staged != "secret-web-password" {
+		t.Fatalf("staged %q", staged)
+	}
+	if result != nil {
+		t.Fatalf("helper returned secret-bearing result: %#v", result)
+	}
+}
+
+func TestSyncthingRefusesResidueBeforeMutation(t *testing.T) {
+	withConfigVerbTestDeps(t)
+	loadSystemConfig = func() (*config.AppConfig, error) { return config.Default(), nil }
+	syncthingResiduePresent = func() (bool, error) { return true, nil }
+	mutated := false
+	syncthingInstallSteps = func(*config.AppConfig) ([]installer.InstallStep, string, error) {
+		mutated = true
+		return nil, "", nil
+	}
+	if _, err := verbSyncthingInstall(&verbCtx{}, nil); err == nil ||
+		!strings.Contains(err.Error(), "residue") {
+		t.Fatalf("residue refusal error = %v", err)
+	}
+	if mutated {
+		t.Fatal("Syncthing mutation began despite residue")
+	}
+}
+
+func TestSyncthingRefusesFailedPrerequisiteBeforeMutation(t *testing.T) {
+	withConfigVerbTestDeps(t)
+	loadSystemConfig = func() (*config.AppConfig, error) {
+		return config.Default(), nil
+	}
+	syncthingResiduePresent = func() (bool, error) { return false, nil }
+	wantErr := errors.New("Tor is inactive")
+	verifySyncthingPrerequisites = func(*config.AppConfig) error {
+		return wantErr
+	}
+	mutated := false
+	syncthingInstallSteps = func(
+		*config.AppConfig,
+	) ([]installer.InstallStep, string, error) {
+		mutated = true
+		return nil, "", nil
+	}
+	if _, err := verbSyncthingInstall(
+		&verbCtx{}, nil); !errors.Is(err, wantErr) {
+		t.Fatalf("prerequisite error=%v want=%v", err, wantErr)
+	}
+	if mutated {
+		t.Fatal("Syncthing mutation began despite failed prerequisite")
+	}
+}
+
+func TestSyncthingFinalSaveFailureLeavesResidueAndReportsFailure(t *testing.T) {
+	withConfigVerbTestDeps(t)
+	wantErr := errors.New("injected final save failure")
+	loadSystemConfig = func() (*config.AppConfig, error) { return config.Default(), nil }
+	saveSystemConfig = func(*config.AppConfig) error { return wantErr }
+	syncthingResiduePresent = func() (bool, error) { return false, nil }
+	installed := false
+	syncthingInstallSteps = func(*config.AppConfig) ([]installer.InstallStep, string, error) {
+		return []installer.InstallStep{{Name: "apply", Fn: func() error {
+			installed = true
+			return nil
+		}}}, "secret-web-password", nil
+	}
+	restageFacts = func(string) error { return nil }
+	staged := false
+	stageSyncthingWebPassword = func(string) error { staged = true; return nil }
+	if _, err := verbSyncthingInstall(&verbCtx{}, nil); !errors.Is(err, wantErr) {
+		t.Fatalf("error = %v, want final save failure", err)
+	}
+	if !installed || !staged {
+		t.Fatalf("residue not preserved: installed=%v staged=%v", installed, staged)
+	}
+}
+
+func TestWalletAndVerificationReadsFailIndependently(t *testing.T) {
+	withConfigVerbTestDeps(t)
+	cfg := config.Default()
+	cfg.Network = "testnet4"
+	loadSystemConfig = func() (*config.AppConfig, error) { return cfg, nil }
+	walletExists = func(network string) (bool, error) {
+		if network != "testnet4" {
+			t.Fatalf("wallet observed for %q", network)
+		}
+		return true, nil
+	}
+	keyVerificationPending = func() (bool, error) {
+		return false, errors.New("marker unreadable")
+	}
+	result, err := verbReadWalletState(&verbCtx{}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := result.(helper.WalletStateResult)
+	if !got.WalletExists {
+		t.Fatalf("live wallet state = %+v", got)
+	}
+	if _, err := verbReadKeyVerificationState(
+		&verbCtx{}, nil); err == nil {
+		t.Fatal("unreadable verification marker reported a state")
+	}
+
+	keyVerificationPending = func() (bool, error) { return true, nil }
+	result, err = verbReadKeyVerificationState(&verbCtx{}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	verification := result.(helper.KeyVerificationStateResult)
+	if !verification.Pending {
+		t.Fatalf("verification state = %+v", verification)
+	}
+
+	verifyAdminLogin = func() (bool, bool, error) { return false, true, nil }
+	result, err = verbVerifyAdminLogin(&verbCtx{}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	verified := result.(helper.VerifyAdminLoginResult)
+	if verified.Pending || !verified.Verified {
+		t.Fatalf("verification result = %+v", verified)
 	}
 }
 
@@ -146,13 +379,40 @@ func TestWalletPasswordValidation(t *testing.T) {
 	}
 }
 
-func TestSetP2PModeValidation(t *testing.T) {
-	ctx := &verbCtx{}
-	for _, mode := range []string{"", "clearnet", "Hybrid", "both"} {
-		if _, err := verbSetP2PMode(ctx, raw(t,
-			helper.SetP2PModeParams{Mode: mode})); err == nil {
-			t.Errorf("accepted mode=%q", mode)
-		}
+func TestP2PUpgradeRefusesAnythingButTorCurrentMode(t *testing.T) {
+	withConfigVerbTestDeps(t)
+	cfg := config.Default()
+	cfg.P2PMode = "hybrid"
+	loadSystemConfig = func() (*config.AppConfig, error) { return cfg, nil }
+	called := false
+	publicIPv4 = func() string { called = true; return "203.0.113.7" }
+	p2pUpgradeSteps = func(*config.AppConfig, string) []installer.InstallStep {
+		called = true
+		return nil
+	}
+	if _, err := verbUpgradeP2PToHybrid(&verbCtx{}, nil); err == nil {
+		t.Fatal("hybrid-to-hybrid transition accepted")
+	}
+	if called {
+		t.Fatal("P2P mutation preparation began before current-mode refusal")
+	}
+}
+
+func TestP2PUpgradeAcceptsNoCallerSelectedMode(t *testing.T) {
+	withConfigVerbTestDeps(t)
+	loaded := false
+	loadSystemConfig = func() (*config.AppConfig, error) {
+		loaded = true
+		return config.Default(), nil
+	}
+	if _, err := verbUpgradeP2PToHybrid(
+		&verbCtx{}, raw(t, map[string]string{
+			"mode": "tor",
+		})); err == nil {
+		t.Fatal("one-way P2P upgrade accepted caller-selected mode")
+	}
+	if loaded {
+		t.Fatal("P2P request with parameters reached authoritative config read")
 	}
 }
 

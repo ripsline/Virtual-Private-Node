@@ -42,19 +42,22 @@ var stagers = map[string]func() error{
 // freshnessMatrix: verb → board facts the verb invalidates and
 // therefore re-stages on success.
 var freshnessMatrix = map[string][]string{
-	// Wallet creation mints fresh macaroons; the staging verb
-	// exists exactly for that moment (and re-copies the cert,
-	// which is free).
+	// The LND client's repair path cannot know whether a failed connection
+	// reflects a stale certificate, macaroon, or both, so it refreshes both.
 	helper.VerbStageLNDCredentials: {
 		paths.StateLNDTLSCert,
+		paths.StateLNDMacaroon,
+	},
+	// Wallet creation mints only the admin macaroon. It must not fail because
+	// an unrelated TLS certificate refresh was attempted.
+	helper.VerbStageLNDMacaroon: {
 		paths.StateLNDMacaroon,
 	},
 	// A P2P mode change alters the cert's contents (LND
 	// regenerates it via tlsautorefresh), so the staged copy
 	// is stale the moment LND restarts.
-	helper.VerbSetP2PMode: {
+	helper.VerbUpgradeP2PToHybrid: {
 		paths.StateLNDTLSCert,
-		paths.StateLNDMacaroon,
 	},
 	// A fresh Syncthing install generates a new identity and
 	// API key.
@@ -122,6 +125,9 @@ var freshness = map[string]string{
 	// HTTP 403 that every REST wrapper now fails loudly on,
 	// so divergence is an immediate honest error.
 	paths.StateSyncthingAPIKey: freshStatic,
+	// Generated and staged by the one Syncthing install operation. Syncthing
+	// stores only a hash, so there is no later plaintext source to re-stage.
+	paths.StateSyncthingWebPassword: freshStatic,
 	// Written by the installer, fresh pair per install; if
 	// root replaces the server-side half by hand, bitcoind
 	// answers 401 and the TUI's error names the
@@ -138,6 +144,8 @@ var liveReadFacts = map[string]string{
 	"onion-addresses":     helper.VerbReadNodeAddresses,
 	"syncthing-device-id": helper.VerbReadNodeAddresses,
 	"ssh-password-auth":   helper.VerbReadSSHAuth,
+	"wallet-existence":    helper.VerbReadWalletState,
+	"key-verification":    helper.VerbReadKeyVerificationState,
 }
 
 // restage refreshes every fact the given verb invalidates.

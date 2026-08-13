@@ -3,46 +3,17 @@
 package installer
 
 import (
+	"os"
+	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/virtualprivatenode/vpn/internal/config"
 )
 
-func TestTorConfigBitcoinOnly(t *testing.T) {
-	cfg := config.Default()
-	content := BuildTorConfig(cfg)
-
-	required := []string{
-		"SOCKSPort 9050",
-		"bitcoin-p2p",
-		"HiddenServicePort 8333",
-	}
-	for _, req := range required {
-		if !strings.Contains(content, req) {
-			t.Errorf("missing %q in bitcoin-only torrc", req)
-		}
-	}
-
-	forbidden := []string{
-		// ControlPort is deliberately NOT forbidden here: it is
-		// unconditional since the install routing gate consumes it
-		// (see TestTorConfigControlPortAlways).
-		"bitcoin-rpc",
-		"lnd-rest",
-		"lnd-grpc",
-		"syncthing",
-	}
-	for _, f := range forbidden {
-		if strings.Contains(content, f) {
-			t.Errorf("bitcoin-only torrc should not contain %q", f)
-		}
-	}
-}
-
 func TestTorConfigWithLND(t *testing.T) {
 	cfg := config.Default()
-	cfg.LNDInstalled = true
 	content := BuildTorConfig(cfg)
 
 	required := []string{
@@ -65,7 +36,7 @@ func TestTorConfigWithLND(t *testing.T) {
 
 func TestTorConfigWithSyncthing(t *testing.T) {
 	cfg := config.Default()
-	cfg.SyncthingInstalled = true
+	cfg.SyncthingEnabled = true
 	content := BuildTorConfig(cfg)
 
 	// Web UI still accessible over Tor
@@ -96,9 +67,8 @@ func TestTorConfigNoSyncthingWithoutInstall(t *testing.T) {
 
 func TestTorConfigFullStack(t *testing.T) {
 	cfg := &config.AppConfig{
-		Network:            "mainnet",
-		LNDInstalled:       true,
-		SyncthingInstalled: true,
+		Network:          "mainnet",
+		SyncthingEnabled: true,
 	}
 	content := BuildTorConfig(cfg)
 
@@ -159,5 +129,109 @@ func TestTorConfigControlPortAlways(t *testing.T) {
 	}
 	if !strings.Contains(content, "CookieAuthentication 1") {
 		t.Error("control port must require cookie auth")
+	}
+}
+
+func withTorAddonTestDeps(t *testing.T) {
+	t.Helper()
+	oldPresent := torBinaryPresentForAddon
+	oldEnabled := torServiceEnabledForAddon
+	oldActive := torServiceActiveForAddon
+	oldReadConfig := readTorConfigForAddon
+	oldReadOnion := readSyncthingOnionForAddon
+	oldSleep := sleepForTorAddon
+	oldRun := runTorServiceAction
+	t.Cleanup(func() {
+		torBinaryPresentForAddon = oldPresent
+		torServiceEnabledForAddon = oldEnabled
+		torServiceActiveForAddon = oldActive
+		readTorConfigForAddon = oldReadConfig
+		readSyncthingOnionForAddon = oldReadOnion
+		sleepForTorAddon = oldSleep
+		runTorServiceAction = oldRun
+	})
+}
+
+func TestSyncthingTorPrerequisiteRequiresExpectedBaseState(t *testing.T) {
+	withTorAddonTestDeps(t)
+	cfg := config.Default()
+	torBinaryPresentForAddon = func() bool { return true }
+	torServiceEnabledForAddon = func() bool { return true }
+	torServiceActiveForAddon = func() bool { return true }
+	readTorConfigForAddon = func(string) ([]byte, error) {
+		return []byte(BuildTorConfig(cfg)), nil
+	}
+	if err := verifySyncthingTorPrerequisite(cfg); err != nil {
+		t.Fatal(err)
+	}
+
+	torServiceEnabledForAddon = func() bool { return false }
+	if err := verifySyncthingTorPrerequisite(cfg); err == nil {
+		t.Fatal("disabled Tor accepted as Syncthing prerequisite")
+	}
+	torServiceEnabledForAddon = func() bool { return true }
+	torServiceActiveForAddon = func() bool { return false }
+	if err := verifySyncthingTorPrerequisite(cfg); err == nil {
+		t.Fatal("inactive Tor accepted as Syncthing prerequisite")
+	}
+	torServiceActiveForAddon = func() bool { return true }
+	readTorConfigForAddon = func(string) ([]byte, error) {
+		return []byte("foreign configuration\n"), nil
+	}
+	if err := verifySyncthingTorPrerequisite(cfg); err == nil {
+		t.Fatal("unexpected base torrc accepted")
+	}
+}
+
+func TestSyncthingTorRestartNeverEnablesService(t *testing.T) {
+	withTorAddonTestDeps(t)
+	var actions []string
+	runTorServiceAction = func(action string) error {
+		actions = append(actions, action)
+		return nil
+	}
+	torServiceActiveForAddon = func() bool { return true }
+	readSyncthingOnionForAddon = func(string) ([]byte, error) {
+		return []byte(strings.Repeat("a", 56) + ".onion\n"), nil
+	}
+	sleepForTorAddon = func(time.Duration) {}
+	if err := restartTorForSyncthing(); err != nil {
+		t.Fatal(err)
+	}
+	if want := []string{"restart"}; !reflect.DeepEqual(actions, want) {
+		t.Fatalf("Tor actions=%v want=%v", actions, want)
+	}
+}
+
+func TestInitialTorOperationEnablesThenRestarts(t *testing.T) {
+	withTorAddonTestDeps(t)
+	var actions []string
+	runTorServiceAction = func(action string) error {
+		actions = append(actions, action)
+		return nil
+	}
+	if err := enableAndRestartTor(); err != nil {
+		t.Fatal(err)
+	}
+	if want := []string{"enable", "restart"}; !reflect.DeepEqual(actions, want) {
+		t.Fatalf("Tor actions=%v want=%v", actions, want)
+	}
+}
+
+func TestWaitForSyncthingOnionRejectsMalformedHostname(t *testing.T) {
+	withTorAddonTestDeps(t)
+	readSyncthingOnionForAddon = func(string) ([]byte, error) {
+		return []byte("short.onion\n"), nil
+	}
+	// End the fixed retry loop without wall-clock delay.
+	sleepForTorAddon = func(time.Duration) {}
+	if err := waitForSyncthingOnion(); err == nil {
+		t.Fatal("malformed Syncthing onion accepted")
+	}
+	readSyncthingOnionForAddon = func(string) ([]byte, error) {
+		return nil, os.ErrNotExist
+	}
+	if err := waitForSyncthingOnion(); err == nil {
+		t.Fatal("missing Syncthing onion accepted")
 	}
 }

@@ -20,21 +20,41 @@ func testSteps(calls map[string]int) []InstallStep {
 		}
 	}
 	return []InstallStep{
-		{Key: "user.create", Name: "Creating user",
-			Fn: fn("user.create")},
-		{Key: "tor.install", Name: "Installing Tor",
-			Fn: fn("tor.install")},
-		{Key: "tor.gate", Name: "Verifying Tor routing",
-			Kind: StepGate, Fn: fn("tor.gate")},
-		{Key: "btc.download", Group: "btc", Name: "Downloading",
-			Fn: fn("btc.download")},
-		{Key: "btc.verify", Group: "btc", Name: "Verifying",
-			Fn: fn("btc.verify")},
-		{Key: "btc.install", Group: "btc", Name: "Installing",
-			Fn: fn("btc.install")},
-		{Key: "shellenv", Name: "Shell environment",
-			Fn: fn("shellenv")},
+		{Key: "binary.install", Name: "Installing binary",
+			Fn: fn("binary.install")},
+		{Key: "apt.base", Name: "Installing base packages",
+			Fn: fn("apt.base")},
+		{Key: "firewall", Name: "Verifying firewall",
+			Kind: StepGate, Fn: fn("firewall")},
+		{Key: "base.upgrade", Group: "pipeline", Name: "Downloading",
+			Fn: fn("base.upgrade")},
+		{Key: "host.prep", Group: "pipeline", Name: "Verifying",
+			Fn: fn("host.prep")},
+		{Key: "identity.access", Group: "pipeline", Name: "Installing",
+			Fn: fn("identity.access")},
+		{Key: "service-identities.v1", Name: "Service identities",
+			Fn: fn("service-identities.v1")},
 	}
+}
+
+func testLedger() *installLedger {
+	db := 512
+	l, err := newLedger(installContext{
+		Network: "mainnet", InitialP2PMode: "tor", DbCacheMB: &db,
+	})
+	if err != nil {
+		panic(err)
+	}
+	return l
+}
+
+func mustReadLedger(t *testing.T, path string) *installLedger {
+	t.Helper()
+	l, err := readLedger(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return l
 }
 
 func keysToRun(steps []InstallStep, plan []stepPlan) []string {
@@ -66,7 +86,7 @@ func TestValidateSteps(t *testing.T) {
 	}
 
 	dup := testSteps(map[string]int{})
-	dup[1].Key = "user.create"
+	dup[1].Key = "binary.install"
 	if err := validateSteps(dup); err == nil {
 		t.Error("duplicate key accepted")
 	}
@@ -79,8 +99,9 @@ func TestValidateSteps(t *testing.T) {
 }
 
 func TestPlanScenarios(t *testing.T) {
-	all := []string{"user.create", "tor.install", "tor.gate",
-		"btc.download", "btc.verify", "btc.install", "shellenv"}
+	all := []string{"binary.install", "apt.base", "firewall",
+		"base.upgrade", "host.prep", "identity.access",
+		"service-identities.v1"}
 
 	cases := []struct {
 		name    string
@@ -95,48 +116,55 @@ func TestPlanScenarios(t *testing.T) {
 		{
 			name:    "all done: only the gate re-runs",
 			done:    all,
-			wantRun: []string{"tor.gate"},
+			wantRun: []string{"firewall"},
 		},
 		{
 			name: "resume after step 2: gate re-runs, rest forward",
-			done: []string{"user.create", "tor.install"},
-			wantRun: []string{"tor.gate", "btc.download",
-				"btc.verify", "btc.install", "shellenv"},
+			done: []string{"binary.install", "apt.base"},
+			wantRun: []string{"firewall", "base.upgrade",
+				"host.prep", "identity.access", "service-identities.v1"},
 		},
 		{
 			// THE group test: download+verify recorded but the
-			// terminal (btc.install) is not — the whole group
+			// terminal (identity.access) is not — the whole group
 			// re-runs (the workdir died with the old process).
 			name: "incomplete group re-runs whole",
-			done: []string{"user.create", "tor.install",
-				"btc.download", "btc.verify"},
-			wantRun: []string{"tor.gate", "btc.download",
-				"btc.verify", "btc.install", "shellenv"},
+			done: []string{"binary.install", "apt.base",
+				"firewall", "base.upgrade", "host.prep"},
+			wantRun: []string{"firewall", "base.upgrade",
+				"host.prep", "identity.access", "service-identities.v1"},
 		},
 		{
 			// Terminal recorded: the group is complete even if
 			// member entries are absent (only the terminal is
 			// consulted for group members).
 			name: "group judged by terminal only",
-			done: []string{"user.create", "tor.install",
-				"btc.install"},
-			wantRun: []string{"tor.gate", "shellenv"},
+			done: []string{"binary.install", "apt.base",
+				"firewall", "identity.access"},
+			wantRun: []string{"firewall", "service-identities.v1"},
 		},
 		{
 			name: "unknown ledger keys ignored",
-			done: []string{"user.create", "no.such.step",
+			done: []string{"binary.install", "no.such.step",
 				"another.ghost"},
-			wantRun: []string{"tor.install", "tor.gate",
-				"btc.download", "btc.verify", "btc.install",
-				"shellenv"},
+			wantRun: []string{"apt.base", "firewall",
+				"base.upgrade", "host.prep", "identity.access",
+				"service-identities.v1"},
 		},
 	}
 
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			led := newLedger()
+			led := testLedger()
 			for _, k := range c.done {
-				led.markDone(k, "0.6.3")
+				if baseStepKeySet()[k] {
+					if err := led.markDone(k, "0.6.3"); err != nil {
+						t.Fatal(err)
+					}
+				} else {
+					led.Steps[k] = ledgerEntry{
+						CompletedAt: "2026-08-10T12:00:00Z", Version: "test"}
+				}
 			}
 			steps := testSteps(map[string]int{})
 			plan := planRun(steps, led)
@@ -152,8 +180,10 @@ func TestPlanScenarios(t *testing.T) {
 // a recorded gate means "it held on some earlier pass," which
 // is exactly what a gate must never rely on.
 func TestPlanGateIgnoresOwnLedgerEntry(t *testing.T) {
-	led := newLedger()
-	led.markDone("tor.gate", "0.6.3")
+	led := testLedger()
+	if err := led.markDone("firewall", "0.6.3"); err != nil {
+		t.Fatal(err)
+	}
 	steps := testSteps(map[string]int{})
 	plan := planRun(steps, led)
 	if !plan[2].Run {
@@ -179,14 +209,16 @@ func TestFilterPhase(t *testing.T) {
 
 func TestRunnerSkipDoesNotExecute(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "state.json")
-	led := newLedger()
-	led.markDone("user.create", "0.6.3")
+	led := testLedger()
+	if err := led.markDone("binary.install", "0.6.3"); err != nil {
+		t.Fatal(err)
+	}
 	if err := led.save(path); err != nil {
 		t.Fatal(err)
 	}
 
 	calls := map[string]int{}
-	r, err := newStepRunner(testSteps(calls), "0.6.3", path)
+	r, err := newStepRunner(testSteps(calls), "0.6.3", led, path)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -197,7 +229,7 @@ func TestRunnerSkipDoesNotExecute(t *testing.T) {
 	if !skipped {
 		t.Error("recorded step not skipped")
 	}
-	if calls["user.create"] != 0 {
+	if calls["binary.install"] != 0 {
 		t.Error("skipped step's Fn executed")
 	}
 }
@@ -209,7 +241,8 @@ func TestRunnerRecordsAfterSuccessOnly(t *testing.T) {
 	boom := errors.New("boom")
 	steps[1].Fn = func() error { return boom }
 
-	r, err := newStepRunner(steps, "0.6.3", path)
+	led := testLedger()
+	r, err := newStepRunner(steps, "0.6.3", led, path)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -218,7 +251,7 @@ func TestRunnerRecordsAfterSuccessOnly(t *testing.T) {
 	if _, err := r.runIndex(0); err != nil {
 		t.Fatalf("step 0: %v", err)
 	}
-	if !loadLedger(path).done("user.create") {
+	if !mustReadLedger(t, path).done("binary.install") {
 		t.Error("completed step not recorded on disk")
 	}
 
@@ -227,7 +260,7 @@ func TestRunnerRecordsAfterSuccessOnly(t *testing.T) {
 	if !errors.Is(err, boom) {
 		t.Fatalf("step 1 err = %v, want boom", err)
 	}
-	if loadLedger(path).done("tor.install") {
+	if mustReadLedger(t, path).done("apt.base") {
 		t.Error("failed step recorded as done")
 	}
 }
@@ -262,7 +295,7 @@ func TestClassifyRun(t *testing.T) {
 	if res.Outcome != RunInterrupted {
 		t.Errorf("interrupted run classified %v", res.Outcome)
 	}
-	if res.StepNum != 3 || res.StepName != "Verifying Tor routing" {
+	if res.StepNum != 3 || res.StepName != "Verifying firewall" {
 		t.Errorf("interrupt attributed to %d/%q",
 			res.StepNum, res.StepName)
 	}
@@ -280,7 +313,9 @@ func TestRunInstallUnattendedCompleteAndResume(t *testing.T) {
 
 	// First pass: everything runs, outcome complete.
 	calls := map[string]int{}
-	res, err := RunInstallUnattended(testSteps(calls), "0.6.3", path)
+	led := testLedger()
+	res, err := RunInstallUnattended(
+		testSteps(calls), "0.6.3", led, path)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -295,7 +330,9 @@ func TestRunInstallUnattendedCompleteAndResume(t *testing.T) {
 
 	// Second pass over the same ledger: only the gate runs.
 	calls2 := map[string]int{}
-	res, err = RunInstallUnattended(testSteps(calls2), "0.6.3", path)
+	led2 := mustReadLedger(t, path)
+	res, err = RunInstallUnattended(
+		testSteps(calls2), "0.6.3", led2, path)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -304,7 +341,7 @@ func TestRunInstallUnattendedCompleteAndResume(t *testing.T) {
 	}
 	for k, n := range calls2 {
 		want := 0
-		if k == "tor.gate" {
+		if k == "firewall" {
 			want = 1
 		}
 		if n != want {
@@ -319,11 +356,12 @@ func TestRunInstallUnattendedFailureStops(t *testing.T) {
 	calls := map[string]int{}
 	steps := testSteps(calls)
 	steps[2].Fn = func() error {
-		calls["tor.gate"]++
+		calls["firewall"]++
 		return fmt.Errorf("tor not routing")
 	}
 
-	res, err := RunInstallUnattended(steps, "0.6.3", path)
+	led := testLedger()
+	res, err := RunInstallUnattended(steps, "0.6.3", led, path)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -334,18 +372,18 @@ func TestRunInstallUnattendedFailureStops(t *testing.T) {
 		t.Errorf("failed at %d, want 3", res.StepNum)
 	}
 	// Nothing after the failure ran.
-	for _, k := range []string{"btc.download", "btc.verify",
-		"btc.install", "shellenv"} {
+	for _, k := range []string{"base.upgrade", "host.prep",
+		"identity.access", "service-identities.v1"} {
 		if calls[k] != 0 {
 			t.Errorf("%s ran after the failure", k)
 		}
 	}
 	// Steps before it are recorded; the gate is not.
-	led := loadLedger(path)
-	if !led.done("user.create") || !led.done("tor.install") {
+	led = mustReadLedger(t, path)
+	if !led.done("binary.install") || !led.done("apt.base") {
 		t.Error("pre-failure steps not recorded")
 	}
-	if led.done("tor.gate") {
+	if led.done("firewall") {
 		t.Error("failed gate recorded as done")
 	}
 }
@@ -359,12 +397,11 @@ func TestWillRun(t *testing.T) {
 		{Key: "identity.access", Name: "a", Fn: func() error { return nil }},
 		{Key: "btc.install", Name: "b", Fn: func() error { return nil }},
 	}
-	led := newLedger()
-	led.markDone("identity.access", "1.0")
-	if err := led.save(path); err != nil {
+	led := testLedger()
+	if err := led.markDone("identity.access", "1.0"); err != nil {
 		t.Fatal(err)
 	}
-	r, err := newStepRunner(steps, "1.0", path)
+	r, err := newStepRunner(steps, "1.0", led, path)
 	if err != nil {
 		t.Fatal(err)
 	}
