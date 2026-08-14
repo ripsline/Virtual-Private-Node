@@ -41,6 +41,7 @@ import (
 type Client struct {
 	conn        *grpc.ClientConn
 	lightning   lnrpc.LightningClient
+	state       lnrpc.StateClient
 	macaroonHex string
 	network     string
 	mu          sync.RWMutex
@@ -135,6 +136,7 @@ func (c *Client) dial(allowHeal bool) error {
 
 	c.conn = conn
 	c.lightning = lnrpc.NewLightningClient(conn)
+	c.state = lnrpc.NewStateClient(conn)
 
 	// Test the connection with a longer timeout.
 	// During IBD, LND's GetInfo queries Bitcoin Core which can
@@ -158,6 +160,7 @@ func (c *Client) dial(allowHeal bool) error {
 		c.conn.Close()
 		c.conn = nil
 		c.lightning = nil
+		c.state = nil
 		return c.dial(false)
 	}
 	logger.Status("LND gRPC connected, waiting for RPC ready: %v", err)
@@ -224,6 +227,7 @@ func (c *Client) Reconnect() {
 	}
 	c.conn = nil
 	c.lightning = nil
+	c.state = nil
 	c.mu.Unlock()
 
 	if err := c.connect(); err != nil {
@@ -239,6 +243,7 @@ func (c *Client) Close() {
 		c.conn.Close()
 		c.conn = nil
 		c.lightning = nil
+		c.state = nil
 	}
 }
 
@@ -265,4 +270,10 @@ func (c *Client) rpc() lnrpc.LightningClient {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 	return c.lightning
+}
+
+func (c *Client) stateRPC() lnrpc.StateClient {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.state
 }

@@ -164,6 +164,11 @@ const (
 	LNDTLSCert        = "/var/lib/lnd/tls.cert"
 	LNDTLSKey         = "/var/lib/lnd/tls.key"
 	LNDWalletPassword = "/var/lib/lnd/wallet_password"
+	// LNDWalletPasswordStage is the one recognizable same-filesystem staging
+	// name used while publishing the canonical password. An interrupted write
+	// can be cleaned deterministically without scanning or guessing at files in
+	// LND's private directory.
+	LNDWalletPasswordStage = "/var/lib/lnd/.vpn-wallet-password.stage"
 )
 
 // LNDMacaroon returns the path to the admin macaroon for a given network.
@@ -199,6 +204,14 @@ const (
 const (
 	BitcoindService     = "/etc/systemd/system/bitcoind.service"
 	LNDService          = "/etc/systemd/system/lnd.service"
+	LNDServiceDropInDir = "/etc/systemd/system/lnd.service.d"
+	// LNDVerificationDropIn disables automatic restart only while VPN is
+	// proving one candidate wallet password. It is persistent (rather than
+	// under /run) so a host reboot cannot reintroduce a password-failure loop
+	// halfway through the operation, and is removed before success is
+	// published.
+	LNDVerificationDropIn = LNDServiceDropInDir +
+		"/90-vpn-auto-unlock-verification.conf"
 	SyncthingService    = "/etc/systemd/system/syncthing.service"
 	BackupWatchPath     = "/etc/systemd/system/lnd-backup-watch.path"
 	BackupExportService = "/etc/systemd/system/lnd-backup-export.service"

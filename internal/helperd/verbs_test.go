@@ -109,34 +109,32 @@ func withConfigVerbTestDeps(t *testing.T) {
 	})
 }
 
-func TestAutoUnlockPersistenceFailuresAreOperationFailures(t *testing.T) {
+func TestAutoUnlockVerbsReturnStructuredTransitionResults(t *testing.T) {
 	withConfigVerbTestDeps(t)
-	wantErr := errors.New("injected config save failure")
-	var saved *config.AppConfig
-	loadSystemConfig = func() (*config.AppConfig, error) { return config.Default(), nil }
-	saveSystemConfig = func(cfg *config.AppConfig) error { saved = cfg; return wantErr }
-	setupAutoUnlock = func(string) error { return nil }
-	disableAutoUnlock = func() error { return nil }
+	wantEnable := installer.AutoUnlockResult{
+		Outcome: installer.AutoUnlockVerificationFailed,
+	}
+	setupAutoUnlock = func(password string) (installer.AutoUnlockResult, error) {
+		if password != "correct horse" {
+			t.Fatalf("password = %q", password)
+		}
+		return wantEnable, nil
+	}
+	wantDisable := installer.AutoUnlockResult{
+		Outcome: installer.AutoUnlockStillEnabled,
+	}
+	disableAutoUnlock = func() (installer.AutoUnlockResult, error) {
+		return wantDisable, nil
+	}
 
-	if _, err := verbStageWalletPassword(&verbCtx{}, raw(t,
-		helper.StageWalletPasswordParams{Password: "correct horse"})); !errors.Is(err, wantErr) {
-		t.Fatalf("enable error = %v, want injected save failure", err)
+	got, err := verbStageWalletPassword(&verbCtx{}, raw(t,
+		helper.StageWalletPasswordParams{Password: "correct horse"}))
+	if err != nil || got != wantEnable {
+		t.Fatalf("enable result = %#v, %v", got, err)
 	}
-	if saved == nil || !saved.AutoUnlock {
-		t.Fatalf("enable did not attempt desired-state publication: %+v", saved)
-	}
-
-	loadSystemConfig = func() (*config.AppConfig, error) {
-		cfg := config.Default()
-		cfg.AutoUnlock = true
-		return cfg, nil
-	}
-	saved = nil
-	if _, err := verbRemoveWalletPassword(&verbCtx{}, nil); !errors.Is(err, wantErr) {
-		t.Fatalf("disable error = %v, want injected save failure", err)
-	}
-	if saved == nil || saved.AutoUnlock {
-		t.Fatalf("disable did not attempt desired-state publication: %+v", saved)
+	got, err = verbRemoveWalletPassword(&verbCtx{}, nil)
+	if err != nil || got != wantDisable {
+		t.Fatalf("disable result = %#v, %v", got, err)
 	}
 }
 

@@ -272,6 +272,7 @@ type statusMsg struct {
 	lndSyncedChain               bool
 	lndSyncedGraph               bool
 	lndResponding                bool
+	lndWalletState               lndrpc.WalletState
 	publicIP                     string
 	channels                     []channelInfo
 	pendingOpen                  int

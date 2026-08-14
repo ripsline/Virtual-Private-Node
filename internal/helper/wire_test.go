@@ -2,7 +2,32 @@
 
 package helper
 
-import "testing"
+import (
+	"encoding/json"
+	"strings"
+	"testing"
+)
+
+func TestAutoUnlockResultWireCarriesClassificationButNoCredential(t *testing.T) {
+	result := AutoUnlockResult{
+		Outcome:    AutoUnlockRepairRequired,
+		FailedStep: "restore normal restart policy",
+	}
+	data, err := json.Marshal(result)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), "repair_required") ||
+		!strings.Contains(string(data), "restore normal restart policy") {
+		t.Fatalf("classification missing from wire result: %s", data)
+	}
+	for _, forbidden := range []string{"password", "credential", "secret"} {
+		if strings.Contains(strings.ToLower(string(data)), forbidden) {
+			t.Fatalf("wire result contains credential-shaped field %q: %s",
+				forbidden, data)
+		}
+	}
+}
 
 // The same-major gate is shared by the TUI's rendering and the
 // helper's refusal — one function, both sides. These tables pin

@@ -9,8 +9,21 @@ import (
 	"testing"
 	"time"
 
+	"github.com/lightningnetwork/lnd/lnrpc"
 	"google.golang.org/grpc/metadata"
 )
+
+func TestWalletStateNames(t *testing.T) {
+	for state, want := range map[lnrpc.WalletState]WalletState{
+		lnrpc.WalletState_LOCKED:        WalletStateLocked,
+		lnrpc.WalletState_SERVER_ACTIVE: WalletStateActive,
+		lnrpc.WalletState_UNLOCKED:      "UNLOCKED",
+	} {
+		if got := walletStateName(state); got != want {
+			t.Errorf("walletStateName(%s) = %s, want %s", state, got, want)
+		}
+	}
+}
 
 func TestNodeInfoFields(t *testing.T) {
 	info := &NodeInfo{
@@ -63,6 +76,9 @@ func TestSatStr(t *testing.T) {
 
 func TestNilClientSafety(t *testing.T) {
 	c := &Client{}
+	if _, err := c.GetState(); err == nil {
+		t.Error("should error")
+	}
 	if _, err := c.GetInfo(); err == nil {
 		t.Error("should error")
 	}

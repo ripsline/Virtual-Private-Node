@@ -3,6 +3,7 @@
 package lndrpc
 
 import (
+	"context"
 	"encoding/hex"
 	"fmt"
 	"strconv"
@@ -103,6 +104,16 @@ type OnChainAddress struct {
 	Address string
 }
 
+// WalletState is LND's live readiness state, exposed without leaking the
+// generated protobuf type into the TUI.
+type WalletState string
+
+const (
+	WalletStateUnknown WalletState = "UNKNOWN"
+	WalletStateLocked  WalletState = "LOCKED"
+	WalletStateActive  WalletState = "SERVER_ACTIVE"
+)
+
 type ChannelOpenResult struct {
 	FundingTxID string
 }
@@ -141,6 +152,34 @@ func (c *Client) GetInfo() (*NodeInfo, error) {
 		Version:     resp.GetVersion(),
 		URIs:        resp.GetUris(),
 	}, nil
+}
+
+// GetState uses LND's state service, which remains available while the wallet
+// is locked. This lets status distinguish an intentionally running-but-locked
+// daemon from a stopped daemon or a generic RPC outage.
+func (c *Client) GetState() (WalletState, error) {
+	rpc := c.stateRPC()
+	if rpc == nil {
+		return WalletStateUnknown, errNotConnected
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), defaultTimeout)
+	defer cancel()
+	resp, err := rpc.GetState(ctx, &lnrpc.GetStateRequest{})
+	if err != nil {
+		return WalletStateUnknown, err
+	}
+	return walletStateName(resp.GetState()), nil
+}
+
+func walletStateName(state lnrpc.WalletState) WalletState {
+	switch state {
+	case lnrpc.WalletState_LOCKED:
+		return WalletStateLocked
+	case lnrpc.WalletState_SERVER_ACTIVE:
+		return WalletStateActive
+	default:
+		return WalletState(state.String())
+	}
 }
 
 func (c *Client) GetWalletBalance() (*WalletBalance, error) {

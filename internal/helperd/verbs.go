@@ -43,12 +43,15 @@ type verbDef struct {
 }
 
 var verbs = map[string]verbDef{
-	helper.VerbServiceAction:        {14 * time.Minute, verbServiceAction},
-	helper.VerbReboot:               {1 * time.Minute, verbReboot},
-	helper.VerbDirSize:              {2 * time.Minute, verbDirSize},
-	helper.VerbSetUserPassword:      {1 * time.Minute, verbSetUserPassword},
-	helper.VerbStageWalletPassword:  {6 * time.Minute, verbStageWalletPassword},
-	helper.VerbRemoveWalletPassword: {6 * time.Minute, verbRemoveWalletPassword},
+	helper.VerbServiceAction:   {14 * time.Minute, verbServiceAction},
+	helper.VerbReboot:          {1 * time.Minute, verbReboot},
+	helper.VerbDirSize:         {2 * time.Minute, verbDirSize},
+	helper.VerbSetUserPassword: {1 * time.Minute, verbSetUserPassword},
+	// LND permits a graceful stop to take up to five minutes. A failed
+	// transition can require a second restart plus a second 120-second proof,
+	// so the helper connection must outlive that bounded recovery path.
+	helper.VerbStageWalletPassword:  {20 * time.Minute, verbStageWalletPassword},
+	helper.VerbRemoveWalletPassword: {20 * time.Minute, verbRemoveWalletPassword},
 	helper.VerbStageLNDCredentials:  {3 * time.Minute, verbStageLNDCredentials},
 	helper.VerbStageLNDMacaroon:     {1 * time.Minute, verbStageLNDMacaroon},
 	helper.VerbRebuildSSHConfig:     {3 * time.Minute, verbRebuildSSHConfig},
@@ -260,33 +263,11 @@ func verbStageWalletPassword(_ *verbCtx, params json.RawMessage) (any, error) {
 	if err := validateWalletPassword(p.Password); err != nil {
 		return nil, err
 	}
-	cfg, err := loadConfig()
-	if err != nil {
-		return nil, err
-	}
-	if err := setupAutoUnlock(p.Password); err != nil {
-		return nil, err
-	}
-	cfg.AutoUnlock = true
-	if err := saveSystemConfig(cfg); err != nil {
-		return nil, fmt.Errorf("publish auto-unlock setting: %w", err)
-	}
-	return nil, nil
+	return setupAutoUnlock(p.Password)
 }
 
 func verbRemoveWalletPassword(_ *verbCtx, _ json.RawMessage) (any, error) {
-	cfg, err := loadConfig()
-	if err != nil {
-		return nil, err
-	}
-	if err := disableAutoUnlock(); err != nil {
-		return nil, err
-	}
-	cfg.AutoUnlock = false
-	if err := saveSystemConfig(cfg); err != nil {
-		return nil, fmt.Errorf("publish auto-unlock setting: %w", err)
-	}
-	return nil, nil
+	return disableAutoUnlock()
 }
 
 // ── Credential staging ───────────────────────────────────
