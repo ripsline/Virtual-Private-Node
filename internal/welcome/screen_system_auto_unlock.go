@@ -9,6 +9,7 @@ import (
 	tea "charm.land/bubbletea/v2"
 
 	"github.com/virtualprivatenode/vpn/internal/installer"
+	"github.com/virtualprivatenode/vpn/internal/logger"
 	"github.com/virtualprivatenode/vpn/internal/theme"
 )
 
@@ -60,8 +61,14 @@ const (
 // Messages emitted by the auto-unlock command runners.
 // Both unique to this screen so they don't collide with
 // any other async flow.
-type autoUnlockSetupDoneMsg struct{ err error }
-type autoUnlockDisableDoneMsg struct{ err error }
+type autoUnlockSetupDoneMsg struct {
+	result installer.AutoUnlockResult
+	err    error
+}
+type autoUnlockDisableDoneMsg struct {
+	result installer.AutoUnlockResult
+	err    error
+}
 
 type AutoUnlockScreen struct {
 	ctx  *ScreenContext
@@ -79,8 +86,8 @@ type AutoUnlockScreen struct {
 	// Inline error string (e.g. "Passwords do not match")
 	errMsg string
 
-	// Final result of installer call (after running)
-	resultErr error
+	// Final classified result of installer call (after running).
+	result installer.AutoUnlockResult
 }
 
 func NewAutoUnlockScreen(
@@ -148,6 +155,37 @@ func (s *AutoUnlockScreen) HandleKey(
 	// Done states
 	if s.state == auState_doneOK ||
 		s.state == auState_doneErr {
+		if s.state == auState_doneOK &&
+			s.result.Outcome == installer.AutoUnlockDisabled {
+			switch keyStr {
+			case "ctrl+c":
+				return s, tea.Quit
+			case "left":
+				if s.btnIdx > 0 {
+					s.btnIdx--
+					return s, nil
+				}
+				return s, emitFocusSidebar
+			case "right":
+				if s.btnIdx < 1 {
+					s.btnIdx++
+				}
+				return s, nil
+			case "enter":
+				if s.btnIdx == 1 {
+					s.resetToEnableForm()
+					return s, s.pw1.Focus()
+				}
+				return s, emitCloseTab
+			case "up", "shift+tab":
+				if s.ctx.HasTabs {
+					return s, emitFocusTabBar
+				}
+			case "backspace":
+				return s, emitFocusParent
+			}
+			return s, nil
+		}
 		switch keyStr {
 		case "ctrl+c":
 			return s, tea.Quit
@@ -367,12 +405,25 @@ func (s *AutoUnlockScreen) tryConfirm() (
 	}
 
 	s.state = auState_running
+	s.errMsg = ""
 	return s, setupAutoUnlockCmd(pw1)
 }
 
 func (s *AutoUnlockScreen) refocusFirstInput() {
 	s.focusZone = auZoneInput1
 	s.pw2.Blur()
+	s.pw1.Focus()
+}
+
+func (s *AutoUnlockScreen) resetToEnableForm() {
+	s.mode = autoUnlockEnable
+	s.state = auState_form
+	s.result = installer.AutoUnlockResult{}
+	s.errMsg = ""
+	s.pw1 = newAutoUnlockPwInput()
+	s.pw2 = newAutoUnlockPwInput()
+	s.focusZone = auZoneInput1
+	s.btnIdx = 1
 	s.pw1.Focus()
 }
 
@@ -384,30 +435,67 @@ func (s *AutoUnlockScreen) HandleMsg(
 	switch m := msg.(type) {
 	case autoUnlockSetupDoneMsg:
 		if m.err != nil {
+			logger.TUI("configure auto-unlock helper: %v", m.err)
 			s.state = auState_doneErr
-			s.resultErr = m.err
+			s.result = installer.AutoUnlockResult{
+				Outcome:    installer.AutoUnlockRepairRequired,
+				FailedStep: "complete privileged operation",
+			}
 			return s, nil
 		}
-		if err := reloadSystemConfig(s.ctx.Cfg); err != nil {
+		s.result = m.result
+		switch m.result.Outcome {
+		case installer.AutoUnlockEnabled:
+			s.ctx.Cfg.AutoUnlock = true
+			s.state = auState_doneOK
+			return s, func() tea.Msg { return refreshStatusMsg{} }
+		case installer.AutoUnlockVerificationFailed:
+			s.state = auState_form
+			s.pw1.SetValue("")
+			s.pw2.SetValue("")
+			s.refocusFirstInput()
+			if m.result.Detail != "" {
+				s.errMsg = m.result.Detail
+			} else {
+				s.errMsg = "VPN could not verify that password. LND is locked. Check the password and try again."
+			}
+			return s, nil
+		case installer.AutoUnlockVerificationTimedOut:
+			s.state = auState_form
+			s.pw1.SetValue("")
+			s.pw2.SetValue("")
+			s.refocusFirstInput()
+			s.errMsg = "LND did not become ready within 120 seconds. VPN could not determine whether the password was correct. LND has been returned to the locked state."
+			return s, nil
+		default:
 			s.state = auState_doneErr
-			s.resultErr = err
 			return s, nil
 		}
-		s.state = auState_doneOK
-		return s, func() tea.Msg { return refreshStatusMsg{} }
 	case autoUnlockDisableDoneMsg:
 		if m.err != nil {
+			logger.TUI("disable auto-unlock helper: %v", m.err)
 			s.state = auState_doneErr
-			s.resultErr = m.err
+			s.result = installer.AutoUnlockResult{
+				Outcome:    installer.AutoUnlockRepairRequired,
+				FailedStep: "complete privileged operation",
+			}
 			return s, nil
 		}
-		if err := reloadSystemConfig(s.ctx.Cfg); err != nil {
+		s.result = m.result
+		switch m.result.Outcome {
+		case installer.AutoUnlockDisabled:
+			s.ctx.Cfg.AutoUnlock = false
+			s.state = auState_doneOK
+			s.btnIdx = 0
+			return s, func() tea.Msg { return refreshStatusMsg{} }
+		case installer.AutoUnlockStillEnabled:
+			s.ctx.Cfg.AutoUnlock = true
+			s.state = auState_doneOK
+			return s, func() tea.Msg { return refreshStatusMsg{} }
+		default:
 			s.state = auState_doneErr
-			s.resultErr = err
 			return s, nil
 		}
-		s.state = auState_doneOK
-		return s, func() tea.Msg { return refreshStatusMsg{} }
 	case tea.PasteMsg:
 		if s.mode != autoUnlockEnable ||
 			s.state != auState_form {
@@ -430,15 +518,15 @@ func (s *AutoUnlockScreen) HandleMsg(
 
 func setupAutoUnlockCmd(password string) tea.Cmd {
 	return func() tea.Msg {
-		err := installer.SetupAutoUnlock(password)
-		return autoUnlockSetupDoneMsg{err: err}
+		result, err := installer.SetupAutoUnlock(password)
+		return autoUnlockSetupDoneMsg{result: result, err: err}
 	}
 }
 
 func disableAutoUnlockCmd() tea.Cmd {
 	return func() tea.Msg {
-		err := installer.DisableAutoUnlock()
-		return autoUnlockDisableDoneMsg{err: err}
+		result, err := installer.DisableAutoUnlock()
+		return autoUnlockDisableDoneMsg{result: result, err: err}
 	}
 }
 
@@ -564,13 +652,12 @@ func (s *AutoUnlockScreen) viewRunning(
 		p.title(theme.Header,
 			"Disabling Auto-Unlock")
 		p.blank()
-		p.dim("Restarting LND...")
+		p.dim("Restarting LND and proving it is locked...")
 	} else {
 		p.title(theme.Header,
 			"Configuring Auto-Unlock")
 		p.blank()
-		p.dim("Writing password file and " +
-			"restarting LND...")
+		p.dim("Restarting LND and verifying the password...")
 	}
 	return p.render()
 }
@@ -581,7 +668,16 @@ func (s *AutoUnlockScreen) viewDone(
 	isFocused := s.ctx.ContentFocused
 	p := newPane(w)
 
-	if s.mode == autoUnlockDisable {
+	if s.result.Outcome == installer.AutoUnlockStillEnabled {
+		p.title(theme.Header,
+			"Auto-Unlock Still Enabled")
+		p.line(" " + theme.Warning.Render(
+			"Disabling auto-unlock failed."))
+		p.line(" " + theme.Good.Render(
+			"The previous enabled state was restored,"))
+		p.line(" " + theme.Good.Render(
+			"and LND is online."))
+	} else if s.mode == autoUnlockDisable {
 		p.title(theme.Header,
 			"Auto-Unlock Disabled")
 		p.line(" " + theme.Good.Render(
@@ -606,8 +702,12 @@ func (s *AutoUnlockScreen) viewDone(
 			"automatically on every reboot."))
 	}
 
+	buttons := []string{"Done"}
+	if s.result.Outcome == installer.AutoUnlockDisabled {
+		buttons = []string{"Done", "Re-enable"}
+	}
 	return p.renderWithBottomButtons(
-		[]string{"Done"}, 0, isFocused, h)
+		buttons, s.btnIdx, isFocused, h)
 }
 
 func (s *AutoUnlockScreen) viewError(
@@ -616,16 +716,12 @@ func (s *AutoUnlockScreen) viewError(
 	isFocused := s.ctx.ContentFocused
 	p := newPane(w)
 
-	if s.mode == autoUnlockDisable {
-		p.title(theme.Header,
-			"Failed to Disable Auto-Unlock")
-	} else {
-		p.title(theme.Header,
-			"Failed to Configure Auto-Unlock")
-	}
+	p.title(theme.Header, "Repair Required")
 	p.blank()
-	if s.resultErr != nil {
-		p.warnWrap(s.resultErr.Error())
+	p.warnWrap("VPN could not prove the auto-unlock state due to a system failure. Do not assume LND is online or that auto-unlock is correctly configured.")
+	if s.result.FailedStep != "" {
+		p.blank()
+		p.warnWrap("Failed step: " + s.result.FailedStep)
 	}
 
 	return p.renderWithBottomButtons(
@@ -640,6 +736,10 @@ func (s *AutoUnlockScreen) HelpBindings() []key.Binding {
 	}
 	if s.state == auState_doneOK ||
 		s.state == auState_doneErr {
+		if s.state == auState_doneOK &&
+			s.result.Outcome == installer.AutoUnlockDisabled {
+			return actionButtonBindings(s.btnIdx, s.ctx.HasTabs)
+		}
 		return resultBindings(s.ctx.HasTabs)
 	}
 

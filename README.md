@@ -102,7 +102,11 @@ creation flow:
 
 The confirmation phrase is required — there is no skip. Once confirmed,
 the flow transitions into auto-unlock configuration so you don't have
-to manually unlock on every reboot.
+to manually unlock on every reboot. VPN restarts LND once to verify the
+password and reports success only after LND is fully ready and an
+authenticated `GetInfo` succeeds. If verification fails, LND is left
+stably locked instead of entering a restart loop, and the same form lets
+you retry.
 
 A note on cancellation: pressing `ctrl+c` during the password prompt is
 a legitimate escape hatch (no seed has been generated yet, nothing is
@@ -233,7 +237,7 @@ For the full setup guide, see
 - Secure temp file creation with O_EXCL (prevents symlink attacks)
 - Public IP detection uses kernel routing table (no external network calls)
 - Mandatory seed confirmation ("I SAVED MY SEED") during wallet creation
-- Auto-unlock (optional) uses a local password file with 0400 perms, never transmitted
+- Auto-unlock (optional) uses an `lnd:lnd` 0400 local password file, never sends the password over the network, and verifies a new LND invocation before publishing success
 
 ### Privacy — Network Traffic
 

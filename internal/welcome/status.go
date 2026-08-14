@@ -89,6 +89,17 @@ func fetchStatus(
 			wg.Add(1)
 			go func() {
 				defer wg.Done()
+				walletState, err := lndClient.GetState()
+				if err == nil {
+					mu.Lock()
+					s.lndWalletState = walletState
+					mu.Unlock()
+				}
+			}()
+
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
 				lndInfo, err := lndClient.GetInfo()
 				mu.Lock()
 				if err == nil {

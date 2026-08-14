@@ -12,6 +12,7 @@ import (
 	"github.com/virtualprivatenode/vpn/internal/bitcoin"
 	"github.com/virtualprivatenode/vpn/internal/helper"
 	"github.com/virtualprivatenode/vpn/internal/installer"
+	"github.com/virtualprivatenode/vpn/internal/lndrpc"
 	"github.com/virtualprivatenode/vpn/internal/theme"
 )
 
@@ -412,6 +413,10 @@ func (s *SystemHomeScreen) View(
 
 		svcLine := prefix + " " + dot + " " +
 			style.Render(name)
+		if name == "lnd" && status != nil &&
+			status.lndWalletState == lndrpc.WalletStateLocked {
+			svcLine += "  " + theme.Warning.Render("locked")
+		}
 
 		if isSelected && s.svcPending != "" {
 			svcLine += "  " +
