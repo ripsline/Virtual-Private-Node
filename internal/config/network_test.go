@@ -4,96 +4,125 @@ package config
 
 import "testing"
 
-func TestMainnetConfig(t *testing.T) {
-	net := Mainnet()
-
+func TestNetworkProfiles(t *testing.T) {
 	tests := []struct {
-		field string
-		got   interface{}
-		want  interface{}
+		name       string
+		core       string
+		lnd        string
+		invoice    string
+		rpc, p2p   int
+		zmqB, zmqT int
+		testing    bool
 	}{
-		{"Name", net.Name, "mainnet"},
-		{"BitcoinFlag", net.BitcoinFlag, ""},
-		{"LNDBitcoinFlag", net.LNDBitcoinFlag, "bitcoin.mainnet=true"},
-		{"RPCPort", net.RPCPort, 8332},
-		{"P2PPort", net.P2PPort, 8333},
-		{"ZMQBlockPort", net.ZMQBlockPort, 28332},
-		{"ZMQTxPort", net.ZMQTxPort, 28333},
-		{"LNCLINetwork", net.LNCLINetwork, "mainnet"},
-		{"CookiePath", net.CookiePath, ".cookie"},
+		{NetworkMainnet, "main", "mainnet", "lnbc", 8332, 8333, 28332, 28333, false},
+		{NetworkTestnet4, "testnet4", "testnet4", "lntb", 48332, 48333, 28334, 28335, true},
+		{NetworkPublicSignet, "signet", "signet", "lntbs", 38332, 38333, 28336, 28337, true},
 	}
 	for _, tt := range tests {
-		if tt.got != tt.want {
-			t.Errorf("%s: got %v, want %v", tt.field, tt.got, tt.want)
+		t.Run(tt.name, func(t *testing.T) {
+			net, err := NetworkConfigFromName(tt.name)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if net.Name != tt.name || net.CoreNetwork != tt.core ||
+				net.LNDNetwork != tt.lnd || net.InvoicePrefix != tt.invoice ||
+				net.RPCPort != tt.rpc || net.P2PPort != tt.p2p ||
+				net.ZMQBlockPort != tt.zmqB || net.ZMQTxPort != tt.zmqT ||
+				net.TestingOnly != tt.testing {
+				t.Fatalf("unexpected profile: %+v", net)
+			}
+			if net.ExpectedGenesis == "" || net.LNDBitcoinFlag == "" ||
+				net.Bech32HRP == "" || net.AddressPlaceholder == "" ||
+				net.InvoicePlaceholder == "" {
+				t.Fatalf("incomplete profile: %+v", net)
+			}
+		})
+	}
+}
+
+func TestNetworkLookupFailsClosed(t *testing.T) {
+	for _, name := range []string{"", "bogus", "testnet", "signet", "controlled-signet-v1"} {
+		if net, err := NetworkConfigFromName(name); err == nil || net != nil {
+			t.Errorf("NetworkConfigFromName(%q) = %+v, %v; want nil plus error", name, net, err)
 		}
-	}
-}
-
-func TestTestnet4Config(t *testing.T) {
-	net := Testnet4()
-
-	tests := []struct {
-		field string
-		got   interface{}
-		want  interface{}
-	}{
-		{"Name", net.Name, "testnet4"},
-		{"BitcoinFlag", net.BitcoinFlag, "testnet4=1"},
-		{"LNDBitcoinFlag", net.LNDBitcoinFlag, "bitcoin.testnet4=true"},
-		{"RPCPort", net.RPCPort, 48332},
-		{"P2PPort", net.P2PPort, 48333},
-		{"ZMQBlockPort", net.ZMQBlockPort, 28334},
-		{"ZMQTxPort", net.ZMQTxPort, 28335},
-		{"LNCLINetwork", net.LNCLINetwork, "testnet4"},
-		{"CookiePath", net.CookiePath, "testnet4/.cookie"},
-	}
-	for _, tt := range tests {
-		if tt.got != tt.want {
-			t.Errorf("%s: got %v, want %v", tt.field, tt.got, tt.want)
-		}
-	}
-}
-
-func TestNetworkConfigFromNameMainnet(t *testing.T) {
-	net := NetworkConfigFromName("mainnet")
-	if net.Name != "mainnet" {
-		t.Errorf("got %q, want mainnet", net.Name)
-	}
-}
-
-func TestNetworkConfigFromNameTestnet4(t *testing.T) {
-	net := NetworkConfigFromName("testnet4")
-	if net.Name != "testnet4" {
-		t.Errorf("got %q, want testnet4", net.Name)
-	}
-}
-
-func TestNetworkConfigFromNameUnknown(t *testing.T) {
-	net := NetworkConfigFromName("bogus")
-	if net.Name != "mainnet" {
-		t.Errorf("got %q, want mainnet (default fallback)", net.Name)
-	}
-}
-
-func TestNetworkConfigFromNameEmpty(t *testing.T) {
-	net := NetworkConfigFromName("")
-	if net.Name != "mainnet" {
-		t.Errorf("got %q, want mainnet (default fallback)", net.Name)
-	}
-}
-
-func TestValidateNetworkValid(t *testing.T) {
-	for _, name := range []string{"mainnet", "testnet4"} {
-		if err := ValidateNetwork(name); err != nil {
-			t.Errorf("ValidateNetwork(%q) returned error: %v", name, err)
-		}
-	}
-}
-
-func TestValidateNetworkInvalid(t *testing.T) {
-	for _, name := range []string{"", "bogus", "testnet3", "signet"} {
 		if err := ValidateNetwork(name); err == nil {
-			t.Errorf("ValidateNetwork(%q) should return error", name)
+			t.Errorf("ValidateNetwork(%q) succeeded", name)
+		}
+	}
+}
+
+func TestSupportedNetworksReturnsCopy(t *testing.T) {
+	one := SupportedNetworks()
+	one[0] = "changed"
+	two := SupportedNetworks()
+	if two[0] != NetworkMainnet {
+		t.Fatalf("profile order mutated: %v", two)
+	}
+}
+
+func TestPublicSignetIdentityIsPinned(t *testing.T) {
+	net, err := NetworkConfigFromName(NetworkPublicSignet)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if net.ExpectedGenesis != PublicSignetGenesis ||
+		net.ExpectedSignetChallenge != PublicSignetChallenge ||
+		net.BitcoinFlag != "signet=1" || net.BitcoinCLIFlag != "-signet" ||
+		net.LNDBitcoinFlag != "bitcoin.signet=true" {
+		t.Fatalf("public signet identity drifted: %+v", net)
+	}
+}
+
+func TestNetworkAddressPrefixes(t *testing.T) {
+	tests := []struct {
+		network string
+		accept  []string
+		reject  []string
+	}{
+		{NetworkMainnet, []string{"bc1qexample000", "1example000000", "3example000000"}, []string{"tb1qexample000", "mexample000000"}},
+		{NetworkTestnet4, []string{"tb1qexample000", "mexample000000", "nexample000000", "2example000000"}, []string{"bc1qexample000", "sb1qexample000"}},
+		{NetworkPublicSignet, []string{"tb1qexample000", "mexample000000", "nexample000000", "2example000000"}, []string{"bc1qexample000", "sb1qexample000"}},
+	}
+	for _, tt := range tests {
+		net, err := NetworkConfigFromName(tt.network)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, address := range tt.accept {
+			if !net.AcceptsOnChainAddress(address) {
+				t.Errorf("%s rejected %q", tt.network, address)
+			}
+		}
+		for _, address := range tt.reject {
+			if net.AcceptsOnChainAddress(address) {
+				t.Errorf("%s accepted %q", tt.network, address)
+			}
+		}
+	}
+}
+
+func TestInvoicePrefixesDoNotAlias(t *testing.T) {
+	tests := []struct {
+		network string
+		accept  string
+		reject  []string
+	}{
+		{NetworkMainnet, "lnbc1example", []string{"lntb1example", "lntbs1example"}},
+		{NetworkTestnet4, "lntb10u1example", []string{"lnbc1example", "lntbs1example"}},
+		{NetworkPublicSignet, "lntbs1example", []string{"lnbc1example", "lntb1example"}},
+	}
+	for _, tt := range tests {
+		profile, err := NetworkConfigFromName(tt.network)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !profile.AcceptsInvoicePrefix(tt.accept) {
+			t.Errorf("%s rejected %q", tt.network, tt.accept)
+		}
+		for _, invoice := range tt.reject {
+			if profile.AcceptsInvoicePrefix(invoice) {
+				t.Errorf("%s accepted %q", tt.network, invoice)
+			}
 		}
 	}
 }

@@ -94,6 +94,17 @@ func TestDecodeSystemStrict(t *testing.T) {
 	}
 }
 
+func TestDecodeSystemAcceptsPublicSignetProfile(t *testing.T) {
+	data := []byte(`{"schema":1,"network":"public-signet","prune_size_gb":25,"db_cache_mb":512,"p2p_mode":"tor","auto_unlock_enabled":false,"syncthing_enabled":false}`)
+	cfg, err := decodeSystem(data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Network != NetworkPublicSignet {
+		t.Fatalf("network = %q", cfg.Network)
+	}
+}
+
 func TestStoreSaveLoadAndMetadata(t *testing.T) {
 	store := testStore(t)
 	cfg := Default()
@@ -215,12 +226,20 @@ func TestStoreRefusesInvalidConfigBeforeMutation(t *testing.T) {
 
 func TestNetworkConfigRouting(t *testing.T) {
 	mainnet := Default()
-	if mainnet.NetworkConfig().RPCPort != 8332 {
-		t.Fatalf("mainnet RPC port %d", mainnet.NetworkConfig().RPCPort)
+	mainProfile, err := mainnet.NetworkConfig()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if mainProfile.RPCPort != 8332 {
+		t.Fatalf("mainnet RPC port %d", mainProfile.RPCPort)
 	}
 	testnet := Default()
-	testnet.Network = "testnet4"
-	if testnet.NetworkConfig().RPCPort != 48332 {
-		t.Fatalf("testnet4 RPC port %d", testnet.NetworkConfig().RPCPort)
+	testnet.Network = NetworkTestnet4
+	testProfile, err := testnet.NetworkConfig()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if testProfile.RPCPort != 48332 {
+		t.Fatalf("testnet4 RPC port %d", testProfile.RPCPort)
 	}
 }

@@ -12,9 +12,18 @@ import (
 	"github.com/virtualprivatenode/vpn/internal/config"
 )
 
+func mustBuildTorConfig(t *testing.T, cfg *config.AppConfig) string {
+	t.Helper()
+	content, err := BuildTorConfig(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return content
+}
+
 func TestTorConfigWithLND(t *testing.T) {
 	cfg := config.Default()
-	content := BuildTorConfig(cfg)
+	content := mustBuildTorConfig(t, cfg)
 
 	required := []string{
 		"SOCKSPort 9050",
@@ -37,7 +46,7 @@ func TestTorConfigWithLND(t *testing.T) {
 func TestTorConfigWithSyncthing(t *testing.T) {
 	cfg := config.Default()
 	cfg.SyncthingEnabled = true
-	content := BuildTorConfig(cfg)
+	content := mustBuildTorConfig(t, cfg)
 
 	// Web UI still accessible over Tor
 	if !strings.Contains(content, "syncthing") {
@@ -58,7 +67,7 @@ func TestTorConfigWithSyncthing(t *testing.T) {
 
 func TestTorConfigNoSyncthingWithoutInstall(t *testing.T) {
 	cfg := config.Default()
-	content := BuildTorConfig(cfg)
+	content := mustBuildTorConfig(t, cfg)
 
 	if strings.Contains(content, "syncthing") {
 		t.Error("should not have syncthing without install")
@@ -70,7 +79,7 @@ func TestTorConfigFullStack(t *testing.T) {
 		Network:          "mainnet",
 		SyncthingEnabled: true,
 	}
-	content := BuildTorConfig(cfg)
+	content := mustBuildTorConfig(t, cfg)
 
 	required := []string{
 		"SOCKSPort 9050",
@@ -95,7 +104,7 @@ func TestTorConfigFullStack(t *testing.T) {
 
 func TestTorConfigMainnetPorts(t *testing.T) {
 	cfg := config.Default()
-	content := BuildTorConfig(cfg)
+	content := mustBuildTorConfig(t, cfg)
 
 	if !strings.Contains(content, "HiddenServicePort 8333") {
 		t.Error("mainnet torrc should use port 8333 for P2P")
@@ -107,7 +116,7 @@ func TestTorConfigMainnetPorts(t *testing.T) {
 
 func TestTorConfigTestnet4Ports(t *testing.T) {
 	cfg := &config.AppConfig{Network: "testnet4"}
-	content := BuildTorConfig(cfg)
+	content := mustBuildTorConfig(t, cfg)
 
 	if !strings.Contains(content, "HiddenServicePort 48333") {
 		t.Error("testnet4 torrc should use port 48333 for P2P")
@@ -117,12 +126,33 @@ func TestTorConfigTestnet4Ports(t *testing.T) {
 	}
 }
 
+func TestTorConfigPublicSignetPorts(t *testing.T) {
+	cfg := config.Default()
+	cfg.Network = config.NetworkPublicSignet
+	content := mustBuildTorConfig(t, cfg)
+
+	if !strings.Contains(content, "HiddenServicePort 38333 127.0.0.1:38333") {
+		t.Error("public-signet torrc should use port 38333 for P2P")
+	}
+	if strings.Contains(content, "HiddenServicePort 38332") {
+		t.Error("public-signet torrc should not have an RPC hidden service")
+	}
+}
+
+func TestTorConfigRejectsUnknownProfile(t *testing.T) {
+	cfg := config.Default()
+	cfg.Network = "signet"
+	if _, err := BuildTorConfig(cfg); err == nil {
+		t.Fatal("raw signet profile generated a Tor config")
+	}
+}
+
 func TestTorConfigControlPortAlways(t *testing.T) {
 	// The install-path routing gate (torgate.go) reads bootstrap
 	// progress from the control port unconditionally, so every
 	// generated torrc must include it — LND or not.
 	cfg := config.Default()
-	content := BuildTorConfig(cfg)
+	content := mustBuildTorConfig(t, cfg)
 
 	if !strings.Contains(content, "ControlPort 9051") {
 		t.Error("ControlPort must be present in every config (install gate depends on it)")
@@ -159,7 +189,7 @@ func TestSyncthingTorPrerequisiteRequiresExpectedBaseState(t *testing.T) {
 	torServiceEnabledForAddon = func() bool { return true }
 	torServiceActiveForAddon = func() bool { return true }
 	readTorConfigForAddon = func(string) ([]byte, error) {
-		return []byte(BuildTorConfig(cfg)), nil
+		return []byte(mustBuildTorConfig(t, cfg)), nil
 	}
 	if err := verifySyncthingTorPrerequisite(cfg); err != nil {
 		t.Fatal(err)

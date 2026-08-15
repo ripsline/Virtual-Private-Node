@@ -60,8 +60,9 @@ func TestLifecycleStateUsesPrivateBoundary(t *testing.T) {
 		t.Error("stable lock and replaceable ledger share a path")
 	}
 	for network, path := range map[string]string{
-		"mainnet":  InstallBootstrapMainnet,
-		"testnet4": InstallBootstrapTestnet4,
+		"mainnet":       InstallBootstrapMainnet,
+		"testnet4":      InstallBootstrapTestnet4,
+		"public-signet": InstallBootstrapPublicSignet,
 	} {
 		if !strings.HasPrefix(path, InstallBootstrapPrefix) {
 			t.Errorf("%s bootstrap path %q is outside /var/lib", network, path)
@@ -75,8 +76,10 @@ func TestLifecycleStateUsesPrivateBoundary(t *testing.T) {
 				network, path)
 		}
 	}
-	if InstallBootstrapMainnet == InstallBootstrapTestnet4 {
-		t.Error("mainnet and testnet4 share a bootstrap path")
+	if InstallBootstrapMainnet == InstallBootstrapTestnet4 ||
+		InstallBootstrapMainnet == InstallBootstrapPublicSignet ||
+		InstallBootstrapTestnet4 == InstallBootstrapPublicSignet {
+		t.Error("network profiles share a bootstrap path")
 	}
 	if InstallBootstrapPrefix != "/var/lib/vpn-install-bootstrap-" {
 		t.Errorf("bootstrap prefix is %q", InstallBootstrapPrefix)

@@ -23,8 +23,11 @@ func installTor() error {
 // Pure logic — no side effects.
 // Note: HiddenServiceDir paths are hardcoded strings because they are
 // torrc config content read by Tor, not Go logic paths.
-func BuildTorConfig(cfg *config.AppConfig) string {
-	net := cfg.NetworkConfig()
+func BuildTorConfig(cfg *config.AppConfig) (string, error) {
+	net, err := cfg.NetworkConfig()
+	if err != nil {
+		return "", err
+	}
 
 	var b strings.Builder
 	b.WriteString("# Virtual Private Node — Tor Configuration\n")
@@ -68,12 +71,15 @@ HiddenServicePort 8384 127.0.0.1:8384
 		// with explicit device approval for authentication.
 	}
 
-	return b.String()
+	return b.String(), nil
 }
 
 // RebuildTorConfig writes the torrc to disk.
 func RebuildTorConfig(cfg *config.AppConfig) error {
-	content := BuildTorConfig(cfg)
+	content, err := BuildTorConfig(cfg)
+	if err != nil {
+		return err
+	}
 	if err := system.SudoWriteFile(
 		paths.Torrc, []byte(content), 0640); err != nil {
 		return err
@@ -135,7 +141,11 @@ func verifySyncthingTorPrerequisite(cfg *config.AppConfig) error {
 	if err != nil {
 		return fmt.Errorf("read current Tor configuration: %w", err)
 	}
-	if !bytes.Equal(current, []byte(BuildTorConfig(cfg))) {
+	expected, err := BuildTorConfig(cfg)
+	if err != nil {
+		return fmt.Errorf("build expected Tor configuration: %w", err)
+	}
+	if !bytes.Equal(current, []byte(expected)) {
 		return fmt.Errorf(
 			"Tor configuration does not match the expected base node — " +
 				"refusing Syncthing installation")

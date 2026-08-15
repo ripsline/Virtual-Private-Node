@@ -316,7 +316,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.state.WalletKnown = true
 		if m.state.WalletExists && m.lndClient == nil &&
 			m.cfg.HasLND() {
-			m.lndClient = lndrpc.New(m.cfg.Network)
+			m.lndClient = lndrpc.New()
 			m.screenCtx.LndClient = m.lndClient
 			return m, fetchStatus(m.cfg, m.state, m.lndClient)
 		}
@@ -520,7 +520,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.state.WalletExists = true
 		m.state.WalletKnown = true
 		if m.lndClient == nil && m.cfg.HasLND() {
-			m.lndClient = lndrpc.New(m.cfg.Network)
+			m.lndClient = lndrpc.New()
 			m.screenCtx.LndClient = m.lndClient
 		}
 		// Find the wallet creation tab and transform

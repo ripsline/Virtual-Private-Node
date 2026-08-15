@@ -94,8 +94,11 @@ func createLNDDirs(username string) error {
 func BuildLNDConfig(
 	cfg *config.AppConfig, publicIPv4, restOnion,
 	bitcoindRPCUser, bitcoindRPCPass string,
-) string {
-	net := cfg.NetworkConfig()
+) (string, error) {
+	net, err := cfg.NetworkConfig()
+	if err != nil {
+		return "", err
+	}
 
 	listenLine := "listen=" + paths.LNDP2PBind
 	restListenLine := "restlisten=" + paths.LNDRESTEndpoint
@@ -192,7 +195,7 @@ healthcheck.diskspace.interval=12h
 `, listenLine, paths.LNDGRPCEndpoint, restListenLine, externalLine,
 		tlsExtraDomain, tlsExtraIP,
 		net.LNDBitcoinFlag, bitcoindRPCUser, bitcoindRPCPass,
-		net.RPCPort, net.ZMQBlockPort, net.ZMQTxPort)
+		net.RPCPort, net.ZMQBlockPort, net.ZMQTxPort), nil
 }
 
 func writeLNDConfig(cfg *config.AppConfig, publicIPv4 string) error {
@@ -214,8 +217,11 @@ func writeLNDConfigWithRPCPassword(
 	if err != nil {
 		return err
 	}
-	content := BuildLNDConfig(cfg, publicIPv4, restOnion,
+	content, err := BuildLNDConfig(cfg, publicIPv4, restOnion,
 		LNDBitcoindRPCUser, password)
+	if err != nil {
+		return err
+	}
 	if err := system.SudoWriteFile(paths.LNDConf, []byte(content), 0640); err != nil {
 		return err
 	}

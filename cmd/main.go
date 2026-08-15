@@ -185,10 +185,23 @@ func parseArgs(
 	}
 	switch args[0] {
 	case "install":
+		var networkFlag string
 		for _, a := range args[1:] {
 			switch a {
 			case "--testnet4":
-				opts.Network = "testnet4"
+				opts.Network = config.NetworkTestnet4
+				if networkFlag != "" && networkFlag != a {
+					return 0, opts, fmt.Errorf(
+						"install network flags %s and %s conflict", networkFlag, a)
+				}
+				networkFlag = a
+			case "--signet":
+				opts.Network = config.NetworkPublicSignet
+				if networkFlag != "" && networkFlag != a {
+					return 0, opts, fmt.Errorf(
+						"install network flags %s and %s conflict", networkFlag, a)
+				}
+				networkFlag = a
 			case "--unattended":
 				opts.Unattended = true
 			case "--until=bake":
@@ -241,6 +254,7 @@ Usage:
 		paths.AdminUser + ` user)
   sudo vpn install   start a fresh install or resume a recognized interruption
       --testnet4     use testnet4 instead of mainnet
+      --signet       use default public signet (testing only)
       --unattended   no prompts (keys auto-copied from the box,
                      login password generated and printed once)
       --allow-console-only

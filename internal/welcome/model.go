@@ -354,7 +354,7 @@ func NewModel(
 	// to be re-audited for the two handlers interleaving.
 	var client *lndrpc.Client
 	if cfg.HasLND() && state.WalletKnown && state.WalletExists {
-		client = lndrpc.New(cfg.Network)
+		client = lndrpc.New()
 	}
 	m := Model{
 		cfg: cfg, prefs: prefs, state: state,

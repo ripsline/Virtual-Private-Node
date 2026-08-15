@@ -49,7 +49,7 @@ func SyncthingVersionStr() string { return syncthingVersion }
 
 // InstallOptions carries the `vpn install` command line.
 type InstallOptions struct {
-	// Network from --testnet4 ("" = mainnet for a pristine host,
+	// Network from --testnet4 or --signet ("" = mainnet for a pristine host,
 	// or keep the interrupted lifecycle's recorded answer).
 	Network string
 	// Unattended runs with no TUI and no prompts (ruling iv/vii:
@@ -678,7 +678,7 @@ func buildInstallSteps(
 				return writeBitcoindService(bitcoinUser)
 			}},
 		{Key: "btc.start", Name: "Starting Bitcoin Core",
-			Fn: startBitcoind},
+			Fn: func() error { return startBitcoind(cfg) }},
 		{Key: "security", Name: "Configuring security",
 			Fn: func() error {
 				if err := installUnattendedUpgrades(); err != nil {
@@ -1084,16 +1084,16 @@ func setupShellEnvironment(cfg *config.AppConfig) error {
 	bashrc := paths.AdminBashrc
 	data, _ := os.ReadFile(bashrc)
 	existing := string(data)
+	net, err := cfg.NetworkConfig()
+	if err != nil {
+		return err
+	}
 
 	var content string
 
 	// bitcoin-cli wrapper
 	if !strings.Contains(existing, "bitcoin-cli()") {
-		net := cfg.NetworkConfig()
-		btcNetFlag := ""
-		if net.Name == "testnet4" {
-			btcNetFlag = "\n        -testnet4 \\"
-		}
+		btcNetFlag := bitcoinCLINetworkFlag(net)
 		content += fmt.Sprintf(`
 # -- Virtual Private Node --
 # RPC password comes from the staged credential file on stdin;
@@ -1116,12 +1116,7 @@ export -f bitcoin-cli
 	// the initial install
 	if cfg.HasLND() &&
 		!strings.Contains(existing, "lncli()") {
-		net := cfg.NetworkConfig()
-		lndNetFlag := ""
-		if net.Name != "mainnet" {
-			lndNetFlag = fmt.Sprintf(
-				"\n        --network=%s \\", net.LNCLINetwork)
-		}
+		lndNetFlag := lncliNetworkFlag(net)
 		content += fmt.Sprintf(`
 lncli() {
     /usr/local/bin/lncli \
@@ -1147,6 +1142,20 @@ export -f lncli
 	defer f.Close()
 	_, err = f.WriteString(content)
 	return err
+}
+
+func bitcoinCLINetworkFlag(net *config.NetworkConfig) string {
+	if net.BitcoinCLIFlag == "" {
+		return ""
+	}
+	return "\n        " + net.BitcoinCLIFlag + " \\"
+}
+
+func lncliNetworkFlag(net *config.NetworkConfig) string {
+	if net.Name == config.NetworkMainnet {
+		return ""
+	}
+	return fmt.Sprintf("\n        --network=%s \\", net.LNDNetwork)
 }
 
 func randRead(b []byte) (int, error) {

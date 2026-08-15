@@ -88,6 +88,12 @@ func productionLifecycleFS() lifecycleFS {
 					Network: "testnet4", InitialP2PMode: "tor",
 				},
 			},
+			{
+				path: paths.InstallBootstrapPublicSignet,
+				context: installContext{
+					Network: "public-signet", InitialP2PMode: "tor",
+				},
+			},
 		},
 		ancestors: []lifecycleDir{
 			{path: "/var", mode: 0o755},

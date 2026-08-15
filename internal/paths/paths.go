@@ -72,6 +72,8 @@ const (
 		"service-layout-1-mainnet-tor"
 	InstallBootstrapTestnet4 = InstallBootstrapPrefix +
 		"service-layout-1-testnet4-tor"
+	InstallBootstrapPublicSignet = InstallBootstrapPrefix +
+		"service-layout-1-public-signet-tor"
 
 	// RuntimeDir and InstallLock are transient serialization
 	// state. The stable lock is deliberately separate from the

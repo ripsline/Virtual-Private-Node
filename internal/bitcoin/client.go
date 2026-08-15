@@ -41,11 +41,39 @@ type BlockchainInfo struct {
 }
 
 type blockchainInfoResponse struct {
+	Chain                string  `json:"chain"`
 	Blocks               int     `json:"blocks"`
 	Headers              int     `json:"headers"`
 	VerificationProgress float64 `json:"verificationprogress"`
 	InitialBlockDownload bool    `json:"initialblockdownload"`
 	SizeOnDisk           int64   `json:"size_on_disk"`
+	SignetChallenge      string  `json:"signet_challenge"`
+}
+
+// BlockchainIdentity is the minimum live evidence needed to prove that the
+// running Core instance matches the immutable installed profile. Chain alone
+// is insufficient for signet because public and custom signets both report
+// "signet" and share the genesis block.
+type BlockchainIdentity struct {
+	Chain           string
+	Genesis         string
+	SignetChallenge string
+}
+
+func GetBlockchainIdentity(rpcPort int) (BlockchainIdentity, error) {
+	var info blockchainInfoResponse
+	if err := rpcCall(rpcPort, "getblockchaininfo", nil, &info); err != nil {
+		return BlockchainIdentity{}, err
+	}
+	var genesis string
+	if err := rpcCall(rpcPort, "getblockhash", []any{0}, &genesis); err != nil {
+		return BlockchainIdentity{}, err
+	}
+	return BlockchainIdentity{
+		Chain:           info.Chain,
+		Genesis:         genesis,
+		SignetChallenge: info.SignetChallenge,
+	}, nil
 }
 
 // rpcCall performs one JSON-RPC call against loopback. The

@@ -1161,12 +1161,16 @@ func readLNDWalletState() (lnrpc.WalletState, error) {
 }
 
 func authenticatedLNDGetInfo(network string) error {
+	profile, err := config.NetworkConfigFromName(network)
+	if err != nil {
+		return err
+	}
 	conn, err := directLNDConn()
 	if err != nil {
 		return err
 	}
 	defer conn.Close()
-	macaroon, err := os.ReadFile(paths.LNDMacaroon(network))
+	macaroon, err := os.ReadFile(paths.LNDMacaroon(profile.LNDNetwork))
 	if err != nil {
 		return fmt.Errorf("read LND admin macaroon: %w", err)
 	}
