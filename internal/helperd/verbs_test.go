@@ -34,6 +34,15 @@ func TestEveryVerbHasDeadline(t *testing.T) {
 	}
 }
 
+func TestServiceActionDeadlineCoversLNDStopAndNotifiedStart(t *testing.T) {
+	// The installed LND unit permits 300 seconds to stop and 1200 seconds
+	// to notify readiness during an ordinary restart. The helper socket must
+	// remain available for that complete systemd transaction.
+	if got := verbs[helper.VerbServiceAction].deadline; got < 25*time.Minute {
+		t.Fatalf("service-action deadline = %s, want at least 25m", got)
+	}
+}
+
 // The menu is closed: exactly the ruled verbs, nothing else.
 // Adding a verb must be a deliberate act that updates this
 // list too.

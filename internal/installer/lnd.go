@@ -391,7 +391,13 @@ func parseLNDBitcoindRPCPassword(content string) (string, error) {
 // root-staged password file, so the wallet unlocks without an
 // operator on every service start. Everything else about the
 // two variants is identical by construction — they come from
-// this one template. Pure — unit-tested.
+// this one template. Pinned LND natively notifies systemd once
+// locked-wallet RPC is available or an auto-unlocked wallet has
+// reached RPC_ACTIVE, before chain synchronization. The extended
+// normal-start timeout follows LND's upstream unit guidance for
+// occasional database work; auto-unlock verification temporarily
+// overrides it with the product's bounded one-attempt window.
+// Pure — unit-tested.
 func lndServiceUnit(username string, withUnlock bool) string {
 	unlockFlag := ""
 	if withUnlock {
@@ -404,7 +410,7 @@ After=bitcoind.service tor.service
 Wants=bitcoind.service
 
 [Service]
-Type=simple
+Type=notify
 User=%s
 Group=%s
 SupplementaryGroups=debian-tor
@@ -412,6 +418,7 @@ UMask=0077
 ExecStart=/usr/local/bin/lnd --configfile=/etc/lnd/lnd.conf%s
 Restart=on-failure
 RestartSec=30
+TimeoutStartSec=1200
 TimeoutStopSec=300
 PrivateTmp=true
 ProtectSystem=full

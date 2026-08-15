@@ -102,11 +102,11 @@ creation flow:
 
 The confirmation phrase is required — there is no skip. Once confirmed,
 the flow transitions into auto-unlock configuration so you don't have
-to manually unlock on every reboot. VPN restarts LND once to verify the
-password and reports success only after LND is fully ready and an
-authenticated `GetInfo` succeeds. If verification fails, LND is left
-stably locked instead of entering a restart loop, and the same form lets
-you retry.
+to manually unlock on every reboot. VPN gracefully stops and starts LND
+once to verify the password, and reports success only after LND reaches
+authenticated RPC readiness on the installed Bitcoin network. If
+verification fails, LND is left stably locked instead of entering a
+restart loop, and the same form lets you retry.
 
 A note on cancellation: pressing `ctrl+c` during the password prompt is
 a legitimate escape hatch (no seed has been generated yet, nothing is

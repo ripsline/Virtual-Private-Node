@@ -43,13 +43,16 @@ type verbDef struct {
 }
 
 var verbs = map[string]verbDef{
-	helper.VerbServiceAction:   {14 * time.Minute, verbServiceAction},
+	// LND uses its upstream readiness notification and permits up to 20
+	// minutes for an ordinary start. Keep the helper connection above the
+	// longest supported service start plus its graceful-stop allowance.
+	helper.VerbServiceAction:   {30 * time.Minute, verbServiceAction},
 	helper.VerbReboot:          {1 * time.Minute, verbReboot},
 	helper.VerbDirSize:         {2 * time.Minute, verbDirSize},
 	helper.VerbSetUserPassword: {1 * time.Minute, verbSetUserPassword},
 	// LND permits a graceful stop to take up to five minutes. A failed
-	// transition can require a second restart plus a second 120-second proof,
-	// so the helper connection must outlive that bounded recovery path.
+	// transition can require a second stop/start recovery, so the helper
+	// connection must outlive both bounded systemd transactions.
 	helper.VerbStageWalletPassword:  {20 * time.Minute, verbStageWalletPassword},
 	helper.VerbRemoveWalletPassword: {20 * time.Minute, verbRemoveWalletPassword},
 	helper.VerbStageLNDCredentials:  {3 * time.Minute, verbStageLNDCredentials},
