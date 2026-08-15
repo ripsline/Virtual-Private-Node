@@ -59,6 +59,7 @@ type autoUnlockArtifacts struct {
 type lndUnitStatus struct {
 	invocationID     string
 	mainPID          int
+	controlPID       int
 	serviceType      string
 	activeState      string
 	subState         string
@@ -181,8 +182,9 @@ func enableAutoUnlock(password string, ops autoUnlockOps) AutoUnlockResult {
 	}
 
 	runtimeTransitioned := false
-	fail := func(
-		outcome AutoUnlockOutcome, stage, detail string, cause error,
+	failWithRecoveryStage := func(
+		outcome AutoUnlockOutcome, stage, recoveryStage, detail string,
+		cause error,
 	) AutoUnlockResult {
 		if cause != nil {
 			logger.System("auto-unlock: %s: %v", stage, cause)
@@ -192,10 +194,18 @@ func enableAutoUnlock(password string, ops autoUnlockOps) AutoUnlockResult {
 		if err := restoreDisabled(
 			ops, cfg, before, runtimeTransitioned,
 		); err != nil {
-			return repairRequired(stage,
+			return repairRequired(recoveryStage,
 				fmt.Errorf("recovery failed: %w", err))
 		}
 		return AutoUnlockResult{Outcome: outcome, Detail: detail}
+	}
+	fail := func(
+		outcome AutoUnlockOutcome, stage, detail string, cause error,
+	) AutoUnlockResult {
+		return failWithRecoveryStage(
+			outcome, stage, "automatic return to locked state", detail,
+			cause,
+		)
 	}
 
 	if err := ops.writePassword(password); err != nil {
@@ -225,8 +235,11 @@ func enableAutoUnlock(password string, ops autoUnlockOps) AutoUnlockResult {
 		lnrpc.WalletState_RPC_ACTIVE, cfg.Network,
 	)
 	if invocation == invocationExited {
-		return fail(AutoUnlockVerificationFailed,
-			"verify candidate wallet password", "", verifyErr)
+		return failWithRecoveryStage(
+			AutoUnlockVerificationFailed,
+			"verify candidate wallet password",
+			"automatic recovery after password rejection", "", verifyErr,
+		)
 	}
 	if invocation == invocationStartTimedOut {
 		return fail(AutoUnlockVerificationTimedOut,
@@ -407,7 +420,7 @@ func removePasswordDurably(ops autoUnlockOps) error {
 func replaceWithLockedPlainInvocation(
 	ops autoUnlockOps, previousID, network string,
 ) error {
-	if err := stopAndVerifyInactive(ops); err != nil {
+	if err := stopAndVerifyNoProcess(ops); err != nil {
 		return err
 	}
 	removeErr := removePasswordDurably(ops)
@@ -665,14 +678,20 @@ func stopStartAndVerifyInvocation(
 	ops autoUnlockOps, previousID string,
 	withUnlock bool, wantState lnrpc.WalletState, network string,
 ) (error, invocationResult, error) {
-	if err := stopAndVerifyInactive(ops); err != nil {
+	if err := stopAndVerifyNoProcess(ops); err != nil {
 		return err, invocationUnknown, nil
 	}
 	return startAndVerifyInvocation(
 		ops, previousID, withUnlock, wantState, network)
 }
 
-func stopAndVerifyInactive(ops autoUnlockOps) error {
+// stopAndVerifyNoProcess accepts systemd's two quiescent unit states. An
+// inactive unit stopped normally; a failed unit is also inactive but retains
+// the unsuccessful result for diagnosis. Restart=no is required so a failed
+// candidate cannot enter an automatic restart transition between samples.
+// Neither state is sufficient on its own: both the service's main process and
+// any systemd control process must also be absent before credential removal.
+func stopAndVerifyNoProcess(ops autoUnlockOps) error {
 	if err := ops.stopLND(); err != nil {
 		return err
 	}
@@ -680,8 +699,19 @@ func stopAndVerifyInactive(ops autoUnlockOps) error {
 	if err != nil {
 		return err
 	}
-	if status.mainPID != 0 || status.activeState != "inactive" {
-		return errors.New("LND did not stop completely")
+	if status.restart != "no" {
+		return fmt.Errorf(
+			"LND stop proof has Restart=%s, want no", status.restart)
+	}
+	if status.mainPID != 0 || status.controlPID != 0 {
+		return fmt.Errorf(
+			"LND still has a process after stop: MainPID=%d ControlPID=%d",
+			status.mainPID, status.controlPID)
+	}
+	if status.activeState != "inactive" && status.activeState != "failed" {
+		return fmt.Errorf(
+			"LND is not process-free after stop: ActiveState=%s",
+			status.activeState)
 	}
 	return nil
 }
@@ -844,6 +874,7 @@ func verifyStableProcessArgs(
 	ops autoUnlockOps, before lndUnitStatus, withUnlock bool,
 ) error {
 	if before.invocationID == "" || before.mainPID <= 0 ||
+		before.controlPID != 0 ||
 		before.activeState != "active" || before.subState != "running" {
 		return errors.New("LND invocation is not stably running")
 	}
@@ -853,7 +884,8 @@ func verifyStableProcessArgs(
 		return statusErr
 	}
 	if after.invocationID != before.invocationID ||
-		after.mainPID != before.mainPID || after.activeState != "active" ||
+		after.mainPID != before.mainPID || after.controlPID != 0 ||
+		after.activeState != "active" ||
 		after.subState != "running" {
 		return errLNDInvocationChanged
 	}
@@ -1231,8 +1263,8 @@ func validateInstalledLNDUnit() error {
 
 func readLNDUnitStatus() (lndUnitStatus, error) {
 	properties := []string{
-		"InvocationID", "MainPID", "Type", "ActiveState", "SubState", "Result",
-		"ExecMainStatus", "Restart", "FragmentPath", "DropInPaths",
+		"InvocationID", "MainPID", "ControlPID", "Type", "ActiveState",
+		"SubState", "Result", "ExecMainStatus", "Restart", "FragmentPath", "DropInPaths",
 		"NeedDaemonReload", "ExecStart",
 	}
 	args := []string{"show", "lnd.service", "--no-pager"}
@@ -1254,12 +1286,18 @@ func readLNDUnitStatus() (lndUnitStatus, error) {
 	if err != nil {
 		return lndUnitStatus{}, fmt.Errorf("parse LND MainPID %q: %w", values["MainPID"], err)
 	}
+	controlPID, err := strconv.Atoi(values["ControlPID"])
+	if err != nil {
+		return lndUnitStatus{}, fmt.Errorf(
+			"parse LND ControlPID %q: %w", values["ControlPID"], err)
+	}
 	drops := []string(nil)
 	if values["DropInPaths"] != "" {
 		drops = strings.Fields(values["DropInPaths"])
 	}
 	return lndUnitStatus{
 		invocationID: values["InvocationID"], mainPID: pid,
+		controlPID:  controlPID,
 		serviceType: values["Type"],
 		activeState: values["ActiveState"], subState: values["SubState"],
 		result: values["Result"], execMainStatus: values["ExecMainStatus"],

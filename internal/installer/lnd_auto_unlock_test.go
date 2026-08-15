@@ -22,6 +22,7 @@ type autoUnlockFixture struct {
 
 	invocation string
 	pid        int
+	controlPID int
 	args       []string
 	wallet     lnrpc.WalletState
 	password   string
@@ -242,13 +243,18 @@ func (f *autoUnlockFixture) ops() autoUnlockOps {
 			if err := f.fail("stop-lnd"); err != nil {
 				return err
 			}
+			alreadyFailed := f.pid == 0 && !f.stopped &&
+				f.result != "success"
 			f.now = f.now.Add(f.stopAdvance)
 			f.pid = 0
+			f.controlPID = 0
 			f.args = nil
 			f.wallet = lnrpc.WalletState_WAITING_TO_START
-			f.stopped = true
-			f.result = "success"
-			f.execMainStatus = "0"
+			if !alreadyFailed {
+				f.stopped = true
+				f.result = "success"
+				f.execMainStatus = "0"
+			}
 			return nil
 		},
 		unitStatus: func() (lndUnitStatus, error) {
@@ -271,6 +277,7 @@ func (f *autoUnlockFixture) ops() autoUnlockOps {
 			return lndUnitStatus{
 				invocationID:     f.invocation,
 				mainPID:          f.pid,
+				controlPID:       f.controlPID,
 				serviceType:      "notify",
 				activeState:      active,
 				subState:         sub,
@@ -407,6 +414,34 @@ func TestEnableWrongPasswordReturnsToLockedRetryState(t *testing.T) {
 	assertDisabled(t, f)
 	if f.startCount != 2 {
 		t.Fatalf("starts = %d, want candidate plus locked rollback", f.startCount)
+	}
+}
+
+func TestEnableRecoversFailedPasswordRejectionResidue(t *testing.T) {
+	f := newAutoUnlockFixture(false)
+	f.art = autoUnlockArtifacts{
+		unit:       autoUnlockUnitPlain,
+		password:   true,
+		verifyDrop: true,
+	}
+	f.loaded = autoUnlockUnitPlain
+	f.loadedDrop = true
+	f.restart = "no"
+	f.invocation = "failed-password-rejection"
+	f.pid = 0
+	f.args = nil
+	f.wallet = lnrpc.WalletState_WAITING_TO_START
+	f.password = "wrong"
+	f.result = "exit-code"
+	f.execMainStatus = "1"
+
+	result := enableAutoUnlock("correct", f.ops())
+	if result.Outcome != AutoUnlockEnabled {
+		t.Fatalf("outcome = %+v", result)
+	}
+	assertEnabled(t, f)
+	if f.startCount != 2 {
+		t.Fatalf("starts = %d, want locked recovery plus candidate", f.startCount)
 	}
 }
 
@@ -553,7 +588,8 @@ func TestEnableRollbackFailureRequiresRepair(t *testing.T) {
 	f := newAutoUnlockFixture(false)
 	f.failOn["write-unit-plain"] = 2
 	result := enableAutoUnlock("wrong", f.ops())
-	if result.Outcome != AutoUnlockRepairRequired || result.FailedStep == "" {
+	if result.Outcome != AutoUnlockRepairRequired ||
+		result.FailedStep != "automatic recovery after password rejection" {
 		t.Fatalf("outcome = %+v", result)
 	}
 }
@@ -815,6 +851,75 @@ func TestStableProcessProofRejectsUnexpectedArguments(t *testing.T) {
 	err = verifyStableProcessArgs(ops, status, false)
 	if err == nil || !strings.Contains(err.Error(), "arguments") {
 		t.Fatalf("unexpected process arguments error = %v", err)
+	}
+}
+
+func TestStableProcessProofRejectsControlProcess(t *testing.T) {
+	f := newAutoUnlockFixture(false)
+	ops := f.ops()
+	status, err := ops.unitStatus()
+	if err != nil {
+		t.Fatal(err)
+	}
+	status.controlPID = 42
+	if err := verifyStableProcessArgs(ops, status, false); err == nil {
+		t.Fatal("running invocation with a control process was accepted")
+	}
+}
+
+func TestStopProofAcceptsOnlyProcessFreeQuiescentStates(t *testing.T) {
+	for _, state := range []string{"inactive", "failed"} {
+		t.Run("accept "+state, func(t *testing.T) {
+			ops := autoUnlockOps{
+				stopLND: func() error { return nil },
+				unitStatus: func() (lndUnitStatus, error) {
+					return lndUnitStatus{
+						activeState: state,
+						restart:     "no",
+					}, nil
+				},
+			}
+			if err := stopAndVerifyNoProcess(ops); err != nil {
+				t.Fatalf("process-free %s state rejected: %v", state, err)
+			}
+		})
+	}
+
+	tests := []struct {
+		name   string
+		status lndUnitStatus
+	}{
+		{"main process", lndUnitStatus{
+			activeState: "failed", mainPID: 41, restart: "no",
+		}},
+		{"control process", lndUnitStatus{
+			activeState: "failed", controlPID: 42, restart: "no",
+		}},
+		{"restart policy", lndUnitStatus{
+			activeState: "failed", restart: "on-failure",
+		}},
+		{"active state", lndUnitStatus{
+			activeState: "active", restart: "no",
+		}},
+		{"activating state", lndUnitStatus{
+			activeState: "activating", restart: "no",
+		}},
+		{"deactivating state", lndUnitStatus{
+			activeState: "deactivating", restart: "no",
+		}},
+	}
+	for _, test := range tests {
+		t.Run("reject "+test.name, func(t *testing.T) {
+			ops := autoUnlockOps{
+				stopLND: func() error { return nil },
+				unitStatus: func() (lndUnitStatus, error) {
+					return test.status, nil
+				},
+			}
+			if err := stopAndVerifyNoProcess(ops); err == nil {
+				t.Fatalf("unsafe status accepted: %+v", test.status)
+			}
+		})
 	}
 }
 
