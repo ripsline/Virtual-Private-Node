@@ -22,14 +22,28 @@ type autoUnlockFixture struct {
 
 	invocation string
 	pid        int
+	controlPID int
 	args       []string
 	wallet     lnrpc.WalletState
 	password   string
 
-	now          time.Time
-	restartCount int
-	getInfoCount int
-	holdEnabled  bool
+	now                          time.Time
+	startCount                   int
+	stopCount                    int
+	holdEnabled                  bool
+	rpcOnly                      bool
+	timeoutOnStart               bool
+	enabledStartAdvance          time.Duration
+	stopAdvance                  time.Duration
+	stopped                      bool
+	removedWhileUnlockRunning    bool
+	changeDuringProcessRead      bool
+	processChangesRemaining      int
+	exitDuringProcessRead        bool
+	walletStateFailuresRemaining int
+	result                       string
+	execMainStatus               string
+	events                       []string
 
 	calls  map[string]int
 	failOn map[string]int
@@ -39,13 +53,15 @@ type autoUnlockFixture struct {
 
 func newAutoUnlockFixture(enabled bool) *autoUnlockFixture {
 	f := &autoUnlockFixture{
-		now:        time.Unix(1_700_000_000, 0),
-		pid:        100,
-		invocation: "invocation-1",
-		calls:      map[string]int{},
-		failOn:     map[string]int{},
-		after:      map[string]bool{},
-		always:     map[string]bool{},
+		now:            time.Unix(1_700_000_000, 0),
+		pid:            100,
+		invocation:     "invocation-1",
+		result:         "success",
+		execMainStatus: "0",
+		calls:          map[string]int{},
+		failOn:         map[string]int{},
+		after:          map[string]bool{},
+		always:         map[string]bool{},
 	}
 	f.cfg = *config.Default()
 	if enabled {
@@ -77,6 +93,49 @@ func (f *autoUnlockFixture) fail(name string) error {
 }
 
 func (f *autoUnlockFixture) ops() autoUnlockOps {
+	startInvocation := func(failureName string) error {
+		f.startCount++
+		f.invocation = fmt.Sprintf("invocation-%d", f.startCount+1)
+		f.stopped = false
+		if err := f.fail(failureName); err != nil {
+			return err
+		}
+		f.result = "success"
+		f.execMainStatus = "0"
+		if f.loaded == autoUnlockUnitEnabled {
+			f.now = f.now.Add(f.enabledStartAdvance)
+		}
+		if f.loaded == autoUnlockUnitEnabled && f.timeoutOnStart {
+			f.pid = 0
+			f.args = nil
+			f.wallet = lnrpc.WalletState_WAITING_TO_START
+			f.result = "timeout"
+			f.execMainStatus = "0"
+			return errors.New("injected systemd start timeout")
+		}
+		if f.loaded == autoUnlockUnitEnabled && f.password != "correct" {
+			f.pid = 0
+			f.args = nil
+			f.wallet = lnrpc.WalletState_WAITING_TO_START
+			f.result = "exit-code"
+			f.execMainStatus = "1"
+			return errors.New("injected LND password rejection")
+		}
+		f.pid = 100 + f.startCount
+		f.args = expectedLNDArgs(f.loaded == autoUnlockUnitEnabled)
+		if f.loaded == autoUnlockUnitEnabled {
+			if f.holdEnabled {
+				f.wallet = lnrpc.WalletState_UNLOCKED
+			} else if f.rpcOnly {
+				f.wallet = lnrpc.WalletState_RPC_ACTIVE
+			} else {
+				f.wallet = lnrpc.WalletState_SERVER_ACTIVE
+			}
+		} else {
+			f.wallet = lnrpc.WalletState_LOCKED
+		}
+		return nil
+	}
 	return autoUnlockOps{
 		loadConfig: func() (*config.AppConfig, error) {
 			if err := f.fail("load-config"); err != nil {
@@ -127,6 +186,9 @@ func (f *autoUnlockFixture) ops() autoUnlockOps {
 			return nil
 		},
 		removePassword: func() error {
+			if f.pid > 0 && equalStrings(f.args, expectedLNDArgs(true)) {
+				f.removedWhileUnlockRunning = true
+			}
 			if f.after["remove-password"] {
 				f.after["remove-password"] = false
 				f.art.password = false
@@ -170,28 +232,27 @@ func (f *autoUnlockFixture) ops() autoUnlockOps {
 			}
 			return nil
 		},
-		restartLND: func() error {
-			f.restartCount++
-			f.invocation = fmt.Sprintf("invocation-%d", f.restartCount+1)
-			if err := f.fail("restart-lnd"); err != nil {
+		startLND: func() error {
+			f.events = append(f.events, "start")
+			return startInvocation("start-lnd")
+		},
+		stopLND: func() error {
+			f.stopCount++
+			f.events = append(f.events, "stop")
+			if err := f.fail("stop-lnd"); err != nil {
 				return err
 			}
-			if f.loaded == autoUnlockUnitEnabled && f.password != "correct" {
-				f.pid = 0
-				f.args = nil
-				f.wallet = lnrpc.WalletState_WAITING_TO_START
-				return nil
-			}
-			f.pid = 100 + f.restartCount
-			f.args = expectedLNDArgs(f.loaded == autoUnlockUnitEnabled)
-			if f.loaded == autoUnlockUnitEnabled {
-				if f.holdEnabled {
-					f.wallet = lnrpc.WalletState_UNLOCKED
-				} else {
-					f.wallet = lnrpc.WalletState_SERVER_ACTIVE
-				}
-			} else {
-				f.wallet = lnrpc.WalletState_LOCKED
+			alreadyFailed := f.pid == 0 && !f.stopped &&
+				f.result != "success"
+			f.now = f.now.Add(f.stopAdvance)
+			f.pid = 0
+			f.controlPID = 0
+			f.args = nil
+			f.wallet = lnrpc.WalletState_WAITING_TO_START
+			if !alreadyFailed {
+				f.stopped = true
+				f.result = "success"
+				f.execMainStatus = "0"
 			}
 			return nil
 		},
@@ -201,7 +262,10 @@ func (f *autoUnlockFixture) ops() autoUnlockOps {
 			}
 			active := "active"
 			sub := "running"
-			if f.pid == 0 {
+			if f.stopped {
+				active = "inactive"
+				sub = "dead"
+			} else if f.pid == 0 {
 				active = "failed"
 				sub = "failed"
 			}
@@ -212,8 +276,12 @@ func (f *autoUnlockFixture) ops() autoUnlockOps {
 			return lndUnitStatus{
 				invocationID:     f.invocation,
 				mainPID:          f.pid,
+				controlPID:       f.controlPID,
+				serviceType:      "notify",
 				activeState:      active,
 				subState:         sub,
+				result:           f.result,
+				execMainStatus:   f.execMainStatus,
 				restart:          f.restart,
 				fragmentPath:     paths.LNDService,
 				dropInPaths:      drops,
@@ -230,23 +298,34 @@ func (f *autoUnlockFixture) ops() autoUnlockOps {
 			if pid != f.pid || pid == 0 {
 				return nil, errors.New("process does not exist")
 			}
-			return append([]string(nil), f.args...), nil
+			args := append([]string(nil), f.args...)
+			if f.exitDuringProcessRead {
+				f.exitDuringProcessRead = false
+				f.pid = 0
+				f.args = nil
+				f.result = "exit-code"
+				f.execMainStatus = "1"
+			} else if f.changeDuringProcessRead ||
+				f.processChangesRemaining > 0 {
+				f.changeDuringProcessRead = false
+				if f.processChangesRemaining > 0 {
+					f.processChangesRemaining--
+				}
+				f.invocation += "-changed"
+				f.pid++
+			}
+			return args, nil
 		},
 		walletState: func() (lnrpc.WalletState, error) {
+			if f.walletStateFailuresRemaining > 0 {
+				f.walletStateFailuresRemaining--
+				return lnrpc.WalletState_WAITING_TO_START,
+					errors.New("injected transient wallet-state failure")
+			}
 			if err := f.fail("wallet-state"); err != nil {
 				return lnrpc.WalletState_WAITING_TO_START, err
 			}
 			return f.wallet, nil
-		},
-		getInfo: func(string) error {
-			f.getInfoCount++
-			if err := f.fail("get-info"); err != nil {
-				return err
-			}
-			if f.wallet != lnrpc.WalletState_SERVER_ACTIVE {
-				return errors.New("LND is not ready")
-			}
-			return nil
 		},
 		now: func() time.Time { return f.now },
 		sleep: func(d time.Duration) {
@@ -280,7 +359,7 @@ func assertEnabled(t *testing.T, f *autoUnlockFixture) {
 	t.Helper()
 	if !f.cfg.AutoUnlock || f.art.unit != autoUnlockUnitEnabled ||
 		!f.art.password || f.art.verifyDrop || f.restart != "on-failure" ||
-		f.wallet != lnrpc.WalletState_SERVER_ACTIVE {
+		!walletStateMatches(f.wallet, lnrpc.WalletState_RPC_ACTIVE) {
 		t.Fatalf("not safely enabled: cfg=%+v art=%+v restart=%s wallet=%s",
 			f.cfg, f.art, f.restart, f.wallet)
 	}
@@ -293,8 +372,26 @@ func TestEnableAutoUnlockProvesAndPublishes(t *testing.T) {
 		t.Fatalf("outcome = %+v", result)
 	}
 	assertEnabled(t, f)
-	if f.restartCount != 1 || f.getInfoCount < 2 {
-		t.Fatalf("restart=%d GetInfo=%d", f.restartCount, f.getInfoCount)
+	if f.startCount != 1 || f.calls["wallet-state"] < 2 {
+		t.Fatalf("starts=%d wallet-state checks=%d",
+			f.startCount, f.calls["wallet-state"])
+	}
+}
+
+func TestEnableAutoUnlockAcceptsRPCActiveDuringChainSync(t *testing.T) {
+	f := newAutoUnlockFixture(false)
+	f.rpcOnly = true
+	result := enableAutoUnlock("correct", f.ops())
+	if result.Outcome != AutoUnlockEnabled {
+		t.Fatalf("outcome = %+v", result)
+	}
+	assertEnabled(t, f)
+	if f.wallet != lnrpc.WalletState_RPC_ACTIVE {
+		t.Fatalf("wallet state = %s, want RPC_ACTIVE", f.wallet)
+	}
+	if f.calls["wallet-state"] < 2 {
+		t.Fatalf("wallet-state checks = %d, want at least 2",
+			f.calls["wallet-state"])
 	}
 }
 
@@ -305,21 +402,142 @@ func TestEnableWrongPasswordReturnsToLockedRetryState(t *testing.T) {
 		t.Fatalf("outcome = %+v", result)
 	}
 	assertDisabled(t, f)
-	if f.restartCount != 2 {
-		t.Fatalf("restarts = %d, want candidate plus locked rollback", f.restartCount)
+	if f.startCount != 2 {
+		t.Fatalf("starts = %d, want candidate plus locked rollback", f.startCount)
 	}
 }
 
-func TestEnableTimeoutIsInconclusiveAndLocked(t *testing.T) {
+func TestEnableRecoversFailedPasswordRejectionResidue(t *testing.T) {
+	f := newAutoUnlockFixture(false)
+	f.art = autoUnlockArtifacts{
+		unit:       autoUnlockUnitPlain,
+		password:   true,
+		verifyDrop: true,
+	}
+	f.loaded = autoUnlockUnitPlain
+	f.loadedDrop = true
+	f.restart = "no"
+	f.invocation = "failed-password-rejection"
+	f.pid = 0
+	f.args = nil
+	f.wallet = lnrpc.WalletState_WAITING_TO_START
+	f.password = "wrong"
+	f.result = "exit-code"
+	f.execMainStatus = "1"
+
+	result := enableAutoUnlock("correct", f.ops())
+	if result.Outcome != AutoUnlockEnabled {
+		t.Fatalf("outcome = %+v", result)
+	}
+	assertEnabled(t, f)
+	if f.startCount != 2 {
+		t.Fatalf("starts = %d, want locked recovery plus candidate", f.startCount)
+	}
+}
+
+func TestEnablePostReadinessProofTimeoutIsInconclusiveAndLocked(t *testing.T) {
 	f := newAutoUnlockFixture(false)
 	f.holdEnabled = true
+	result := enableAutoUnlock("correct", f.ops())
+	if result.Outcome != AutoUnlockVerificationFailed {
+		t.Fatalf("outcome = %+v", result)
+	}
+	assertDisabled(t, f)
+	if elapsed := f.now.Sub(time.Unix(1_700_000_000, 0)); elapsed < autoUnlockPostconditionTimeout {
+		t.Fatalf("post-readiness proof elapsed only %s", elapsed)
+	}
+	if f.removedWhileUnlockRunning {
+		t.Fatal("rollback removed the password while auto-unlock LND was running")
+	}
+}
+
+func TestEnableClassifiesSystemdReadinessTimeout(t *testing.T) {
+	f := newAutoUnlockFixture(false)
+	f.timeoutOnStart = true
 	result := enableAutoUnlock("correct", f.ops())
 	if result.Outcome != AutoUnlockVerificationTimedOut {
 		t.Fatalf("outcome = %+v", result)
 	}
 	assertDisabled(t, f)
-	if elapsed := f.now.Sub(time.Unix(1_700_000_000, 0)); elapsed < 120*time.Second {
-		t.Fatalf("timeout elapsed only %s", elapsed)
+}
+
+func TestEnableSlowGracefulStopDoesNotConsumeStartupWindow(t *testing.T) {
+	f := newAutoUnlockFixture(false)
+	f.stopAdvance = 299 * time.Second
+	f.enabledStartAdvance = 119 * time.Second
+	started := f.now
+	result := enableAutoUnlock("correct", f.ops())
+	if result.Outcome != AutoUnlockEnabled {
+		t.Fatalf("outcome = %+v", result)
+	}
+	if elapsed := f.now.Sub(started); elapsed < 418*time.Second {
+		t.Fatalf("elapsed %s, want independent stop and start windows", elapsed)
+	}
+	if f.stopCount != 1 || f.startCount != 1 ||
+		!equalStrings(f.events, []string{"stop", "start"}) {
+		t.Fatalf("service events = %q, stops=%d starts=%d",
+			f.events, f.stopCount, f.startCount)
+	}
+	assertEnabled(t, f)
+}
+
+func TestEnableRejectsLateCandidateStartSuccess(t *testing.T) {
+	f := newAutoUnlockFixture(false)
+	f.enabledStartAdvance = 121 * time.Second
+	result := enableAutoUnlock("correct", f.ops())
+	if result.Outcome != AutoUnlockVerificationTimedOut {
+		t.Fatalf("outcome = %+v", result)
+	}
+	assertDisabled(t, f)
+}
+
+func TestEnableHasSeparateBoundedPostReadinessProof(t *testing.T) {
+	f := newAutoUnlockFixture(false)
+	f.enabledStartAdvance = 119 * time.Second
+	f.walletStateFailuresRemaining = 2
+	result := enableAutoUnlock("correct", f.ops())
+	if result.Outcome != AutoUnlockEnabled {
+		t.Fatalf("outcome = %+v", result)
+	}
+	if elapsed := f.now.Sub(time.Unix(1_700_000_000, 0)); elapsed != 121*time.Second {
+		t.Fatalf("elapsed = %s, want 119s start plus 2s proof", elapsed)
+	}
+	assertEnabled(t, f)
+}
+
+func TestEnableRollbackStopFailureRetainsCandidatePassword(t *testing.T) {
+	f := newAutoUnlockFixture(false)
+	f.holdEnabled = true
+	f.failOn["stop-lnd"] = 2
+	result := enableAutoUnlock("correct", f.ops())
+	if result.Outcome != AutoUnlockRepairRequired {
+		t.Fatalf("outcome = %+v", result)
+	}
+	if !f.art.password {
+		t.Fatal("candidate password was removed before LND stopped")
+	}
+	if f.removedWhileUnlockRunning {
+		t.Fatal("rollback removed the password while auto-unlock LND was running")
+	}
+}
+
+func TestEnableRollbackRemovalFailureStillStartsLockedPlainLND(t *testing.T) {
+	f := newAutoUnlockFixture(false)
+	f.holdEnabled = true
+	// The first removal confirms the disabled starting state. The second is
+	// rollback after the candidate invocation has stopped.
+	f.failOn["remove-password"] = 2
+	result := enableAutoUnlock("correct", f.ops())
+	if result.Outcome != AutoUnlockRepairRequired {
+		t.Fatalf("outcome = %+v", result)
+	}
+	if f.pid == 0 || !equalStrings(f.args, expectedLNDArgs(false)) ||
+		f.wallet != lnrpc.WalletState_LOCKED {
+		t.Fatalf("plain locked recovery did not start: pid=%d args=%q state=%s",
+			f.pid, f.args, f.wallet)
+	}
+	if f.removedWhileUnlockRunning {
+		t.Fatal("rollback removed the password while auto-unlock LND was running")
 	}
 }
 
@@ -351,8 +569,8 @@ func TestEnableRecoversRecognizableInterruptedAttemptWithoutMarker(t *testing.T)
 		t.Fatalf("outcome = %+v", result)
 	}
 	assertEnabled(t, f)
-	if f.restartCount != 2 {
-		t.Fatalf("restarts = %d, want recovery plus candidate", f.restartCount)
+	if f.startCount != 2 {
+		t.Fatalf("starts = %d, want recovery plus candidate", f.startCount)
 	}
 }
 
@@ -360,7 +578,8 @@ func TestEnableRollbackFailureRequiresRepair(t *testing.T) {
 	f := newAutoUnlockFixture(false)
 	f.failOn["write-unit-plain"] = 2
 	result := enableAutoUnlock("wrong", f.ops())
-	if result.Outcome != AutoUnlockRepairRequired || result.FailedStep == "" {
+	if result.Outcome != AutoUnlockRepairRequired ||
+		result.FailedStep != "automatic recovery after password rejection" {
 		t.Fatalf("outcome = %+v", result)
 	}
 }
@@ -375,14 +594,13 @@ func TestEnableFailureInjectionConvergesToDisabledState(t *testing.T) {
 		{"write unit", func(f *autoUnlockFixture) { f.failOn["write-unit-enabled"] = 1 }, AutoUnlockVerificationFailed},
 		{"validate candidate", func(f *autoUnlockFixture) { f.failOn["validate"] = 2 }, AutoUnlockVerificationFailed},
 		{"reload candidate", func(f *autoUnlockFixture) { f.failOn["daemon-reload"] = 2 }, AutoUnlockVerificationFailed},
-		{"restart candidate", func(f *autoUnlockFixture) { f.failOn["restart-lnd"] = 1 }, AutoUnlockVerificationFailed},
+		{"stop before candidate", func(f *autoUnlockFixture) { f.failOn["stop-lnd"] = 1 }, AutoUnlockVerificationFailed},
+		{"start candidate", func(f *autoUnlockFixture) { f.failOn["start-lnd"] = 1 }, AutoUnlockVerificationFailed},
 		{"read candidate process", func(f *autoUnlockFixture) { f.failOn["process-args"] = 2 }, AutoUnlockVerificationFailed},
-		{"authenticated GetInfo unavailable", func(f *autoUnlockFixture) { f.always["get-info"] = true }, AutoUnlockVerificationTimedOut},
 		{"remove verification drop-in", func(f *autoUnlockFixture) { f.failOn["remove-drop"] = 1 }, AutoUnlockVerificationFailed},
 		{"reload final policy", func(f *autoUnlockFixture) { f.failOn["daemon-reload"] = 3 }, AutoUnlockVerificationFailed},
 		{"recheck process", func(f *autoUnlockFixture) { f.failOn["process-args"] = 3 }, AutoUnlockVerificationFailed},
 		{"recheck state", func(f *autoUnlockFixture) { f.failOn["wallet-state"] = 2 }, AutoUnlockVerificationFailed},
-		{"recheck GetInfo", func(f *autoUnlockFixture) { f.failOn["get-info"] = 2 }, AutoUnlockVerificationFailed},
 		{"publish enabled config", func(f *autoUnlockFixture) { f.failOn["save-enabled"] = 1 }, AutoUnlockVerificationFailed},
 	}
 	for _, test := range tests {
@@ -405,8 +623,8 @@ func TestDisableAutoUnlockDeletesPasswordAndPublishes(t *testing.T) {
 		t.Fatalf("outcome = %+v", result)
 	}
 	assertDisabled(t, f)
-	if f.restartCount != 1 {
-		t.Fatalf("restarts = %d, want one", f.restartCount)
+	if f.startCount != 1 {
+		t.Fatalf("starts = %d, want one", f.startCount)
 	}
 }
 
@@ -484,7 +702,8 @@ func TestDisableFailureInjectionBeforeDeletionRestoresEnabled(t *testing.T) {
 		{"validate plain unit", func(f *autoUnlockFixture) { f.failOn["validate"] = 1 }},
 		{"reload plain unit", func(f *autoUnlockFixture) { f.failOn["daemon-reload"] = 1 }},
 		{"inspect loaded plain unit", func(f *autoUnlockFixture) { f.failOn["unit-status"] = 1 }},
-		{"restart plain LND", func(f *autoUnlockFixture) { f.failOn["restart-lnd"] = 1 }},
+		{"stop before plain LND", func(f *autoUnlockFixture) { f.failOn["stop-lnd"] = 1 }},
+		{"start plain LND", func(f *autoUnlockFixture) { f.failOn["start-lnd"] = 1 }},
 		{"inspect plain process", func(f *autoUnlockFixture) { f.failOn["process-args"] = 1 }},
 		{"remove verification drop-in", func(f *autoUnlockFixture) { f.failOn["remove-drop"] = 1 }},
 		{"reload final policy", func(f *autoUnlockFixture) { f.failOn["daemon-reload"] = 2 }},
@@ -548,5 +767,170 @@ func TestLoadedExecMatchesOnlyExactCommand(t *testing.T) {
 		if loadedExecMatches(bad, true) {
 			t.Fatalf("non-exact command accepted: %s", bad)
 		}
+	}
+}
+
+func TestRPCReadinessStateMatching(t *testing.T) {
+	for _, test := range []struct {
+		state lnrpc.WalletState
+		want  bool
+	}{
+		{lnrpc.WalletState_UNLOCKED, false},
+		{lnrpc.WalletState_RPC_ACTIVE, true},
+		{lnrpc.WalletState_SERVER_ACTIVE, true},
+		{lnrpc.WalletState_LOCKED, false},
+	} {
+		if got := walletStateMatches(
+			test.state, lnrpc.WalletState_RPC_ACTIVE,
+		); got != test.want {
+			t.Errorf("state %s match = %v, want %v",
+				test.state, got, test.want)
+		}
+	}
+}
+
+func TestStableProcessProofRejectsInvocationChange(t *testing.T) {
+	f := newAutoUnlockFixture(false)
+	ops := f.ops()
+	status, err := ops.unitStatus()
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.changeDuringProcessRead = true
+	err = verifyStableProcessArgs(ops, status, false)
+	if !errors.Is(err, errLNDInvocationChanged) {
+		t.Fatalf("unstable process proof error = %v", err)
+	}
+}
+
+func TestInvocationWaitRejectsProcessChangeDuringInspection(t *testing.T) {
+	f := newAutoUnlockFixture(true)
+	f.changeDuringProcessRead = true
+	outcome, err := waitForInvocation(
+		f.ops(), "older-invocation", true,
+		lnrpc.WalletState_RPC_ACTIVE, 2*time.Second,
+	)
+	if outcome != invocationExited ||
+		!errors.Is(err, errLNDInvocationChanged) {
+		t.Fatalf("outcome=%v error=%v, want rejected transition", outcome, err)
+	}
+}
+
+func TestInvocationWaitClassifiesProcessExitDuringInspection(t *testing.T) {
+	f := newAutoUnlockFixture(true)
+	f.exitDuringProcessRead = true
+	outcome, err := waitForInvocation(
+		f.ops(), "older-invocation", true,
+		lnrpc.WalletState_RPC_ACTIVE, 2*time.Second,
+	)
+	if outcome != invocationExited || err == nil {
+		t.Fatalf("outcome=%v error=%v, want exited", outcome, err)
+	}
+}
+
+func TestStableProcessProofRejectsUnexpectedArguments(t *testing.T) {
+	f := newAutoUnlockFixture(false)
+	f.args = append(f.args, "--unexpected")
+	ops := f.ops()
+	status, err := ops.unitStatus()
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = verifyStableProcessArgs(ops, status, false)
+	if err == nil || !strings.Contains(err.Error(), "arguments") {
+		t.Fatalf("unexpected process arguments error = %v", err)
+	}
+}
+
+func TestStableProcessProofRejectsControlProcess(t *testing.T) {
+	f := newAutoUnlockFixture(false)
+	ops := f.ops()
+	status, err := ops.unitStatus()
+	if err != nil {
+		t.Fatal(err)
+	}
+	status.controlPID = 42
+	if err := verifyStableProcessArgs(ops, status, false); err == nil {
+		t.Fatal("running invocation with a control process was accepted")
+	}
+}
+
+func TestStopProofAcceptsOnlyProcessFreeQuiescentStates(t *testing.T) {
+	for _, state := range []string{"inactive", "failed"} {
+		t.Run("accept "+state, func(t *testing.T) {
+			ops := autoUnlockOps{
+				stopLND: func() error { return nil },
+				unitStatus: func() (lndUnitStatus, error) {
+					return lndUnitStatus{
+						activeState: state,
+						restart:     "no",
+					}, nil
+				},
+			}
+			if err := stopAndVerifyNoProcess(ops); err != nil {
+				t.Fatalf("process-free %s state rejected: %v", state, err)
+			}
+		})
+	}
+
+	tests := []struct {
+		name   string
+		status lndUnitStatus
+	}{
+		{"main process", lndUnitStatus{
+			activeState: "failed", mainPID: 41, restart: "no",
+		}},
+		{"control process", lndUnitStatus{
+			activeState: "failed", controlPID: 42, restart: "no",
+		}},
+		{"restart policy", lndUnitStatus{
+			activeState: "failed", restart: "on-failure",
+		}},
+		{"active state", lndUnitStatus{
+			activeState: "active", restart: "no",
+		}},
+		{"activating state", lndUnitStatus{
+			activeState: "activating", restart: "no",
+		}},
+		{"deactivating state", lndUnitStatus{
+			activeState: "deactivating", restart: "no",
+		}},
+	}
+	for _, test := range tests {
+		t.Run("reject "+test.name, func(t *testing.T) {
+			ops := autoUnlockOps{
+				stopLND: func() error { return nil },
+				unitStatus: func() (lndUnitStatus, error) {
+					return test.status, nil
+				},
+			}
+			if err := stopAndVerifyNoProcess(ops); err == nil {
+				t.Fatalf("unsafe status accepted: %+v", test.status)
+			}
+		})
+	}
+}
+
+func TestLoadedUnitRequiresNativeNotification(t *testing.T) {
+	f := newAutoUnlockFixture(false)
+	ops := f.ops()
+	status, err := ops.unitStatus()
+	if err != nil {
+		t.Fatal(err)
+	}
+	status.serviceType = "simple"
+	if err := verifyLoadedUnit(
+		status, autoUnlockUnitPlain, "on-failure", false,
+	); err == nil || !strings.Contains(err.Error(), "Type=simple") {
+		t.Fatalf("non-notify service type error = %v", err)
+	}
+}
+
+func TestVerificationDropInBoundsNativeReadiness(t *testing.T) {
+	if lndVerificationDropIn != `[Service]
+Restart=no
+TimeoutStartSec=120
+` {
+		t.Fatalf("unexpected verification drop-in:\n%s", lndVerificationDropIn)
 	}
 }

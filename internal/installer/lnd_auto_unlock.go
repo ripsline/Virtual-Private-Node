@@ -3,7 +3,6 @@ package installer
 import (
 	"context"
 	"crypto/x509"
-	"encoding/hex"
 	"errors"
 	"fmt"
 	"os"
@@ -17,7 +16,6 @@ import (
 	"github.com/lightningnetwork/lnd/lnrpc"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
-	"google.golang.org/grpc/metadata"
 
 	"github.com/virtualprivatenode/vpn/internal/config"
 	"github.com/virtualprivatenode/vpn/internal/helper"
@@ -27,14 +25,19 @@ import (
 )
 
 const (
-	autoUnlockVerificationTimeout = 120 * time.Second
-	autoUnlockPollInterval        = time.Second
-	autoUnlockRPCTimeout          = 5 * time.Second
+	autoUnlockStartupTimeout       = 120 * time.Second
+	autoUnlockPostconditionTimeout = 10 * time.Second
+	autoUnlockPollInterval         = time.Second
+	autoUnlockRPCTimeout           = 5 * time.Second
 )
 
 const lndVerificationDropIn = `[Service]
 Restart=no
+TimeoutStartSec=120
 `
+
+var errLNDInvocationChanged = errors.New(
+	"LND invocation changed during process verification")
 
 type autoUnlockUnit int
 
@@ -54,6 +57,8 @@ type autoUnlockArtifacts struct {
 type lndUnitStatus struct {
 	invocationID     string
 	mainPID          int
+	controlPID       int
+	serviceType      string
 	activeState      string
 	subState         string
 	result           string
@@ -68,9 +73,11 @@ type lndUnitStatus struct {
 type invocationResult int
 
 const (
-	invocationReady invocationResult = iota
+	invocationUnknown invocationResult = iota
+	invocationReady
 	invocationExited
-	invocationTimedOut
+	invocationStartTimedOut
+	invocationProofTimedOut
 )
 
 type autoUnlockOps struct {
@@ -84,11 +91,11 @@ type autoUnlockOps struct {
 	removeVerifyDrop func() error
 	validateUnit     func() error
 	daemonReload     func() error
-	restartLND       func() error
+	startLND         func() error
+	stopLND          func() error
 	unitStatus       func() (lndUnitStatus, error)
 	processArgs      func(int) ([]string, error)
 	walletState      func() (lnrpc.WalletState, error)
-	getInfo          func(string) error
 	now              func() time.Time
 	sleep            func(time.Duration)
 }
@@ -139,7 +146,7 @@ func enableAutoUnlock(password string, ops autoUnlockOps) AutoUnlockResult {
 	if err := ops.writeVerifyDrop(); err != nil {
 		return repairRequired("install one-attempt restart policy", err)
 	}
-	if err := normalizeDisabledDisk(ops); err != nil {
+	if err := normalizeDisabledUnit(ops); err != nil {
 		return repairRequired("restore disabled starting state", err)
 	}
 	if err := reloadAndVerifyUnit(ops, autoUnlockUnitPlain, "no", true); err != nil {
@@ -150,41 +157,52 @@ func enableAutoUnlock(password string, ops autoUnlockOps) AutoUnlockResult {
 	if err != nil {
 		return repairRequired("observe current LND invocation", err)
 	}
-	if before.mainPID == 0 || verifyProcessArgs(ops, before.mainPID, false) != nil {
+	if before.mainPID == 0 || verifyStableProcessArgs(ops, before, false) != nil {
 		// An interrupted older enable can leave an auto-unlock process alive
 		// while the still-false desired state has just been normalized on disk.
 		// Converge that recognizable shape to a plain locked invocation before
 		// testing the newly supplied password.
-		if err := ops.restartLND(); err != nil {
+		if err := replaceWithLockedPlainInvocation(
+			ops, before.invocationID,
+		); err != nil {
 			return repairRequired("restore disabled LND invocation", err)
-		}
-		outcome, err := waitForInvocation(
-			ops, before.invocationID, false, lnrpc.WalletState_LOCKED,
-			cfg.Network, autoUnlockVerificationTimeout,
-		)
-		if err != nil || outcome != invocationReady {
-			return repairRequired("prove disabled LND invocation", err)
 		}
 		before, err = ops.unitStatus()
 		if err != nil {
 			return repairRequired("observe restored LND invocation", err)
 		}
+	} else if err := removePasswordDurably(ops); err != nil {
+		return repairRequired("remove stale wallet password", err)
+	}
+	if err := verifyDisabledDisk(ops); err != nil {
+		return repairRequired("confirm disabled starting state", err)
 	}
 
-	restarted := false
-	fail := func(
-		outcome AutoUnlockOutcome, stage, detail string, cause error,
+	runtimeTransitioned := false
+	failWithRecoveryStage := func(
+		outcome AutoUnlockOutcome, stage, recoveryStage, detail string,
+		cause error,
 	) AutoUnlockResult {
 		if cause != nil {
 			logger.System("auto-unlock: %s: %v", stage, cause)
 		} else {
 			logger.System("auto-unlock: %s", stage)
 		}
-		if err := restoreDisabled(ops, cfg, before, restarted); err != nil {
-			return repairRequired(stage,
+		if err := restoreDisabled(
+			ops, cfg, before, runtimeTransitioned,
+		); err != nil {
+			return repairRequired(recoveryStage,
 				fmt.Errorf("recovery failed: %w", err))
 		}
 		return AutoUnlockResult{Outcome: outcome, Detail: detail}
+	}
+	fail := func(
+		outcome AutoUnlockOutcome, stage, detail string, cause error,
+	) AutoUnlockResult {
+		return failWithRecoveryStage(
+			outcome, stage, "automatic return to locked state", detail,
+			cause,
+		)
 	}
 
 	if err := ops.writePassword(password); err != nil {
@@ -208,27 +226,30 @@ func enableAutoUnlock(password string, ops autoUnlockOps) AutoUnlockResult {
 			"VPN could not load auto-unlock safely. The previous disabled setting was restored.", err)
 	}
 
-	restarted = true
-	restartErr := ops.restartLND()
-	invocation, verifyErr := waitForInvocation(
-		ops, before.invocationID, true, lnrpc.WalletState_SERVER_ACTIVE,
-		cfg.Network, autoUnlockVerificationTimeout,
+	runtimeTransitioned = true
+	transitionErr, invocation, verifyErr := stopStartAndVerifyInvocation(
+		ops, before.invocationID, true,
+		lnrpc.WalletState_RPC_ACTIVE,
 	)
 	if invocation == invocationExited {
-		return fail(AutoUnlockVerificationFailed,
-			"verify candidate wallet password", "", verifyErr)
+		return failWithRecoveryStage(
+			AutoUnlockVerificationFailed,
+			"verify candidate wallet password",
+			"automatic recovery after password rejection", "", verifyErr,
+		)
 	}
-	if invocation == invocationTimedOut {
+	if invocation == invocationStartTimedOut {
 		return fail(AutoUnlockVerificationTimedOut,
 			"wait for LND to become ready", "", verifyErr)
 	}
-	if restartErr != nil || verifyErr != nil {
+	if transitionErr != nil || verifyErr != nil ||
+		invocation != invocationReady {
 		cause := verifyErr
-		if restartErr != nil {
-			cause = restartErr
+		if transitionErr != nil {
+			cause = transitionErr
 		}
 		return fail(AutoUnlockVerificationFailed,
-			"verify restarted LND",
+			"verify candidate LND",
 			"VPN could not verify auto-unlock because a system operation failed. LND has been returned to the locked state.", cause)
 	}
 
@@ -245,7 +266,7 @@ func enableAutoUnlock(password string, ops autoUnlockOps) AutoUnlockResult {
 			"restore normal restart policy",
 			"VPN verified the password but could not finish auto-unlock safely. LND has been returned to the locked state.", err)
 	}
-	if err := verifySameReadyInvocation(ops, before.invocationID, cfg.Network); err != nil {
+	if err := verifySameReadyInvocation(ops, before.invocationID); err != nil {
 		return fail(AutoUnlockVerificationFailed,
 			"recheck verified LND invocation",
 			"VPN could not prove that LND stayed ready. LND has been returned to the locked state.", err)
@@ -308,15 +329,14 @@ func disableAutoUnlockTransition(ops autoUnlockOps) AutoUnlockResult {
 	if err != nil {
 		return restoreEnabledResult(ops, cfg, "observe current LND invocation", err)
 	}
-	restartErr := ops.restartLND()
-	invocation, verifyErr := waitForInvocation(
-		ops, before.invocationID, false, lnrpc.WalletState_LOCKED,
-		cfg.Network, autoUnlockVerificationTimeout,
+	transitionErr, invocation, verifyErr := stopStartAndVerifyInvocation(
+		ops, before.invocationID, false,
+		lnrpc.WalletState_LOCKED,
 	)
-	if restartErr != nil || invocation != invocationReady || verifyErr != nil {
+	if transitionErr != nil || invocation != invocationReady || verifyErr != nil {
 		cause := verifyErr
-		if restartErr != nil {
-			cause = restartErr
+		if transitionErr != nil {
+			cause = transitionErr
 		}
 		return restoreEnabledResult(ops, cfg, "prove locked LND invocation", cause)
 	}
@@ -355,16 +375,14 @@ func disableAutoUnlockTransition(ops autoUnlockOps) AutoUnlockResult {
 	return AutoUnlockResult{Outcome: AutoUnlockDisabled}
 }
 
-func normalizeDisabledDisk(ops autoUnlockOps) error {
+func normalizeDisabledUnit(ops autoUnlockOps) error {
 	if err := ops.writeUnit(autoUnlockUnitPlain); err != nil {
 		return err
 	}
-	if err := ops.validateUnit(); err != nil {
-		return err
-	}
-	if err := ops.removePassword(); err != nil {
-		return err
-	}
+	return ops.validateUnit()
+}
+
+func verifyDisabledDisk(ops autoUnlockOps) error {
 	artifacts, err := ops.artifacts()
 	if err != nil {
 		return err
@@ -376,42 +394,78 @@ func normalizeDisabledDisk(ops autoUnlockOps) error {
 	return nil
 }
 
+func removePasswordDurably(ops autoUnlockOps) error {
+	removeErr := ops.removePassword()
+	artifacts, inspectErr := ops.artifacts()
+	if inspectErr != nil {
+		return inspectErr
+	}
+	if artifacts.password || artifacts.passwordStage {
+		if removeErr != nil {
+			return removeErr
+		}
+		return errors.New("wallet password remains after removal")
+	}
+	if removeErr != nil {
+		// Retry the parent-directory sync after an unlink that succeeded but
+		// reported a durability error. This never recreates credential data.
+		return ops.removePassword()
+	}
+	return nil
+}
+
+func replaceWithLockedPlainInvocation(
+	ops autoUnlockOps, previousID string,
+) error {
+	if err := stopAndVerifyNoProcess(ops); err != nil {
+		return err
+	}
+	removeErr := removePasswordDurably(ops)
+	startErr, outcome, verifyErr := startAndVerifyInvocation(
+		ops, previousID, false,
+		lnrpc.WalletState_LOCKED,
+	)
+	if startErr != nil || verifyErr != nil || outcome != invocationReady {
+		return errors.Join(removeErr, startErr, verifyErr,
+			errors.New("could not restore locked LND invocation"))
+	}
+	return removeErr
+}
+
 func restoreDisabled(
 	ops autoUnlockOps, cfg *config.AppConfig, before lndUnitStatus,
-	restarted bool,
+	runtimeTransitioned bool,
 ) error {
 	var lockedPreviousID string
 	if err := ops.writeVerifyDrop(); err != nil {
 		return err
 	}
-	if err := normalizeDisabledDisk(ops); err != nil {
+	if err := normalizeDisabledUnit(ops); err != nil {
 		return err
 	}
 	if err := reloadAndVerifyUnit(ops, autoUnlockUnitPlain, "no", true); err != nil {
 		return err
 	}
-	if restarted {
+	if runtimeTransitioned {
 		current, err := ops.unitStatus()
 		if err != nil {
 			return err
 		}
 		lockedPreviousID = current.invocationID
-		if err := ops.restartLND(); err != nil {
+		if err := replaceWithLockedPlainInvocation(
+			ops, current.invocationID,
+		); err != nil {
 			return err
-		}
-		outcome, err := waitForInvocation(
-			ops, current.invocationID, false, lnrpc.WalletState_LOCKED,
-			cfg.Network, autoUnlockVerificationTimeout,
-		)
-		if err != nil || outcome != invocationReady {
-			return errors.New("could not restore locked LND invocation")
 		}
 	} else if before.mainPID > 0 {
 		current, err := ops.unitStatus()
 		if err != nil || current.invocationID != before.invocationID {
 			return errors.New("original LND invocation changed")
 		}
-		if err := verifyProcessArgs(ops, current.mainPID, false); err != nil {
+		if err := verifyStableProcessArgs(ops, current, false); err != nil {
+			return err
+		}
+		if err := removePasswordDurably(ops); err != nil {
 			return err
 		}
 	}
@@ -421,7 +475,7 @@ func restoreDisabled(
 	if err := reloadAndVerifyUnit(ops, autoUnlockUnitPlain, "on-failure", false); err != nil {
 		return err
 	}
-	if restarted {
+	if runtimeTransitioned {
 		if err := verifySameLockedInvocation(ops, lockedPreviousID); err != nil {
 			return err
 		}
@@ -477,15 +531,13 @@ func restoreEnabled(ops autoUnlockOps, cfg *config.AppConfig) error {
 	if err != nil {
 		return err
 	}
-	if err := ops.restartLND(); err != nil {
-		return err
-	}
-	outcome, err := waitForInvocation(
-		ops, before.invocationID, true, lnrpc.WalletState_SERVER_ACTIVE,
-		cfg.Network, autoUnlockVerificationTimeout,
+	transitionErr, outcome, verifyErr := stopStartAndVerifyInvocation(
+		ops, before.invocationID, true,
+		lnrpc.WalletState_RPC_ACTIVE,
 	)
-	if err != nil || outcome != invocationReady {
-		return errors.New("previous enabled state did not restart")
+	if transitionErr != nil || verifyErr != nil || outcome != invocationReady {
+		return errors.Join(transitionErr, verifyErr,
+			errors.New("previous enabled state was not restored"))
 	}
 	if err := ops.removeVerifyDrop(); err != nil {
 		return err
@@ -493,7 +545,7 @@ func restoreEnabled(ops autoUnlockOps, cfg *config.AppConfig) error {
 	if err := reloadAndVerifyUnit(ops, autoUnlockUnitEnabled, "on-failure", false); err != nil {
 		return err
 	}
-	if err := verifySameReadyInvocation(ops, before.invocationID, cfg.Network); err != nil {
+	if err := verifySameReadyInvocation(ops, before.invocationID); err != nil {
 		return err
 	}
 	cfg.AutoUnlock = true
@@ -521,7 +573,7 @@ func finishDisabledAfterPasswordRemoval(
 	if err := reloadAndVerifyUnit(ops, autoUnlockUnitPlain, "no", true); err != nil {
 		return err
 	}
-	if err := ensureLockedRuntime(ops, cfg.Network); err != nil {
+	if err := ensureLockedRuntime(ops); err != nil {
 		return err
 	}
 	if err := ops.removeVerifyDrop(); err != nil {
@@ -551,28 +603,26 @@ func finishDisabledAfterPasswordRemoval(
 	return nil
 }
 
-func ensureLockedRuntime(ops autoUnlockOps, network string) error {
+func ensureLockedRuntime(ops autoUnlockOps) error {
 	status, err := ops.unitStatus()
 	if err != nil {
 		return err
 	}
 	if status.mainPID > 0 {
-		if err := verifyProcessArgs(ops, status.mainPID, false); err == nil {
+		if err := verifyStableProcessArgs(ops, status, false); err == nil {
 			state, stateErr := ops.walletState()
 			if stateErr == nil && state == lnrpc.WalletState_LOCKED {
 				return nil
 			}
 		}
 	}
-	if err := ops.restartLND(); err != nil {
-		return err
-	}
-	outcome, err := waitForInvocation(
-		ops, status.invocationID, false, lnrpc.WalletState_LOCKED,
-		network, autoUnlockVerificationTimeout,
+	transitionErr, outcome, verifyErr := stopStartAndVerifyInvocation(
+		ops, status.invocationID, false,
+		lnrpc.WalletState_LOCKED,
 	)
-	if err != nil || outcome != invocationReady {
-		return errors.New("could not prove a locked LND invocation")
+	if transitionErr != nil || verifyErr != nil || outcome != invocationReady {
+		return errors.Join(transitionErr, verifyErr,
+			errors.New("could not prove a locked LND invocation"))
 	}
 	return nil
 }
@@ -599,6 +649,9 @@ func verifyLoadedUnit(
 	if status.needDaemonReload != "no" {
 		return fmt.Errorf("systemd still requires daemon-reload")
 	}
+	if status.serviceType != "notify" {
+		return fmt.Errorf("loaded Type=%s, want notify", status.serviceType)
+	}
 	if status.restart != restart {
 		return fmt.Errorf("loaded Restart=%s, want %s", status.restart, restart)
 	}
@@ -615,9 +668,79 @@ func verifyLoadedUnit(
 	return nil
 }
 
+// stopStartAndVerifyInvocation keeps graceful shutdown outside the candidate
+// startup window. systemd independently bounds stop with TimeoutStopSec and
+// start with the verification drop-in's TimeoutStartSec.
+func stopStartAndVerifyInvocation(
+	ops autoUnlockOps, previousID string,
+	withUnlock bool, wantState lnrpc.WalletState,
+) (error, invocationResult, error) {
+	if err := stopAndVerifyNoProcess(ops); err != nil {
+		return err, invocationUnknown, nil
+	}
+	return startAndVerifyInvocation(
+		ops, previousID, withUnlock, wantState)
+}
+
+// stopAndVerifyNoProcess accepts systemd's two quiescent unit states. An
+// inactive unit stopped normally; a failed unit is also inactive but retains
+// the unsuccessful result for diagnosis. Restart=no is required so a failed
+// candidate cannot enter an automatic restart transition between samples.
+// Neither state is sufficient on its own: both the service's main process and
+// any systemd control process must also be absent before credential removal.
+func stopAndVerifyNoProcess(ops autoUnlockOps) error {
+	if err := ops.stopLND(); err != nil {
+		return err
+	}
+	status, err := ops.unitStatus()
+	if err != nil {
+		return err
+	}
+	if status.restart != "no" {
+		return fmt.Errorf(
+			"LND stop proof has Restart=%s, want no", status.restart)
+	}
+	if status.mainPID != 0 || status.controlPID != 0 {
+		return fmt.Errorf(
+			"LND still has a process after stop: MainPID=%d ControlPID=%d",
+			status.mainPID, status.controlPID)
+	}
+	if status.activeState != "inactive" && status.activeState != "failed" {
+		return fmt.Errorf(
+			"LND is not process-free after stop: ActiveState=%s",
+			status.activeState)
+	}
+	return nil
+}
+
+// startAndVerifyInvocation uses two deliberate, non-overlapping bounds. The
+// loaded Type=notify unit and TimeoutStartSec=120 bound native LND startup
+// until it reports RPC_ACTIVE or SERVER_ACTIVE. After systemctl start returns,
+// VPN gets a short independent window to bind the process to the loaded unit
+// and prove that native wallet-state postcondition. Network-profile validation
+// is an installer concern; tying password verification to a chain-dependent
+// RPC would make a valid RPC_ACTIVE state depend on blockchain synchronization.
+func startAndVerifyInvocation(
+	ops autoUnlockOps, previousID string, withUnlock bool,
+	wantState lnrpc.WalletState,
+) (error, invocationResult, error) {
+	started := ops.now()
+	startErr := ops.startLND()
+	startupElapsed := ops.now().Sub(started)
+	if startupElapsed > autoUnlockStartupTimeout {
+		return startErr, invocationStartTimedOut, fmt.Errorf(
+			"LND startup returned after %s, limit %s",
+			startupElapsed, autoUnlockStartupTimeout)
+	}
+	outcome, verifyErr := waitForInvocation(
+		ops, previousID, withUnlock, wantState,
+		autoUnlockPostconditionTimeout)
+	return startErr, outcome, verifyErr
+}
+
 func waitForInvocation(
 	ops autoUnlockOps, previousID string, withUnlock bool,
-	wantState lnrpc.WalletState, network string, timeout time.Duration,
+	wantState lnrpc.WalletState, timeout time.Duration,
 ) (invocationResult, error) {
 	deadline := ops.now().Add(timeout)
 	var lastErr error
@@ -629,6 +752,12 @@ func waitForInvocation(
 		if statusErr == nil && status.invocationID != "" &&
 			status.invocationID != previousID {
 			if status.mainPID == 0 {
+				if status.result == "timeout" {
+					return invocationStartTimedOut, fmt.Errorf(
+						"new LND invocation timed out: active=%s sub=%s result=%s status=%s",
+						status.activeState, status.subState,
+						status.result, status.execMainStatus)
+				}
 				if status.activeState == "failed" ||
 					status.activeState == "inactive" {
 					return invocationExited, fmt.Errorf(
@@ -637,37 +766,32 @@ func waitForInvocation(
 						status.result, status.execMainStatus)
 				}
 			} else {
-				if err := verifyProcessArgs(ops, status.mainPID, withUnlock); err != nil {
-					return invocationReady, err
-				}
-				state, err := ops.walletState()
-				if err != nil {
-					lastErr = err
-				}
-				if err == nil && state == wantState {
-					if wantState == lnrpc.WalletState_SERVER_ACTIVE {
-						if err := ops.getInfo(network); err != nil {
-							lastErr = err
-							// SERVER_ACTIVE and authenticated GetInfo are one
-							// postcondition. A transient RPC failure keeps polling.
-						} else {
-							return invocationReady, nil
-						}
+				if err := verifyStableProcessArgs(ops, status, withUnlock); err != nil {
+					if errors.Is(err, errLNDInvocationChanged) {
+						return invocationExited, err
 					} else {
+						return invocationReady, err
+					}
+				} else {
+					state, err := ops.walletState()
+					if err != nil {
+						lastErr = err
+					}
+					if err == nil && walletStateMatches(state, wantState) {
 						return invocationReady, nil
 					}
 				}
 			}
 		}
 		if !ops.now().Before(deadline) {
-			return invocationTimedOut, lastErr
+			return invocationProofTimedOut, lastErr
 		}
 		ops.sleep(autoUnlockPollInterval)
 	}
 }
 
 func verifySameReadyInvocation(
-	ops autoUnlockOps, previousID, network string,
+	ops autoUnlockOps, previousID string,
 ) error {
 	status, err := ops.unitStatus()
 	if err != nil {
@@ -676,14 +800,27 @@ func verifySameReadyInvocation(
 	if status.invocationID == "" || status.invocationID == previousID || status.mainPID == 0 {
 		return errors.New("verified LND invocation is not running")
 	}
-	if err := verifyProcessArgs(ops, status.mainPID, true); err != nil {
+	if err := verifyStableProcessArgs(ops, status, true); err != nil {
 		return err
 	}
 	state, err := ops.walletState()
-	if err != nil || state != lnrpc.WalletState_SERVER_ACTIVE {
-		return errors.New("verified LND invocation is not SERVER_ACTIVE")
+	if err != nil || !walletStateMatches(state, lnrpc.WalletState_RPC_ACTIVE) {
+		return errors.New(
+			"verified LND invocation has not reached RPC_ACTIVE or SERVER_ACTIVE")
 	}
-	return ops.getInfo(network)
+	return nil
+}
+
+// walletStateMatches accepts LND's RPC_ACTIVE or SERVER_ACTIVE startup states.
+// LND always enters RPC_ACTIVE first, but an already-synchronized backend can
+// advance to SERVER_ACTIVE between observations. UNLOCKED is deliberately
+// insufficient because LND has not started its RPC server yet.
+func walletStateMatches(got, want lnrpc.WalletState) bool {
+	if want == lnrpc.WalletState_RPC_ACTIVE {
+		return got == lnrpc.WalletState_RPC_ACTIVE ||
+			got == lnrpc.WalletState_SERVER_ACTIVE
+	}
+	return got == want
 }
 
 func verifySameLockedInvocation(ops autoUnlockOps, previousID string) error {
@@ -709,7 +846,7 @@ func verifyCurrentLockedInvocation(ops autoUnlockOps) error {
 }
 
 func verifyLockedStatus(ops autoUnlockOps, status lndUnitStatus) error {
-	if err := verifyProcessArgs(ops, status.mainPID, false); err != nil {
+	if err := verifyStableProcessArgs(ops, status, false); err != nil {
 		return err
 	}
 	state, err := ops.walletState()
@@ -719,14 +856,35 @@ func verifyLockedStatus(ops autoUnlockOps, status lndUnitStatus) error {
 	return nil
 }
 
-func verifyProcessArgs(ops autoUnlockOps, pid int, withUnlock bool) error {
-	args, err := ops.processArgs(pid)
-	if err != nil {
-		return err
+// verifyStableProcessArgs binds the inspected /proc argument vector to one
+// systemd invocation. Type=notify guarantees that the service reached LND's
+// native RPC-readiness notification before a successful start returns; the
+// second status sample proves that the PID did not exit or change while its
+// arguments were being inspected.
+func verifyStableProcessArgs(
+	ops autoUnlockOps, before lndUnitStatus, withUnlock bool,
+) error {
+	if before.invocationID == "" || before.mainPID <= 0 ||
+		before.controlPID != 0 ||
+		before.activeState != "active" || before.subState != "running" {
+		return errors.New("LND invocation is not stably running")
 	}
-	want := expectedLNDArgs(withUnlock)
-	if !equalStrings(args, want) {
-		return fmt.Errorf("LND process arguments do not match the loaded unit")
+	args, processErr := ops.processArgs(before.mainPID)
+	after, statusErr := ops.unitStatus()
+	if statusErr != nil {
+		return statusErr
+	}
+	if after.invocationID != before.invocationID ||
+		after.mainPID != before.mainPID || after.controlPID != 0 ||
+		after.activeState != "active" ||
+		after.subState != "running" {
+		return errLNDInvocationChanged
+	}
+	if processErr != nil {
+		return processErr
+	}
+	if !equalStrings(args, expectedLNDArgs(withUnlock)) {
+		return errors.New("LND process arguments do not match the loaded unit")
 	}
 	return nil
 }
@@ -800,13 +958,15 @@ func productionAutoUnlockOps() (autoUnlockOps, error) {
 		daemonReload: func() error {
 			return system.SudoRun("systemctl", "daemon-reload")
 		},
-		restartLND: func() error {
-			return system.SudoRun("systemctl", "restart", "lnd.service")
+		startLND: func() error {
+			return system.SudoRun("systemctl", "start", "lnd.service")
+		},
+		stopLND: func() error {
+			return system.SudoRun("systemctl", "stop", "lnd.service")
 		},
 		unitStatus:  readLNDUnitStatus,
 		processArgs: readProcessArgs,
 		walletState: readLNDWalletState,
-		getInfo:     authenticatedLNDGetInfo,
 		now:         time.Now,
 		sleep:       time.Sleep,
 	}, nil
@@ -1093,8 +1253,8 @@ func validateInstalledLNDUnit() error {
 
 func readLNDUnitStatus() (lndUnitStatus, error) {
 	properties := []string{
-		"InvocationID", "MainPID", "ActiveState", "SubState", "Result",
-		"ExecMainStatus", "Restart", "FragmentPath", "DropInPaths",
+		"InvocationID", "MainPID", "ControlPID", "Type", "ActiveState",
+		"SubState", "Result", "ExecMainStatus", "Restart", "FragmentPath", "DropInPaths",
 		"NeedDaemonReload", "ExecStart",
 	}
 	args := []string{"show", "lnd.service", "--no-pager"}
@@ -1116,12 +1276,19 @@ func readLNDUnitStatus() (lndUnitStatus, error) {
 	if err != nil {
 		return lndUnitStatus{}, fmt.Errorf("parse LND MainPID %q: %w", values["MainPID"], err)
 	}
+	controlPID, err := strconv.Atoi(values["ControlPID"])
+	if err != nil {
+		return lndUnitStatus{}, fmt.Errorf(
+			"parse LND ControlPID %q: %w", values["ControlPID"], err)
+	}
 	drops := []string(nil)
 	if values["DropInPaths"] != "" {
 		drops = strings.Fields(values["DropInPaths"])
 	}
 	return lndUnitStatus{
 		invocationID: values["InvocationID"], mainPID: pid,
+		controlPID:  controlPID,
+		serviceType: values["Type"],
 		activeState: values["ActiveState"], subState: values["SubState"],
 		result: values["Result"], execMainStatus: values["ExecMainStatus"],
 		restart: values["Restart"], fragmentPath: values["FragmentPath"],
@@ -1158,24 +1325,6 @@ func readLNDWalletState() (lnrpc.WalletState, error) {
 		return lnrpc.WalletState_WAITING_TO_START, err
 	}
 	return resp.GetState(), nil
-}
-
-func authenticatedLNDGetInfo(network string) error {
-	conn, err := directLNDConn()
-	if err != nil {
-		return err
-	}
-	defer conn.Close()
-	macaroon, err := os.ReadFile(paths.LNDMacaroon(network))
-	if err != nil {
-		return fmt.Errorf("read LND admin macaroon: %w", err)
-	}
-	md := metadata.New(map[string]string{"macaroon": hex.EncodeToString(macaroon)})
-	ctx := metadata.NewOutgoingContext(context.Background(), md)
-	ctx, cancel := context.WithTimeout(ctx, autoUnlockRPCTimeout)
-	defer cancel()
-	_, err = lnrpc.NewLightningClient(conn).GetInfo(ctx, &lnrpc.GetInfoRequest{})
-	return err
 }
 
 func directLNDConn() (*grpc.ClientConn, error) {

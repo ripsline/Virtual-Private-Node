@@ -197,6 +197,7 @@ func TestLNDServiceUnit(t *testing.T) {
 
 	for _, unit := range []string{plain, unlock} {
 		for _, want := range []string{
+			"Type=notify",
 			"User=lnd",
 			"Group=lnd",
 			"SupplementaryGroups=debian-tor",
@@ -204,6 +205,7 @@ func TestLNDServiceUnit(t *testing.T) {
 			"ExecStart=/usr/local/bin/lnd " +
 				"--configfile=/etc/lnd/lnd.conf",
 			"Restart=on-failure",
+			"TimeoutStartSec=1200",
 			"TimeoutStopSec=300",
 			"WantedBy=multi-user.target",
 		} {
