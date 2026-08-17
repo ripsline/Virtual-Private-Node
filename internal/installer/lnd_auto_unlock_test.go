@@ -27,24 +27,23 @@ type autoUnlockFixture struct {
 	wallet     lnrpc.WalletState
 	password   string
 
-	now                       time.Time
-	startCount                int
-	stopCount                 int
-	getInfoCount              int
-	holdEnabled               bool
-	rpcOnly                   bool
-	timeoutOnStart            bool
-	enabledStartAdvance       time.Duration
-	stopAdvance               time.Duration
-	stopped                   bool
-	removedWhileUnlockRunning bool
-	changeDuringProcessRead   bool
-	processChangesRemaining   int
-	exitDuringProcessRead     bool
-	getInfoFailuresRemaining  int
-	result                    string
-	execMainStatus            string
-	events                    []string
+	now                          time.Time
+	startCount                   int
+	stopCount                    int
+	holdEnabled                  bool
+	rpcOnly                      bool
+	timeoutOnStart               bool
+	enabledStartAdvance          time.Duration
+	stopAdvance                  time.Duration
+	stopped                      bool
+	removedWhileUnlockRunning    bool
+	changeDuringProcessRead      bool
+	processChangesRemaining      int
+	exitDuringProcessRead        bool
+	walletStateFailuresRemaining int
+	result                       string
+	execMainStatus               string
+	events                       []string
 
 	calls  map[string]int
 	failOn map[string]int
@@ -318,25 +317,15 @@ func (f *autoUnlockFixture) ops() autoUnlockOps {
 			return args, nil
 		},
 		walletState: func() (lnrpc.WalletState, error) {
+			if f.walletStateFailuresRemaining > 0 {
+				f.walletStateFailuresRemaining--
+				return lnrpc.WalletState_WAITING_TO_START,
+					errors.New("injected transient wallet-state failure")
+			}
 			if err := f.fail("wallet-state"); err != nil {
 				return lnrpc.WalletState_WAITING_TO_START, err
 			}
 			return f.wallet, nil
-		},
-		getInfo: func(string) error {
-			f.getInfoCount++
-			if f.getInfoFailuresRemaining > 0 {
-				f.getInfoFailuresRemaining--
-				return errors.New("injected transient GetInfo failure")
-			}
-			if err := f.fail("get-info"); err != nil {
-				return err
-			}
-			if f.wallet != lnrpc.WalletState_RPC_ACTIVE &&
-				f.wallet != lnrpc.WalletState_SERVER_ACTIVE {
-				return errors.New("LND is not ready")
-			}
-			return nil
 		},
 		now: func() time.Time { return f.now },
 		sleep: func(d time.Duration) {
@@ -383,8 +372,9 @@ func TestEnableAutoUnlockProvesAndPublishes(t *testing.T) {
 		t.Fatalf("outcome = %+v", result)
 	}
 	assertEnabled(t, f)
-	if f.startCount != 1 || f.getInfoCount < 2 {
-		t.Fatalf("starts=%d GetInfo=%d", f.startCount, f.getInfoCount)
+	if f.startCount != 1 || f.calls["wallet-state"] < 2 {
+		t.Fatalf("starts=%d wallet-state checks=%d",
+			f.startCount, f.calls["wallet-state"])
 	}
 }
 
@@ -399,9 +389,9 @@ func TestEnableAutoUnlockAcceptsRPCActiveDuringChainSync(t *testing.T) {
 	if f.wallet != lnrpc.WalletState_RPC_ACTIVE {
 		t.Fatalf("wallet state = %s, want RPC_ACTIVE", f.wallet)
 	}
-	if f.getInfoCount < 2 {
-		t.Fatalf("authenticated GetInfo calls = %d, want at least 2",
-			f.getInfoCount)
+	if f.calls["wallet-state"] < 2 {
+		t.Fatalf("wallet-state checks = %d, want at least 2",
+			f.calls["wallet-state"])
 	}
 }
 
@@ -504,7 +494,7 @@ func TestEnableRejectsLateCandidateStartSuccess(t *testing.T) {
 func TestEnableHasSeparateBoundedPostReadinessProof(t *testing.T) {
 	f := newAutoUnlockFixture(false)
 	f.enabledStartAdvance = 119 * time.Second
-	f.getInfoFailuresRemaining = 2
+	f.walletStateFailuresRemaining = 2
 	result := enableAutoUnlock("correct", f.ops())
 	if result.Outcome != AutoUnlockEnabled {
 		t.Fatalf("outcome = %+v", result)
@@ -607,12 +597,10 @@ func TestEnableFailureInjectionConvergesToDisabledState(t *testing.T) {
 		{"stop before candidate", func(f *autoUnlockFixture) { f.failOn["stop-lnd"] = 1 }, AutoUnlockVerificationFailed},
 		{"start candidate", func(f *autoUnlockFixture) { f.failOn["start-lnd"] = 1 }, AutoUnlockVerificationFailed},
 		{"read candidate process", func(f *autoUnlockFixture) { f.failOn["process-args"] = 2 }, AutoUnlockVerificationFailed},
-		{"authenticated GetInfo unavailable", func(f *autoUnlockFixture) { f.always["get-info"] = true }, AutoUnlockVerificationFailed},
 		{"remove verification drop-in", func(f *autoUnlockFixture) { f.failOn["remove-drop"] = 1 }, AutoUnlockVerificationFailed},
 		{"reload final policy", func(f *autoUnlockFixture) { f.failOn["daemon-reload"] = 3 }, AutoUnlockVerificationFailed},
 		{"recheck process", func(f *autoUnlockFixture) { f.failOn["process-args"] = 3 }, AutoUnlockVerificationFailed},
 		{"recheck state", func(f *autoUnlockFixture) { f.failOn["wallet-state"] = 2 }, AutoUnlockVerificationFailed},
-		{"recheck GetInfo", func(f *autoUnlockFixture) { f.failOn["get-info"] = 2 }, AutoUnlockVerificationFailed},
 		{"publish enabled config", func(f *autoUnlockFixture) { f.failOn["save-enabled"] = 1 }, AutoUnlockVerificationFailed},
 	}
 	for _, test := range tests {
@@ -820,7 +808,7 @@ func TestInvocationWaitRejectsProcessChangeDuringInspection(t *testing.T) {
 	f.changeDuringProcessRead = true
 	outcome, err := waitForInvocation(
 		f.ops(), "older-invocation", true,
-		lnrpc.WalletState_RPC_ACTIVE, "mainnet", 2*time.Second,
+		lnrpc.WalletState_RPC_ACTIVE, 2*time.Second,
 	)
 	if outcome != invocationExited ||
 		!errors.Is(err, errLNDInvocationChanged) {
@@ -833,7 +821,7 @@ func TestInvocationWaitClassifiesProcessExitDuringInspection(t *testing.T) {
 	f.exitDuringProcessRead = true
 	outcome, err := waitForInvocation(
 		f.ops(), "older-invocation", true,
-		lnrpc.WalletState_RPC_ACTIVE, "mainnet", 2*time.Second,
+		lnrpc.WalletState_RPC_ACTIVE, 2*time.Second,
 	)
 	if outcome != invocationExited || err == nil {
 		t.Fatalf("outcome=%v error=%v, want exited", outcome, err)
@@ -935,36 +923,6 @@ func TestLoadedUnitRequiresNativeNotification(t *testing.T) {
 		status, autoUnlockUnitPlain, "on-failure", false,
 	); err == nil || !strings.Contains(err.Error(), "Type=simple") {
 		t.Fatalf("non-notify service type error = %v", err)
-	}
-}
-
-func TestVerifyLNDGetInfoNetwork(t *testing.T) {
-	valid := &lnrpc.GetInfoResponse{Chains: []*lnrpc.Chain{{
-		Chain: "bitcoin", Network: "testnet4",
-	}}}
-	if err := verifyLNDGetInfoNetwork(valid, "testnet4"); err != nil {
-		t.Fatalf("valid chain rejected: %v", err)
-	}
-
-	for name, info := range map[string]*lnrpc.GetInfoResponse{
-		"missing response": nil,
-		"missing chain":    {},
-		"wrong chain": {Chains: []*lnrpc.Chain{{
-			Chain: "litecoin", Network: "testnet4",
-		}}},
-		"wrong network": {Chains: []*lnrpc.Chain{{
-			Chain: "bitcoin", Network: "mainnet",
-		}}},
-		"multiple chains": {Chains: []*lnrpc.Chain{
-			{Chain: "bitcoin", Network: "testnet4"},
-			{Chain: "bitcoin", Network: "mainnet"},
-		}},
-	} {
-		t.Run(name, func(t *testing.T) {
-			if err := verifyLNDGetInfoNetwork(info, "testnet4"); err == nil {
-				t.Fatal("mismatched GetInfo response was accepted")
-			}
-		})
 	}
 }
 
