@@ -1,6 +1,6 @@
 # Contributing to Virtual Private Node
 
-Thanks for your interest in contributing. This project exists to make running a private, self-hosted Bitcoin and Lightning node as frictionless as possible, and contributions from the community are welcome — whether that's code, documentation, translations, bug reports, or ideas.
+Thanks for your interest in contributing. This project exists to make running a self-hosted Bitcoin and Lightning node as frictionless as possible, and contributions from the community are welcome.
 
 ## Code of conduct
 
@@ -16,13 +16,13 @@ For non-security bugs, open a GitHub issue with steps to reproduce, expected vs 
 
 ### Good first issues
 
-Issues tagged [`good first issue`](https://github.com/ripsline/virtual-private-node/labels/good%20first%20issue) are scoped to be approachable without deep knowledge of the codebase. Typical examples: small UI tweaks, documentation improvements, accessibility polish.
+Issues tagged [`good first issue`](https://github.com/virtualprivatenode/vpn/labels/good%20first%20issue) are scoped to be approachable without deep knowledge of the codebase. Typical examples: small UI tweaks, documentation improvements, accessibility polish.
 
-Issues tagged [`help wanted`](https://github.com/ripsline/virtual-private-node/labels/help%20wanted) are larger but well-defined — good for contributors who want to tackle something meatier.
+Issues tagged [`help wanted`](https://github.com/virtualprivatenode/vpn/labels/help%20wanted) are good for contributors who want to tackle something meatier.
 
 ### Translations
 
-The TUI is currently English-only. If you'd like to help translate it into another language, open an issue to discuss. Translation work is especially welcome — Bitcoin sovereignty tools shouldn't be gated by English literacy.
+The TUI is currently English-only. If you'd like to help translate it into another language, open an issue to discuss. Translation work is especially welcome.
 
 ### Documentation
 
@@ -30,90 +30,92 @@ Documentation improvements are always welcome. This includes fixing typos, clari
 
 ### Bug reports and feature requests
 
-Open an issue with as much context as you can. Screenshots help for TUI bugs. For feature requests, describe the user problem first, then your proposed solution — this makes it easier to find the best fix.
+Open an issue with as much context as you can. Screenshots help for TUI bugs. For feature requests, describe the user problem first, then your proposed solution.
 
-## Development setup
+## Development and validation
 
-### Prerequisites
+The exact Go version declared in `go.mod` is authoritative. Install the
+official toolchain from [go.dev/dl](https://go.dev/dl/); distribution
+packages may contain patches or different defaults.
 
-- Debian 13+ box
-- Go 1.26.1+ (check `go.mod` for the exact version)
-- `git`, `wget`, `curl`
-
-Install Go from [go.dev/dl](https://go.dev/dl/). Do not use distribution packages — they can produce non-reproducible builds.
-
-### Clone and build
+Run the portable development gate without elevated privileges:
 
 ```bash
-git clone https://github.com/ripsline/virtual-private-node.git
-cd virtual-private-node
-go mod tidy
-go build -o rlvpn ./cmd/
-```
-
-### Building a reproducible release
-
-See [docs/reproducing.md](docs/reproducing.md) for the exact build flags and verification steps.
-
-## Testing
-
-Run the ordinary development gate without elevated privileges:
-
-```bash
+gofmt -l $(git ls-files '*.go')
+go mod tidy -diff
 go test -count=1 ./...
+go test -race -count=1 ./...
+go vet ./...
+go build ./...
+git diff --check
 ```
 
-Tests whose names begin with `TestRoot` exercise real Linux ownership and
-filesystem behavior. They run automatically on Linux when the test process has
-effective UID 0. In other environments they skip with an explicit reason; use
-`-v` to display individual skip messages.
+Tests whose names begin with `TestRoot` exercise real Linux ownership
+and filesystem behavior. Outside Linux or without effective UID 0, they
+skip with an explicit reason.
 
-Run the privileged gate only in a disposable Linux environment:
+Run the privileged gate only on a disposable Debian 13 amd64 system:
 
 ```bash
 sudo env VPN_REQUIRE_ROOT_TESTS=1 "$(command -v go)" test \
   -count=1 -v ./internal/installer -run '^TestRoot'
 ```
 
-`VPN_REQUIRE_ROOT_TESTS=1` does not grant privileges. It makes the selected
-tests fail instead of skip if Linux or effective UID 0 is unavailable. The
-tests never invoke `sudo` or prompt for credentials themselves.
-In CI, run the same gate in a disposable Linux job already provisioned with
-effective UID 0, omit `sudo`, and set `VPN_REQUIRE_ROOT_TESTS=1` in the job
-environment.
+`VPN_REQUIRE_ROOT_TESTS=1` does not grant privileges. It makes the
+selected tests fail instead of skip when their required environment is
+unavailable.
 
-Passing both Go test gates is not a substitute for testing the complete
-installer on a disposable Debian 13 amd64 system. Installation tests modify
-users, packages, systemd services, firewall rules, and persistent system
-paths; never run them on a funded node or an everyday development machine.
+Passing the portable and privileged gates does not certify the complete
+installer. Changes affecting installation, services, lifecycle state,
+permissions, or other host-level behavior also require validation on a
+fresh disposable Debian 13 amd64 system. Never perform that validation
+on a funded node or an everyday development machine.
 
-## Pull request guidelines
+## Pull requests
 
-- Open a PR against `main`
-- Keep PRs focused — one logical change per PR
-- Write a descriptive commit message explaining the **why**, not just the what
-- Run `go fmt ./...` and `go vet ./...` before submitting
-- Update documentation if your change affects user-visible behavior
+- Open pull requests against `main`.
+- Keep each pull request to one coherent change.
+- Explain the motivation, approach, and important trade-offs.
+- Run the relevant validation gates and report the results.
+- Update directly coupled documentation when behavior changes.
 
-### Commit style
+### Commit and branch conventions
 
-The project uses plain prose commit messages, not Conventional Commits. A good commit message:
+The project uses Conventional Commits for commit and pull request
+titles:
 
-- First line: short summary under 72 characters
-- Blank line
-- Body: explains the motivation, the approach, and any trade-offs
+```text
+<type>: <description>
+```
 
-Look at recent commits with `git log` for examples.
+Common types include `feat`, `fix`, `refactor`, `docs`, `test`,
+`build`, `chore`, `perf`, `release`, and `revert`.
+
+Pull requests are normally squash-merged, so the pull request title
+becomes the resulting commit title and GitHub appends the pull request
+number.
+
+Keep titles under 72 characters when practical. Add a body after a
+blank line when the motivation, approach, or trade-offs need more
+explanation.
+
+Use the corresponding short branch prefix, such as `feat/`, `fix/`,
+`refactor/`, or `docs/`.
+
+Examples:
+
+```text
+feat: add immutable bitcoin network profiles
+fix: verify auto-unlock transitions
+refactor: isolate service identities
+docs: document conventional commit policy
+```
 
 ## Code style
 
-- Follow standard Go conventions (`gofmt`, `go vet`)
-- Keep line length reasonable (the project targets ~60 columns in most screen files, but this isn't strictly enforced)
-- Prefer explicit over clever
-- Add comments for non-obvious decisions, especially around invariants
-
-## Questions?
-
-Open a [discussion](https://github.com/ripsline/virtual-private-node/discussions) or drop a comment on an existing issue. This is a small project and maintainers read everything.
+- Format Go code with `gofmt`.
+- Prefer explicit behavior over clever abstractions.
+- Document non-obvious decisions, security boundaries, and invariants.
+- Keep TUI text reasonably narrow for supported terminal layouts.
 
 Thanks for helping build a more sovereign Bitcoin ecosystem.
