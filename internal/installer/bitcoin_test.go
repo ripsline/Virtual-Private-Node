@@ -282,3 +282,55 @@ func TestWaitForBitcoinIdentityRetriesOnlyUnavailability(t *testing.T) {
 		t.Fatalf("wait result calls=%d err=%v", calls, err)
 	}
 }
+
+func TestWaitForBitcoinIdentityRejectsWrongChainWithoutRetry(t *testing.T) {
+	profile, err := config.NetworkConfigFromName(config.NetworkPublicSignet)
+	if err != nil {
+		t.Fatal(err)
+	}
+	calls := 0
+	sleeps := 0
+	err = waitForBitcoinIdentity(profile,
+		func(port int) (bitcoin.BlockchainIdentity, error) {
+			calls++
+			if port != profile.RPCPort {
+				t.Fatalf("probe port %d, want %d", port, profile.RPCPort)
+			}
+			return bitcoin.BlockchainIdentity{
+				Chain: "main", Genesis: profile.ExpectedGenesis,
+				SignetChallenge: profile.ExpectedSignetChallenge,
+			}, nil
+		}, func(time.Duration) { sleeps++ }, 3, time.Second)
+	if err == nil || !strings.Contains(err.Error(),
+		`Bitcoin Core reports chain "main", want "signet"`) {
+		t.Fatalf("wrong-chain result: %v", err)
+	}
+	if calls != 1 || sleeps != 0 {
+		t.Fatalf("wrong-chain calls=%d sleeps=%d, want 1 and 0", calls, sleeps)
+	}
+}
+
+func TestWaitForBitcoinIdentityFailsAfterRPCUnavailable(t *testing.T) {
+	profile, err := config.NetworkConfigFromName(config.NetworkPublicSignet)
+	if err != nil {
+		t.Fatal(err)
+	}
+	calls := 0
+	sleeps := 0
+	err = waitForBitcoinIdentity(profile,
+		func(port int) (bitcoin.BlockchainIdentity, error) {
+			calls++
+			if port != profile.RPCPort {
+				t.Fatalf("probe port %d, want %d", port, profile.RPCPort)
+			}
+			return bitcoin.BlockchainIdentity{}, fmt.Errorf("connection refused")
+		}, func(time.Duration) { sleeps++ }, 3, time.Second)
+	if err == nil || !strings.Contains(err.Error(),
+		"did not expose verifiable public-signet identity on RPC port 38332") ||
+		!strings.Contains(err.Error(), "connection refused") {
+		t.Fatalf("unavailable result: %v", err)
+	}
+	if calls != 3 || sleeps != 2 {
+		t.Fatalf("unavailable calls=%d sleeps=%d, want 3 and 2", calls, sleeps)
+	}
+}
