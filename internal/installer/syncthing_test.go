@@ -10,6 +10,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/virtualprivatenode/vpn/internal/config"
 	"github.com/virtualprivatenode/vpn/internal/paths"
 )
 
@@ -203,6 +204,32 @@ func TestChannelBackupUnitIdentityBoundary(t *testing.T) {
 	}
 	if _, _, err := channelBackupUnits("mainnet /tmp/source"); err == nil {
 		t.Error("backup unit accepted a caller-supplied path as a network")
+	}
+}
+
+func TestChannelBackupUnitsMapProfileToLNDState(t *testing.T) {
+	for _, network := range config.SupportedNetworks() {
+		profile, err := config.NetworkConfigFromName(network)
+		if err != nil {
+			t.Fatal(err)
+		}
+		pathUnit, exportUnit, err := channelBackupUnits(network)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(pathUnit,
+			"PathChanged="+paths.ChannelBackup(profile.LNDNetwork)) {
+			t.Errorf("%s watcher does not use LND %s directory",
+				network, profile.LNDNetwork)
+		}
+		if !strings.Contains(exportUnit,
+			"publish-lnd-backup "+network) {
+			t.Errorf("%s publisher loses immutable profile ID", network)
+		}
+		if network == config.NetworkPublicSignet &&
+			strings.Contains(pathUnit, "/public-signet/") {
+			t.Fatal("public-signet profile used a non-existent LND directory")
+		}
 	}
 }
 

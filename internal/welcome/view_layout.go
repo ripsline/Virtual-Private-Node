@@ -200,6 +200,9 @@ func (m Model) viewMain() string {
 	helpLine := centerInWidth(helpStr, totalW)
 
 	fullContent := frame + "\n" + helpLine
+	if banner := m.renderNetworkBanner(); banner != "" {
+		fullContent = centerInWidth(banner, totalW) + "\n" + fullContent
+	}
 	// First-run verification banner (ruling xvi): shown until
 	// the journal proves a real sshd login for the admin user.
 	if !m.state.KeyVerificationKnown ||
@@ -214,6 +217,18 @@ func (m Model) viewMain() string {
 		lipgloss.Center, lipgloss.Center,
 		fullContent,
 	)
+}
+
+func (m Model) renderNetworkBanner() string {
+	profile, err := m.cfg.NetworkConfig()
+	if err != nil {
+		return theme.Warning.Render("⚠ Unsupported network profile")
+	}
+	if !profile.TestingOnly {
+		return ""
+	}
+	return theme.Warning.Render("⚠ TESTING NETWORK — "+profile.DisplayName) +
+		theme.Dim.Render(" — coins have no mainnet value")
 }
 
 // renderVerifyBanner is the first-run access-verification

@@ -93,7 +93,7 @@ func (s *PairingScreen) handleEnter() (Screen, tea.Cmd) {
 	switch btns[s.btnIdx] {
 	case "Show QR (Tor)":
 		restOnion := s.restOnion
-		mac := readMacaroonHex(s.ctx.Cfg)
+		mac := readMacaroonHex()
 		if restOnion != "" && mac != "" {
 			url := fmt.Sprintf(
 				"lndconnect://%s:8080?macaroon=%s",
@@ -109,7 +109,7 @@ func (s *PairingScreen) handleEnter() (Screen, tea.Cmd) {
 		if s.ctx.Cfg.P2PMode == "hybrid" &&
 			s.ctx.Status != nil &&
 			s.ctx.Status.publicIP != "" {
-			mac := readMacaroonHex(s.ctx.Cfg)
+			mac := readMacaroonHex()
 			if mac != "" {
 				url := fmt.Sprintf(
 					"lndconnect://%s:8080"+
@@ -125,7 +125,7 @@ func (s *PairingScreen) handleEnter() (Screen, tea.Cmd) {
 			}
 		}
 	case "Copyable Macaroon":
-		return s, showMacaroonCmd(s.ctx.Cfg)
+		return s, showMacaroonCmd()
 	}
 	return s, nil
 }
@@ -205,7 +205,7 @@ func (s *PairingScreen) View(
 		p.monoWrap("8080")
 	}
 
-	mac := readMacaroonHex(cfg)
+	mac := readMacaroonHex()
 	if mac != "" {
 		p.blank()
 		preview := mac[:min(24, len(mac))] + "..."

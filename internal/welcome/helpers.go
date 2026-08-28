@@ -25,7 +25,7 @@ import (
 // root destroyed and recreated — a dead address rendered
 // confidently, with no failure moment to catch it.
 
-func readMacaroonHex(cfg *config.AppConfig) string {
+func readMacaroonHex() string {
 	data, err := helper.ReadBoard(paths.StateLNDMacaroon)
 	if err != nil {
 		logger.Status("Warning: failed to read macaroon: %v", err)
@@ -41,7 +41,11 @@ func fetchFeeTiers(cfg *config.AppConfig) feeTiersMsg {
 	labels := [4]string{"~1 blk", "~3 blk", "~6 blk", "~25 blk"}
 	var tiers [4]feeTier
 
-	rpcPort := cfg.NetworkConfig().RPCPort
+	profile, err := cfg.NetworkConfig()
+	if err != nil {
+		return feeTiersMsg{err: err}
+	}
+	rpcPort := profile.RPCPort
 
 	for i, target := range targets {
 		tiers[i] = feeTier{
@@ -119,23 +123,11 @@ func isValidOnChainAddr(addr string, network string) bool {
 	if len(addr) < 14 {
 		return false
 	}
-	switch network {
-	case "mainnet":
-		return strings.HasPrefix(addr, "bc1") ||
-			strings.HasPrefix(addr, "1") ||
-			strings.HasPrefix(addr, "3")
-	case "testnet":
-		return strings.HasPrefix(addr, "tb1") ||
-			strings.HasPrefix(addr, "2") ||
-			strings.HasPrefix(addr, "m") ||
-			strings.HasPrefix(addr, "n")
-	case "regtest":
-		return strings.HasPrefix(addr, "bcrt1")
-	case "signet":
-		return strings.HasPrefix(addr, "tb1") ||
-			strings.HasPrefix(addr, "sb1")
+	profile, err := config.NetworkConfigFromName(network)
+	if err != nil {
+		return false
 	}
-	return true // unknown network, let LND validate
+	return profile.AcceptsOnChainAddress(addr)
 }
 
 // renderViewport creates a local viewport, sets content,

@@ -347,8 +347,6 @@ func (c *AppConfig) HasLND() bool { return true }
 
 func (c *AppConfig) DbCacheMB() int { return c.DbCache }
 
-func (c *AppConfig) IsMainnet() bool { return c.Network == "mainnet" }
-
-func (c *AppConfig) NetworkConfig() *NetworkConfig {
+func (c *AppConfig) NetworkConfig() (*NetworkConfig, error) {
 	return NetworkConfigFromName(c.Network)
 }

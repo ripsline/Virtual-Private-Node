@@ -305,7 +305,10 @@ func (s *WalletCreateScreen) HandleMsg(
 // only escape is typing the exact phrase or killing
 // the SSH session.
 func (s *WalletCreateScreen) startExecProcess() tea.Cmd {
-	net := s.ctx.Cfg.NetworkConfig()
+	net, err := s.ctx.Cfg.NetworkConfig()
+	if err != nil {
+		return func() tea.Msg { return walletExecDoneMsg{err: err} }
+	}
 	script := `clear
 echo
 echo "  ==================================================="
@@ -329,7 +332,7 @@ echo
 /usr/local/bin/lncli ` +
 		`--rpcserver=` + paths.LNDGRPCEndpoint + ` ` +
 		`--tlscertpath=` + paths.StateLNDTLSCert + ` ` +
-		`--network=` + net.LNCLINetwork + ` create && {
+		`--network=` + net.LNDNetwork + ` create && {
   trap '' INT
   echo
   echo "  ==================================================="

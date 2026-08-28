@@ -62,7 +62,7 @@ func NewSendScreen(
 	return &SendScreen{
 		ctx:         ctx,
 		step:        sendStepInput,
-		sendInput:   newSendPayReqInput(),
+		sendInput:   newSendPayReqInput(ctx.Cfg.Network),
 		inputBtnIdx: 1, // default to Send
 	}
 }
@@ -230,7 +230,7 @@ func (s *SendScreen) handleInputKey(
 		if s.focusZone == sendZoneButtons {
 			switch s.inputBtnIdx {
 			case 0: // Clear
-				s.sendInput = newSendPayReqInput()
+				s.sendInput = newSendPayReqInput(s.ctx.Cfg.Network)
 				s.inputError = ""
 				s.focusZone = sendZoneInput
 				return s, nil
@@ -269,11 +269,14 @@ func (s *SendScreen) submitSendPayment() (
 	}
 	payReq = cleanPayReq(payReq)
 	s.sendInput.SetValue(payReq)
-	if !strings.HasPrefix(payReq, "lnbc") &&
-		!strings.HasPrefix(payReq, "lntb") &&
-		!strings.HasPrefix(payReq, "lnbcrt") {
+	profile, err := s.ctx.Cfg.NetworkConfig()
+	if err != nil {
+		s.inputError = "Unsupported node network profile"
+		return s, nil
+	}
+	if !profile.AcceptsInvoicePrefix(payReq) {
 		s.inputError =
-			"Not a valid Lightning invoice"
+			"Invoice is not for " + profile.DisplayName
 		return s, nil
 	}
 	s.inputError = ""

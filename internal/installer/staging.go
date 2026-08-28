@@ -97,10 +97,11 @@ func macaroonNetworkDir() (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("read node config: %w", err)
 	}
-	if cfg.IsMainnet() {
-		return "mainnet", nil
+	profile, err := cfg.NetworkConfig()
+	if err != nil {
+		return "", fmt.Errorf("resolve node network profile: %w", err)
 	}
-	return cfg.Network, nil
+	return profile.LNDNetwork, nil
 }
 
 // StageSyncthingAPIKey extracts the GUI API key from

@@ -369,7 +369,8 @@ func verifySyncthingConfig() error {
 
 func setupChannelBackupWatcher(cfg *config.AppConfig) error {
 	network := cfg.Network
-	if err := config.ValidateNetwork(network); err != nil {
+	profile, err := config.NetworkConfigFromName(network)
+	if err != nil {
 		return fmt.Errorf("configure LND backup publisher: %w", err)
 	}
 
@@ -402,7 +403,7 @@ func setupChannelBackupWatcher(cfg *config.AppConfig) error {
 	// If a backup already exists, copy it through the same
 	// least-privilege unit that handles future changes. A node
 	// without a wallet/channel backup yet is a normal no-op.
-	if _, err := os.Stat(paths.ChannelBackup(network)); err == nil {
+	if _, err := os.Stat(paths.ChannelBackup(profile.LNDNetwork)); err == nil {
 		if err := system.SudoRun("systemctl", "start",
 			"lnd-backup-export.service"); err != nil {
 			return err
@@ -422,11 +423,12 @@ func setupChannelBackupWatcher(cfg *config.AppConfig) error {
 func channelBackupUnits(network string) (
 	pathUnit, exportService string, err error,
 ) {
-	if err := config.ValidateNetwork(network); err != nil {
+	profile, err := config.NetworkConfigFromName(network)
+	if err != nil {
 		return "", "", fmt.Errorf(
 			"render LND backup units: %w", err)
 	}
-	backupSource := paths.ChannelBackup(network)
+	backupSource := paths.ChannelBackup(profile.LNDNetwork)
 	pathUnit = fmt.Sprintf(`[Unit]
 Description=Watch LND channel backup
 

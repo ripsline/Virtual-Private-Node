@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 
+	"github.com/virtualprivatenode/vpn/internal/config"
 	"github.com/virtualprivatenode/vpn/internal/paths"
 )
 
@@ -11,7 +12,11 @@ import (
 // duplicated TUI-written boolean. A non-regular or symlinked object is an
 // error, not evidence that a wallet exists.
 func WalletExists(network string) (bool, error) {
-	return walletExistsAt(paths.LNDWalletDB(network))
+	profile, err := config.NetworkConfigFromName(network)
+	if err != nil {
+		return false, err
+	}
+	return walletExistsAt(paths.LNDWalletDB(profile.LNDNetwork))
 }
 
 func walletExistsAt(path string) (bool, error) {

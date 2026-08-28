@@ -34,6 +34,15 @@ func TestParseArgs(t *testing.T) {
 	if opts.Network != "testnet4" || !opts.Unattended {
 		t.Errorf("install flags: got %+v", opts)
 	}
+	cmd, opts, err = parseArgs([]string{"install", "--signet"})
+	if err != nil || cmd != cmdInstall ||
+		opts.Network != config.NetworkPublicSignet {
+		t.Errorf("signet install: got (%v,%+v,%v)", cmd, opts, err)
+	}
+	if _, _, err := parseArgs(
+		[]string{"install", "--testnet4", "--signet"}); err == nil {
+		t.Error("conflicting install network flags accepted")
+	}
 
 	if _, _, err := parseArgs(
 		[]string{"install", "--bogus"}); err == nil {
@@ -75,7 +84,7 @@ func TestParseArgs(t *testing.T) {
 		t.Error("stage-lnd-cert with arguments accepted")
 	}
 
-	for _, network := range []string{"mainnet", "testnet4"} {
+	for _, network := range config.SupportedNetworks() {
 		cmd, opts, err = parseArgs(
 			[]string{"publish-lnd-backup", network})
 		if err != nil || cmd != cmdPublishLNDBackup ||
@@ -87,6 +96,7 @@ func TestParseArgs(t *testing.T) {
 	for _, args := range [][]string{
 		{"publish-lnd-backup"},
 		{"publish-lnd-backup", "signet"},
+		{"publish-lnd-backup", "controlled-signet-v1"},
 		{"publish-lnd-backup", "mainnet", "/tmp/destination"},
 	} {
 		if _, _, err := parseArgs(args); err == nil {
@@ -137,5 +147,9 @@ func TestUsageDescribesFreshInstallAndResume(t *testing.T) {
 	}
 	if !strings.Contains(text, "resume a recognized interruption") {
 		t.Fatal("usage does not describe supported resume")
+	}
+	if !strings.Contains(text, "--signet") ||
+		!strings.Contains(text, "testing only") {
+		t.Fatal("usage does not describe public signet as testing-only")
 	}
 }

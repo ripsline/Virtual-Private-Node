@@ -395,6 +395,32 @@ func TestVersionCacheFileConsistency(t *testing.T) {
 	}
 }
 
+func TestShellWrapperNetworkFlags(t *testing.T) {
+	tests := []struct {
+		network string
+		bitcoin string
+		lnd     string
+	}{
+		{config.NetworkMainnet, "", ""},
+		{config.NetworkTestnet4, "\n        -testnet4 \\", "\n        --network=testnet4 \\"},
+		{config.NetworkPublicSignet, "\n        -signet \\", "\n        --network=signet \\"},
+	}
+	for _, tt := range tests {
+		profile, err := config.NetworkConfigFromName(tt.network)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := bitcoinCLINetworkFlag(profile); got != tt.bitcoin {
+			t.Errorf("%s bitcoin wrapper flag %q, want %q",
+				tt.network, got, tt.bitcoin)
+		}
+		if got := lncliNetworkFlag(profile); got != tt.lnd {
+			t.Errorf("%s lncli wrapper flag %q, want %q",
+				tt.network, got, tt.lnd)
+		}
+	}
+}
+
 // The checkOS tests formerly here moved to preflight_test.go
 // (TestCheckOSRelease*), against the preflight's exactly-13 rule.
 // The NeedsInstall tests died with NeedsInstall itself: commit 6

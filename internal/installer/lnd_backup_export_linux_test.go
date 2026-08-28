@@ -14,6 +14,7 @@ import (
 
 	"golang.org/x/sys/unix"
 
+	"github.com/virtualprivatenode/vpn/internal/config"
 	"github.com/virtualprivatenode/vpn/internal/paths"
 )
 
@@ -171,11 +172,15 @@ func assertPublished(t *testing.T, f publisherFixture, want []byte) {
 
 func TestProductionBackupPublisherPathsAreFixed(t *testing.T) {
 	ids := backupPublisherIdentity{lndUID: 11, lndGID: 12, backupGID: 13}
-	for _, network := range []string{"mainnet", "testnet4"} {
-		spec := productionBackupPublisherSpec(network, ids)
-		if got := "/" + spec.sourceDir + "/" + backupFileName; got != paths.ChannelBackup(network) {
+	for _, network := range config.SupportedNetworks() {
+		profile, err := config.NetworkConfigFromName(network)
+		if err != nil {
+			t.Fatal(err)
+		}
+		spec := productionBackupPublisherSpec(profile.LNDNetwork, ids)
+		if got := "/" + spec.sourceDir + "/" + backupFileName; got != paths.ChannelBackup(profile.LNDNetwork) {
 			t.Errorf("%s source %q, want %q",
-				network, got, paths.ChannelBackup(network))
+				network, got, paths.ChannelBackup(profile.LNDNetwork))
 		}
 		if got := "/" + spec.stageDir; got != paths.LNDBackupStage {
 			t.Errorf("stage %q, want %q", got, paths.LNDBackupStage)

@@ -13,9 +13,10 @@ fi
 
 network=${1:-}
 case "${network}" in
-    mainnet|testnet4) ;;
+    mainnet|testnet4) lnd_network=${network} ;;
+    public-signet) lnd_network=signet ;;
     *)
-        echo "Usage: $0 <mainnet|testnet4>" >&2
+        echo "Usage: $0 <mainnet|testnet4|public-signet>" >&2
         exit 2
         ;;
 esac
@@ -152,7 +153,7 @@ stage_dir=${export_root}/lnd-backup-stage
 final_dir=${export_root}/lnd-backup
 marker_name=.vpn-export-ready
 marker_dir=${final_dir}/${marker_name}
-source_file=/var/lib/lnd/data/chain/bitcoin/${network}/channel.backup
+source_file=/var/lib/lnd/data/chain/bitcoin/${lnd_network}/channel.backup
 final_file=${final_dir}/channel.backup
 
 assert_metadata "FS Syncthing config private" /etc/syncthing directory \

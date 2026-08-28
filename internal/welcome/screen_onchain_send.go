@@ -71,7 +71,7 @@ func NewOnChainSendScreen(
 		ctx:        ctx,
 		ocCtx:      ocCtx,
 		step:       ocStepAddr,
-		addrInput:  newOnChainAddrInput(),
+		addrInput:  newOnChainAddrInput(ctx.Cfg.Network),
 		amtInput:   NewAmountInput(),
 		labelInput: newOCSendLabelInput(),
 		feeInput:   NewFeeInput(),
@@ -797,7 +797,7 @@ func (s *OnChainSendScreen) backToInput() {
 // resetInputs creates fresh inputs and resets all
 // input-phase state.
 func (s *OnChainSendScreen) resetInputs() {
-	s.addrInput = newOnChainAddrInput()
+	s.addrInput = newOnChainAddrInput(s.ctx.Cfg.Network)
 	s.amtInput = NewAmountInput()
 	s.labelInput = newOCSendLabelInput()
 	s.feeInput = NewFeeInput()

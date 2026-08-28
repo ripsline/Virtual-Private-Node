@@ -11,6 +11,8 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	"github.com/virtualprivatenode/vpn/internal/config"
 )
 
 // The ledger is root-private historical authority for exactly one bounded
@@ -156,7 +158,7 @@ func validateLedger(l *installLedger) error {
 	if l.Status != ledgerInProgress && l.Status != ledgerComplete {
 		return fmt.Errorf("invalid ledger status %q", l.Status)
 	}
-	if l.Context.Network != "mainnet" && l.Context.Network != "testnet4" {
+	if err := config.ValidateNetwork(l.Context.Network); err != nil {
 		return fmt.Errorf("invalid install network %q", l.Context.Network)
 	}
 	if l.Context.InitialP2PMode != "tor" &&

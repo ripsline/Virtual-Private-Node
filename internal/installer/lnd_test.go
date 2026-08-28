@@ -18,6 +18,19 @@ import (
 	"github.com/virtualprivatenode/vpn/internal/paths"
 )
 
+func mustBuildLNDConfig(
+	t *testing.T, cfg *config.AppConfig, publicIPv4, restOnion,
+	user, password string,
+) string {
+	t.Helper()
+	content, err := BuildLNDConfig(
+		cfg, publicIPv4, restOnion, user, password)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return content
+}
+
 // The generated lnd.conf binds by the literal loopback
 // addresses defined once in paths — the same constants every
 // client dials — and carries no host name anywhere. On this
@@ -26,7 +39,7 @@ import (
 func TestBuildLNDConfigBindsByAddress(t *testing.T) {
 	// Tor-only: every listener on the loopback constants.
 	cfg := config.Default()
-	torOnly := BuildLNDConfig(cfg, "", "", "lnd", "secret")
+	torOnly := mustBuildLNDConfig(t, cfg, "", "", "lnd", "secret")
 	for _, want := range []string{
 		"listen=" + paths.LNDP2PBind,
 		"restlisten=" + paths.LNDRESTEndpoint,
@@ -41,8 +54,8 @@ func TestBuildLNDConfigBindsByAddress(t *testing.T) {
 	// gRPC stays on the loopback constant.
 	hybrid := config.Default()
 	hybrid.P2PMode = "hybrid"
-	hybridConf := BuildLNDConfig(
-		hybrid, "203.0.113.7", "", "lnd", "secret")
+	hybridConf := mustBuildLNDConfig(
+		t, hybrid, "203.0.113.7", "", "lnd", "secret")
 	for _, want := range []string{
 		"listen=0.0.0.0:9735",
 		"restlisten=0.0.0.0:8080",
@@ -57,7 +70,7 @@ func TestBuildLNDConfigBindsByAddress(t *testing.T) {
 
 	// No host name in either variant, with or without a REST
 	// onion for tlsextradomain.
-	withOnion := BuildLNDConfig(cfg, "",
+	withOnion := mustBuildLNDConfig(t, cfg, "",
 		"exampleonionaddress.onion", "lnd", "secret")
 	for name, conf := range map[string]string{
 		"tor-only": torOnly,
@@ -135,8 +148,8 @@ func TestVerifyCertificateDNSName(t *testing.T) {
 }
 
 func TestBuildLNDConfigUsesIndependentBitcoindRPCIdentity(t *testing.T) {
-	content := BuildLNDConfig(
-		config.Default(), "", "", "lnd", "secret")
+	content := mustBuildLNDConfig(
+		t, config.Default(), "", "", "lnd", "secret")
 	for _, want := range []string{
 		"bitcoind.rpcuser=lnd",
 		"bitcoind.rpcpass=secret",
@@ -153,6 +166,60 @@ func TestBuildLNDConfigUsesIndependentBitcoindRPCIdentity(t *testing.T) {
 		if strings.Contains(content, forbidden) {
 			t.Errorf("LND config still carries %q", forbidden)
 		}
+	}
+}
+
+func TestBuildLNDConfigNetworkProfiles(t *testing.T) {
+	tests := []struct {
+		network string
+		flag    string
+		rpc     string
+		zmqB    string
+		zmqT    string
+	}{
+		{config.NetworkMainnet, "bitcoin.mainnet=true", "8332", "28332", "28333"},
+		{config.NetworkTestnet4, "bitcoin.testnet4=true", "48332", "28334", "28335"},
+		{config.NetworkPublicSignet, "bitcoin.signet=true", "38332", "28336", "28337"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.network, func(t *testing.T) {
+			cfg := config.Default()
+			cfg.Network = tt.network
+			content := mustBuildLNDConfig(t, cfg, "", "", "lnd", "secret")
+			for _, want := range []string{
+				tt.flag,
+				"bitcoind.rpchost=127.0.0.1:" + tt.rpc,
+				"bitcoind.zmqpubrawblock=tcp://127.0.0.1:" + tt.zmqB,
+				"bitcoind.zmqpubrawtx=tcp://127.0.0.1:" + tt.zmqT,
+			} {
+				if !strings.Contains(content, want) {
+					t.Errorf("config missing %q", want)
+				}
+			}
+			for _, other := range []string{
+				"bitcoin.mainnet=true", "bitcoin.testnet4=true", "bitcoin.signet=true",
+			} {
+				if other != tt.flag && strings.Contains(content, other) {
+					t.Errorf("config contains foreign selector %q", other)
+				}
+			}
+			for _, forbidden := range []string{
+				"bitcoin.signetchallenge=", "bitcoin.signetseednode=",
+				"bitcoind.rpccookie=", "/public-signet/",
+			} {
+				if strings.Contains(content, forbidden) {
+					t.Errorf("config contains %q", forbidden)
+				}
+			}
+		})
+	}
+}
+
+func TestBuildLNDConfigRejectsUnknownProfile(t *testing.T) {
+	cfg := config.Default()
+	cfg.Network = "signet"
+	if _, err := BuildLNDConfig(cfg, "", "", "lnd", "secret"); err == nil {
+		t.Fatal("raw signet profile generated an LND config")
 	}
 }
 

@@ -4,6 +4,7 @@ import (
 	"strings"
 
 	"charm.land/bubbles/v2/textinput"
+	"github.com/virtualprivatenode/vpn/internal/config"
 )
 
 // ── Validators ───────────────────────────────────────────
@@ -77,9 +78,12 @@ func applyInputStyles(ti *textinput.Model) {
 
 // ── Factory functions ────────────────────────────────────
 
-func newSendPayReqInput() textinput.Model {
+func newSendPayReqInput(network string) textinput.Model {
 	ti := textinput.New()
-	ti.Placeholder = "lnbc..."
+	ti.Placeholder = "invoice..."
+	if profile, err := config.NetworkConfigFromName(network); err == nil {
+		ti.Placeholder = profile.InvoicePlaceholder
+	}
 	ti.CharLimit = 1500
 	ti.SetWidth(58)
 	ti.Validate = validateBolt11
@@ -135,9 +139,12 @@ func newSyncthingIDInput() textinput.Model {
 	return ti
 }
 
-func newOnChainAddrInput() textinput.Model {
+func newOnChainAddrInput(network string) textinput.Model {
 	ti := textinput.New()
-	ti.Placeholder = "bc1p..."
+	ti.Placeholder = "address..."
+	if profile, err := config.NetworkConfigFromName(network); err == nil {
+		ti.Placeholder = profile.AddressPlaceholder
+	}
 	ti.CharLimit = 90
 	ti.SetWidth(62)
 	ti.Validate = validateOnChainAddr

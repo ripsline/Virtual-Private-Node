@@ -436,8 +436,8 @@ func labelTxCmd(
 // wants to select/copy text with their terminal's native
 // mechanism rather than via the TUI's monoWrap/QR overlays.
 
-func showMacaroonCmd(cfg *config.AppConfig) tea.Cmd {
-	mac := readMacaroonHex(cfg)
+func showMacaroonCmd() tea.Cmd {
+	mac := readMacaroonHex()
 	if mac == "" {
 		return nil
 	}

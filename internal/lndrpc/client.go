@@ -43,7 +43,6 @@ type Client struct {
 	lightning   lnrpc.LightningClient
 	state       lnrpc.StateClient
 	macaroonHex string
-	network     string
 	mu          sync.RWMutex
 }
 
@@ -54,8 +53,8 @@ type Client struct {
 // Returns a client even if LND is not available — RPC methods
 // check for a live connection internally and return
 // errNotConnected if the connection is nil.
-func New(network string) *Client {
-	c := &Client{network: network}
+func New() *Client {
+	c := &Client{}
 	if err := c.connect(); err != nil {
 		logger.Status("LND gRPC not available: %v", err)
 		return c

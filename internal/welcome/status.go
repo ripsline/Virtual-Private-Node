@@ -23,6 +23,7 @@ func fetchStatus(
 		s := statusMsg{services: make(map[string]bool)}
 		var wg sync.WaitGroup
 		var mu sync.Mutex
+		profile, profileErr := cfg.NetworkConfig()
 
 		for _, name := range serviceNames(cfg) {
 			wg.Add(1)
@@ -35,27 +36,30 @@ func fetchStatus(
 			}(name)
 		}
 
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			info := bitcoin.GetBlockchainInfo(
-				cfg.NetworkConfig().RPCPort)
-			mu.Lock()
-			s.btcResponding = info.Responding
-			s.btcBlocks = info.Blocks
-			s.btcHeaders = info.Headers
-			s.btcProgress = info.Progress
-			s.btcSynced = info.Synced
-			// bitcoind reports its own data footprint
-			// (size_on_disk) — no privileged measurement of
-			// the data dir is needed for this card.
-			if info.Responding {
-				s.btcSize = bitcoin.FormatSize(info.SizeOnDisk)
-			} else {
-				s.btcSize = "N/A"
-			}
-			mu.Unlock()
-		}()
+		if profileErr == nil {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				info := bitcoin.GetBlockchainInfo(profile.RPCPort)
+				mu.Lock()
+				s.btcResponding = info.Responding
+				s.btcBlocks = info.Blocks
+				s.btcHeaders = info.Headers
+				s.btcProgress = info.Progress
+				s.btcSynced = info.Synced
+				// bitcoind reports its own data footprint
+				// (size_on_disk) — no privileged measurement of
+				// the data dir is needed for this card.
+				if info.Responding {
+					s.btcSize = bitcoin.FormatSize(info.SizeOnDisk)
+				} else {
+					s.btcSize = "N/A"
+				}
+				mu.Unlock()
+			}()
+		} else {
+			s.btcSize = "N/A"
+		}
 
 		wg.Add(1)
 		go func() {

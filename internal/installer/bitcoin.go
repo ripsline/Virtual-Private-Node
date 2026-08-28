@@ -6,7 +6,10 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
+	"time"
 
+	"github.com/virtualprivatenode/vpn/internal/bitcoin"
 	"github.com/virtualprivatenode/vpn/internal/config"
 	"github.com/virtualprivatenode/vpn/internal/paths"
 	"github.com/virtualprivatenode/vpn/internal/system"
@@ -63,8 +66,11 @@ func extractAndInstallBitcoin(version, workDir string) error {
 // [testnet4] section.
 func BuildBitcoinConfig(
 	cfg *config.AppConfig, rpcauthLines ...string,
-) string {
-	net := cfg.NetworkConfig()
+) (string, error) {
+	net, err := cfg.NetworkConfig()
+	if err != nil {
+		return "", err
+	}
 	pruneMB := cfg.PruneSize * 1000
 
 	var auth string
@@ -74,47 +80,34 @@ func BuildBitcoinConfig(
 		}
 	}
 
-	if net.Name == "testnet4" {
-		return fmt.Sprintf(`# Virtual Private Node — Bitcoin Core
-server=1
-disablewallet=1
-%s
-prune=%d
-dbcache=%d
-maxmempool=300
-proxy=127.0.0.1:9050
-listen=1
-listenonion=1
-%s
-[testnet4]
-bind=127.0.0.1
-rpcbind=127.0.0.1
-rpcport=%d
-rpcallowip=127.0.0.1
-zmqpubrawblock=tcp://127.0.0.1:%d
-zmqpubrawtx=tcp://127.0.0.1:%d
-`, net.BitcoinFlag, pruneMB, cfg.DbCacheMB(), auth,
-			net.RPCPort, net.ZMQBlockPort, net.ZMQTxPort)
+	var b strings.Builder
+	b.WriteString("# Virtual Private Node — Bitcoin Core\n")
+	b.WriteString("server=1\n")
+	b.WriteString("disablewallet=1\n")
+	// VPN has two explicit rpcauth identities. Keeping Core's independent
+	// session cookie would add a third credential that no supported client
+	// consumes.
+	b.WriteString("norpccookiefile=1\n")
+	if net.BitcoinFlag != "" {
+		b.WriteString(net.BitcoinFlag + "\n")
 	}
-
-	return fmt.Sprintf(`# Virtual Private Node — Bitcoin Core
-server=1
-disablewallet=1
-prune=%d
-dbcache=%d
-maxmempool=300
-proxy=127.0.0.1:9050
-listen=1
-listenonion=1
-%s
-bind=127.0.0.1
-rpcbind=127.0.0.1
-rpcport=%d
-rpcallowip=127.0.0.1
-zmqpubrawblock=tcp://127.0.0.1:%d
-zmqpubrawtx=tcp://127.0.0.1:%d
-`, pruneMB, cfg.DbCacheMB(), auth,
-		net.RPCPort, net.ZMQBlockPort, net.ZMQTxPort)
+	fmt.Fprintf(&b, "prune=%d\n", pruneMB)
+	fmt.Fprintf(&b, "dbcache=%d\n", cfg.DbCacheMB())
+	b.WriteString("maxmempool=300\n")
+	b.WriteString("proxy=127.0.0.1:9050\n")
+	b.WriteString("listen=1\n")
+	b.WriteString("listenonion=1\n")
+	b.WriteString(auth)
+	if net.CoreNetwork != "main" {
+		fmt.Fprintf(&b, "\n[%s]\n", net.CoreNetwork)
+	}
+	b.WriteString("bind=127.0.0.1\n")
+	b.WriteString("rpcbind=127.0.0.1\n")
+	fmt.Fprintf(&b, "rpcport=%d\n", net.RPCPort)
+	b.WriteString("rpcallowip=127.0.0.1\n")
+	fmt.Fprintf(&b, "zmqpubrawblock=tcp://127.0.0.1:%d\n", net.ZMQBlockPort)
+	fmt.Fprintf(&b, "zmqpubrawtx=tcp://127.0.0.1:%d\n", net.ZMQTxPort)
+	return b.String(), nil
 }
 
 // writeBitcoinConfig rotates both local RPC identities and
@@ -128,7 +121,10 @@ func writeBitcoinConfig(cfg *config.AppConfig) error {
 	if err != nil {
 		return err
 	}
-	content := BuildBitcoinConfig(cfg, creds.lines...)
+	content, err := BuildBitcoinConfig(cfg, creds.lines...)
+	if err != nil {
+		return err
+	}
 	if err := system.SudoWriteFile(paths.BitcoinConf, []byte(content), 0640); err != nil {
 		return err
 	}
@@ -174,12 +170,67 @@ func writeBitcoindService(username string) error {
 // on a service that is already running during an interrupted-install resume.
 // Restart makes the unit and config already written by this lifecycle the ones
 // actually in effect; on a fresh pass the two commands are equivalent.
-func startBitcoind() error {
+func startBitcoind(cfg *config.AppConfig) error {
 	if err := system.SudoRun("systemctl", "daemon-reload"); err != nil {
 		return err
 	}
 	if err := system.SudoRun("systemctl", "enable", "bitcoind"); err != nil {
 		return err
 	}
-	return system.SudoRun("systemctl", "restart", "bitcoind")
+	if err := system.SudoRun("systemctl", "restart", "bitcoind"); err != nil {
+		return err
+	}
+	profile, err := cfg.NetworkConfig()
+	if err != nil {
+		return err
+	}
+	return waitForBitcoinIdentity(
+		profile, bitcoin.GetBlockchainIdentity, time.Sleep, 60, 2*time.Second)
+}
+
+func validateBitcoinIdentity(
+	profile *config.NetworkConfig, identity bitcoin.BlockchainIdentity,
+) error {
+	if identity.Chain != profile.CoreNetwork {
+		return fmt.Errorf("Bitcoin Core reports chain %q, want %q for profile %q",
+			identity.Chain, profile.CoreNetwork, profile.Name)
+	}
+	if identity.Genesis != profile.ExpectedGenesis {
+		return fmt.Errorf("Bitcoin Core genesis is %q, want %q for profile %q",
+			identity.Genesis, profile.ExpectedGenesis, profile.Name)
+	}
+	if identity.SignetChallenge != profile.ExpectedSignetChallenge {
+		return fmt.Errorf(
+			"Bitcoin Core signet challenge is %q, want %q for profile %q",
+			identity.SignetChallenge, profile.ExpectedSignetChallenge,
+			profile.Name)
+	}
+	return nil
+}
+
+func waitForBitcoinIdentity(
+	profile *config.NetworkConfig,
+	probe func(int) (bitcoin.BlockchainIdentity, error),
+	sleep func(time.Duration), attempts int, interval time.Duration,
+) error {
+	if attempts < 1 {
+		return fmt.Errorf("Bitcoin Core identity verification has no attempts")
+	}
+	var lastErr error
+	for i := 0; i < attempts; i++ {
+		identity, err := probe(profile.RPCPort)
+		if err == nil {
+			if err := validateBitcoinIdentity(profile, identity); err != nil {
+				return err
+			}
+			return nil
+		}
+		lastErr = err
+		if i+1 < attempts {
+			sleep(interval)
+		}
+	}
+	return fmt.Errorf(
+		"Bitcoin Core did not expose verifiable %s identity on RPC port %d: %w",
+		profile.Name, profile.RPCPort, lastErr)
 }

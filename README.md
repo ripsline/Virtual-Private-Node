@@ -62,7 +62,7 @@ funds.
 - **Blinded paths on invoices (default on).** Invoices use encrypted route data instead of plain hop hints. Senders can pay you without learning your node's pubkey, channel partners, or channel funding UTXOs.
 - **Coin control for channel opens.** You choose which UTXOs fund each channel. One UTXO in, one channel out. No silent coin consolidation linking your channels on-chain.
 - **Taproot channels (default on).** Cooperative channel closes produce a MuSig2 key-path spend, which looks identical to a regular single-sig transaction on-chain. Requires peer support.
-- **Consistent P2TR address type.** All addresses (receive, change, close delivery, sweep) use the same bc1p format. P2TR has a smaller anonymity set than P2WPKH today, but matching LND's internal address type prevents change-detection fingerprints that would link your outputs regardless of anonymity set size.
+- **Consistent P2TR address type.** All addresses (receive, change, close delivery, sweep) use the same P2TR format: `bc1p` on mainnet and `tb1p` on the testing profiles. P2TR has a smaller anonymity set than P2WPKH today, but matching LND's internal address type prevents change-detection fingerprints that would link your outputs regardless of anonymity set size.
 - **No node alias.** Your node appears in the network graph with only its pubkey. No identifying name broadcast.
 - **Tor-only by default.** All LND connections route through Tor hidden services. Your server IP is never published to the Lightning Network unless you explicitly upgrade to hybrid P2P mode.
 
@@ -77,8 +77,50 @@ straight into the TUI. If a step fails or you interrupt, run it
 again — when the installer can prove that it is resuming the same recognizable
 fresh-install lifecycle, it continues from the incomplete work. A completed
 base installation reports already installed and stops; optional add-ons and
-later settings remain available through the TUI. Mainnet and testnet4 are both
-supported.
+later settings remain available through the TUI. Mainnet and testnet4 remain
+supported. This unreleased candidate adds default public signet as the third
+immutable profile described below; it is not release-certified until the exact
+candidate passes the required disposable Debian 13 amd64 validation.
+
+### Bitcoin network profiles
+
+Mainnet remains the default. Testnet4 remains the public proof-of-work test
+network. The default public-signet candidate is testing-only and uses Bitcoin
+Core and LND's pinned built-in public-signet parameters; VPN does not override
+its challenge or seed nodes. Generated configuration and unit tests alone do
+not certify this profile; disposable Debian 13 amd64 operational evidence is
+required before release support is claimed.
+
+| VPN profile | Installer selector | Core/LND state directory | Address HRP | BOLT11 prefix |
+| --- | --- | --- | --- | --- |
+| `mainnet` | none (default) | `mainnet` conventions | `bc` | `lnbc` |
+| `testnet4` | `--testnet4` | `testnet4` | `tb` | `lntb` |
+| `public-signet` | `--signet` | `signet` | `tb` | `lntbs` |
+
+(VPS)
+
+```bash
+# Default mainnet
+sudo vpn install
+
+# Public proof-of-work testnet4
+sudo vpn install --testnet4
+
+# Default public signet (testing only)
+sudo vpn install --signet
+```
+
+The chosen profile is recorded before installation work begins and cannot be
+changed. A node will not reuse another profile's Core data, LND wallet,
+macaroons, channel state, lifecycle authorization, or channel-backup source.
+Reusing the machine for another profile requires a new disposable machine;
+there is no in-place profile migration or switch.
+
+`controlled-signet-v1`, raw `signet`, custom challenges, and custom seed-node
+inputs are rejected and unsupported. VPN also does not install a faucet,
+explorer, miner, block signer, second Lightning node, or scenario controller.
+Testing profiles remain visibly marked in the TUI, and their coins have no
+mainnet value.
 
 **Access setup.** The installer creates a `vpn` admin user and
 shows every SSH key it finds on the box — with fingerprints and
@@ -228,7 +270,7 @@ For the full setup guide, see
 - SSH hardening: challenge-response, keyboard-interactive, and X11 forwarding disabled; password auth carried over exactly as OBSERVED on your box at install (toggle from System → SSH Keys once you've verified key auth works); login password changeable from the TUI
 - Bitcoin Core, LND, and Syncthing run as separate, non-login system users; `vpn` has no direct access to their private data directories
 - Tor control-cookie access is granted only inside `bitcoind.service` and `lnd.service`; Syncthing and the backup exporter receive none
-- LND authenticates to Bitcoin Core with its own `rpcauth` identity instead of reading Bitcoin Core's cookie or data directory
+- VPN and LND authenticate to Bitcoin Core with separate `rpcauth` identities. Bitcoin Core RPC-cookie generation is disabled for fresh v0.7 installations, and neither client reads a Core cookie or data directory. Unsupported legacy layouts are refused rather than modified, so VPN does not delete their historical cookie files
 - Channel backups cross through a dedicated `lnd` publisher into the project-owned `/var/lib/vpn/exports` boundary; Syncthing can read only the completed `channel.backup`, cannot write the export, and cannot read `/var/lib/lnd` or private staging
 - GPG signature verification for all software, any bad signature is a hard stop
 - Unattended security upgrades with auto-reboot
@@ -322,7 +364,7 @@ For manual binary verification before installation, see
 | /etc/syncthing/ | Syncthing configuration |
 | /etc/vpn/config.json | Root-owned, non-secret desired node configuration; root:vpn mode 0640 |
 | /home/vpn/.config/vpn/preferences.json | User-owned TUI preferences (theme); vpn:vpn mode 0600 |
-| /var/lib/vpn-install-bootstrap-service-layout-1-{mainnet,testnet4}-tor | Short-lived root-only indication while initial lifecycle authority is published |
+| /var/lib/vpn-install-bootstrap-service-layout-1-{mainnet,testnet4,public-signet}-tor | Short-lived root-only indication while initial lifecycle authority is published |
 | /var/lib/vpn/private/layout-version | Root-only supported-layout generation record |
 | /var/lib/vpn/private/install-state.json | Root-only bounded base-install progress and completion ledger |
 | /var/lib/vpn/private/password-pending | Root-only interrupted unattended-password delivery marker, present only while needed |
@@ -330,8 +372,8 @@ For manual binary verification before installation, see
 | /run/vpn/install.lock | Stable root-only runtime lock for one active base installer |
 | /var/lib/vpn/state/ | Root-written facts and credentials deliberately staged read-only for the TUI, including the Syncthing web password |
 | /var/lib/vpn/exports/lnd-backup/ | Read-only Syncthing export of the completed `channel.backup` |
-| /var/lib/bitcoin/ | Blockchain data |
-| /var/lib/lnd/ | LND data and wallet |
+| /var/lib/bitcoin/ | Mainnet Core data at the root; testnet4 under `testnet4/`; public signet under `signet/` |
+| /var/lib/lnd/data/chain/bitcoin/{mainnet,testnet4,signet}/ | Profile-specific LND wallet, macaroon, and channel state; `signet/` is default public signet only |
 | /var/lib/syncthing/ | Syncthing's private data |
 | /var/log/vpn.log | Application log (install, verification, status) |
 

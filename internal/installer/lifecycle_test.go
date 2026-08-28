@@ -50,6 +50,12 @@ func newLifecycleFixture(t *testing.T) *lifecycleFixture {
 					Network: "testnet4", InitialP2PMode: "tor",
 				},
 			},
+			{
+				path: filepath.Join(root, "bootstrap-public-signet-tor"),
+				context: installContext{
+					Network: "public-signet", InitialP2PMode: "tor",
+				},
+			},
 		},
 		ancestors: []lifecycleDir{{path: root, mode: rootInfo.Mode().Perm()}},
 		unmarkedPaths: []string{
@@ -374,12 +380,13 @@ func TestProductionLifecycleEvidenceInventory(t *testing.T) {
 			t.Errorf("bootstrap/diagnostic path would make fresh install impossible: %s", allowed)
 		}
 	}
-	if len(fs.bootstraps) != 2 {
-		t.Fatalf("production bootstrap contexts=%d, want 2", len(fs.bootstraps))
+	if len(fs.bootstraps) != 3 {
+		t.Fatalf("production bootstrap contexts=%d, want 3", len(fs.bootstraps))
 	}
 	wantBootstrap := map[string]string{
-		"mainnet":  paths.InstallBootstrapMainnet,
-		"testnet4": paths.InstallBootstrapTestnet4,
+		"mainnet":       paths.InstallBootstrapMainnet,
+		"testnet4":      paths.InstallBootstrapTestnet4,
+		"public-signet": paths.InstallBootstrapPublicSignet,
 	}
 	for _, bootstrap := range fs.bootstraps {
 		if got := wantBootstrap[bootstrap.context.Network]; got != bootstrap.path {

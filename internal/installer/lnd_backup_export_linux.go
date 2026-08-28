@@ -33,7 +33,8 @@ const (
 // fixed here. The process must already be the lnd service user
 // with the unit-local vpn-lnd-backup supplementary group.
 func PublishLNDBackup(network string) error {
-	if err := config.ValidateNetwork(network); err != nil {
+	profile, err := config.NetworkConfigFromName(network)
+	if err != nil {
 		return err
 	}
 	ids, err := resolveBackupPublisherIdentity()
@@ -44,7 +45,7 @@ func PublishLNDBackup(network string) error {
 		return err
 	}
 	return publishLNDBackup(
-		productionBackupPublisherSpec(network, ids), ids,
+		productionBackupPublisherSpec(profile.LNDNetwork, ids), ids,
 		publisherHooks{},
 	)
 }

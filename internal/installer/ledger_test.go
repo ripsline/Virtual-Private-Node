@@ -47,6 +47,7 @@ func TestParseLedgerRefusesAmbiguousOrInvalidState(t *testing.T) {
 		"unknown status":         `{"schema":1,"status":"done","context":{"network":"mainnet","initial_p2p_mode":"tor"},"steps":{}}`,
 		"missing context":        `{"schema":1,"status":"in_progress","steps":{}}`,
 		"bad network":            `{"schema":1,"status":"in_progress","context":{"network":"signet","initial_p2p_mode":"tor"},"steps":{}}`,
+		"controlled signet":      `{"schema":1,"status":"in_progress","context":{"network":"controlled-signet-v1","initial_p2p_mode":"tor"},"steps":{}}`,
 		"bad p2p":                `{"schema":1,"status":"in_progress","context":{"network":"mainnet","initial_p2p_mode":"open"},"steps":{}}`,
 		"bad dbcache":            `{"schema":1,"status":"in_progress","context":{"network":"mainnet","initial_p2p_mode":"tor","db_cache_mb":999},"steps":{}}`,
 		"null steps":             `{"schema":1,"status":"in_progress","context":{"network":"mainnet","initial_p2p_mode":"tor"},"steps":null}`,
@@ -70,6 +71,21 @@ func TestParseLedgerRefusesAmbiguousOrInvalidState(t *testing.T) {
 				t.Fatal("invalid ledger accepted")
 			}
 		})
+	}
+}
+
+func TestLedgerAcceptsEverySupportedImmutableProfile(t *testing.T) {
+	for _, network := range []string{"mainnet", "testnet4", "public-signet"} {
+		ledger, err := newLedger(installContext{
+			Network: network, InitialP2PMode: "tor",
+		})
+		if err != nil {
+			t.Errorf("%s ledger rejected: %v", network, err)
+			continue
+		}
+		if ledger.Context.Network != network {
+			t.Errorf("%s ledger recorded %q", network, ledger.Context.Network)
+		}
 	}
 }
 
