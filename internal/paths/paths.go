@@ -218,10 +218,9 @@ const (
 	BackupWatchPath     = "/etc/systemd/system/lnd-backup-watch.path"
 	BackupExportService = "/etc/systemd/system/lnd-backup-export.service"
 
-	// The LND TLS certificate watch. LND rewrites tls.cert on
-	// its own (tlsautorefresh in lnd.conf regenerates it at
-	// any startup whose parameters changed or whose cert
-	// nears expiry) — no TUI-requested operation is
+	// The LND TLS certificate watch. At startup LND replaces an
+	// expired tls.cert; tlsautorefresh also replaces one whose
+	// configured SAN inputs changed. No TUI-requested operation is
 	// involved, so no operation can re-stage the TUI's
 	// copy. This path unit closes that gap at the source: a
 	// rewrite of the certificate triggers the stage service,

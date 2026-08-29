@@ -2,10 +2,10 @@
 
 package installer
 
-// The LND TLS certificate watch. lnd.conf sets tlsautorefresh,
-// which lets LND regenerate its own certificate at ANY startup
-// whose parameters changed or whose certificate nears expiry —
-// a crash restart, a reboot, or a typed configuration change.
+// The LND TLS certificate watch. At startup, LND replaces an
+// expired certificate; tlsautorefresh also replaces one whose
+// configured SAN inputs changed. That can happen on a crash
+// restart, reboot, or typed configuration change.
 // None of those moments is an operation the TUI
 // requested, so no operation can refresh the TUI's staged
 // copy of the certificate; without a watcher, the copy goes

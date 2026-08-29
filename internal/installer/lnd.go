@@ -127,11 +127,12 @@ debuglevel=info
 %s
 %s
 
-# Let LND own its TLS cert lifecycle. tlsautorefresh
-# regenerates the cert when its parameters change
-# (e.g. tlsextraip is added during a P2P upgrade) or
-# when it's near expiry. tlsdisableautofill keeps the
-# cert deterministic — it contains only what we set
+# Let LND own its TLS cert lifecycle. At startup, LND
+# replaces an expired cert; tlsautorefresh also replaces
+# it when configured SAN inputs change (e.g. tlsextraip is
+# added during a P2P upgrade). It does not renew an
+# unchanged cert before expiry. tlsdisableautofill keeps
+# the cert deterministic — it contains only what we set
 # explicitly here, not autodetected interface IPs.
 # This is the same pattern used by Raspiblitz.
 tlsautorefresh=1
@@ -168,11 +169,30 @@ tor.control=127.0.0.1:9051
 tor.targetipaddress=127.0.0.1
 tor.v3=true
 tor.streamisolation=true
+# Pin the durable dynamic P2P onion identity to LND's
+# existing derived path. Keep the key plaintext under the
+# lnd:lnd 0750 directory, key mode 0600, and UMask 0077:
+# wallet-seed encryption adds little protection on this
+# auto-unlocked appliance and couples recovery to the
+# matching wallet keyring.
+tor.privatekeypath=/var/lib/lnd/v3_onion_private_key
+tor.encryptkey=false
+# Tor-only policy is explicit rather than inherited from
+# an upstream default: never bypass the SOCKS proxy for a
+# clearnet target.
+tor.skip-proxy-for-clearnet-targets=false
 
 [protocol]
 # Taproot channels: smaller, cheaper cooperative closes
 # with better on-chain privacy (MuSig2 key spend).
 protocol.simple-taproot-chans=true
+# Keep onion-message forwarding available in the background.
+# This is distinct from Tor onion-service routing.
+protocol.no-onion-messages=false
+# LND requires RBF cooperative close support whenever final
+# Taproot channels are enabled. Keep that dependency explicit;
+# VPN's operator-driven fee-bump workflow remains deferred.
+protocol.rbf-coop-close=true
 # Accept channels larger than 0.16 BTC.
 protocol.wumbo-channels=true
 # Channels referenced by alias instead of on-chain UTXO
@@ -186,6 +206,22 @@ db.bolt.auto-compact=true
 db.bolt.auto-compact-min-age=168h
 
 [healthcheck]
+# Keep LND's chain-backend check at its upstream defaults.
+# Three attempts can stop LND after roughly 4-6.5 minutes.
+# A failed check currently requests graceful exit status 0,
+# which Restart=on-failure does not restart. Re-evaluate the
+# budget and upstream issue 5625 / PR 10944 on each upgrade.
+# Keep TLS checking disabled explicitly. It only detects an
+# already-expired cert and requests the same graceful stop;
+# startup, not this check, performs certificate replacement.
+healthcheck.tls.attempts=0
+# Reconnect LND's controller and recreate the same dynamic
+# onion after Tor restarts. Ten attempts retain the upstream
+# cadence while allowing roughly 9-11 minutes for recovery.
+healthcheck.torconnection.interval=1m
+healthcheck.torconnection.timeout=5s
+healthcheck.torconnection.backoff=1m
+healthcheck.torconnection.attempts=10
 # Graceful shutdown if disk space falls below 5%%. On a
 # 90GB SSD this triggers at ~4.5GB free — enough headroom
 # for bolt compaction while avoiding false shutdowns.
@@ -306,9 +342,9 @@ func verifyCertificateDNSName(certPEM []byte, name string) error {
 	return fmt.Errorf("no certificate PEM block found")
 }
 
-// verifyLNDTLSIPSAN waits for tlsautorefresh to replace LND's certificate
-// after the hybrid-P2P tlsextraip change and proves that the exact public IP
-// is present before the helper stages the certificate or publishes the mode.
+// verifyLNDTLSIPSAN waits for startup-time tlsautorefresh to replace LND's
+// certificate after the hybrid-P2P tlsextraip change and proves that the exact
+// public IP is present before the helper stages it or publishes the mode.
 func verifyLNDTLSIPSAN(publicIPv4 string) error {
 	var lastErr error
 	for i := 0; i < 60; i++ {

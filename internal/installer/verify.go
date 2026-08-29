@@ -86,9 +86,9 @@ var bitcoinCoreSigners = []struct {
 // lndSigner is the trusted LND release signer.
 // Source: github.com/lightningnetwork/lnd/tree/master/scripts/keys
 // Cross-check: roasbeef.asc at the listed URL. Verified against
-// LND v0.20.0-beta manifest signature on a live install (June 4
-// 2026). Primary-key fingerprint — the signing subkey (2962...)
-// is owned by this primary.
+// the LND v0.21.2-beta manifest signature during release intake
+// (August 28, 2026). Primary-key fingerprint — the signing
+// subkey (2962...) is owned by this primary.
 var lndSigner = struct {
 	name        string
 	fingerprint string
