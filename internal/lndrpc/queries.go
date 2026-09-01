@@ -47,7 +47,7 @@ type Channel struct {
 	Private        bool
 	Initiator      bool
 	PeerAlias      string
-	CommitmentType string // "SIMPLE_TAPROOT", "ANCHORS", etc.
+	CommitmentType string // "TAPROOT", "ANCHORS", etc.
 }
 
 type PendingChannelInfo struct {
@@ -488,39 +488,16 @@ func (c *Client) OpenChannel(pubkey string, localAmount int64, private bool, tap
 	if err != nil {
 		return nil, fmt.Errorf("invalid pubkey: %w", err)
 	}
+	req, err := buildOpenChannelRequest(
+		pubkeyBytes, localAmount, private, taproot, outpoints,
+		fundMax, satPerVbyte,
+	)
+	if err != nil {
+		return nil, err
+	}
 
 	ctx, cancel := c.callCtx(120 * time.Second)
 	defer cancel()
-
-	req := &lnrpc.OpenChannelRequest{
-		NodePubkey:       pubkeyBytes,
-		Private:          private,
-		MinConfs:         0,
-		SpendUnconfirmed: true,
-		ScidAlias:        private,
-		FundMax:          fundMax,
-	}
-	if !fundMax {
-		req.LocalFundingAmount = localAmount
-	}
-	if taproot {
-		req.CommitmentType = lnrpc.CommitmentType_SIMPLE_TAPROOT
-	}
-	if satPerVbyte > 0 {
-		req.SatPerVbyte = satPerVbyte
-	}
-
-	// Coin control: restrict inputs to the selected UTXOs. A
-	// malformed outpoint aborts the whole operation — silently
-	// skipping one would widen coin selection past what the
-	// operator chose.
-	for _, op := range outpoints {
-		outPoint, err := parseOutpoint(op)
-		if err != nil {
-			return nil, err
-		}
-		req.Outpoints = append(req.Outpoints, outPoint)
-	}
 
 	resp, err := rpc.OpenChannelSync(ctx, req)
 	if err != nil {
@@ -538,6 +515,46 @@ func (c *Client) OpenChannel(pubkey string, localAmount int64, private bool, tap
 		txid = fmt.Sprintf("%x", reversed)
 	}
 	return &ChannelOpenResult{FundingTxID: txid}, nil
+}
+
+func buildOpenChannelRequest(
+	pubkeyBytes []byte, localAmount int64, private, taproot bool,
+	outpoints []string, fundMax bool, satPerVbyte uint64,
+) (*lnrpc.OpenChannelRequest, error) {
+	if taproot && !private {
+		return nil, fmt.Errorf("taproot channels must be private")
+	}
+
+	req := &lnrpc.OpenChannelRequest{
+		NodePubkey:       pubkeyBytes,
+		Private:          private,
+		MinConfs:         0,
+		SpendUnconfirmed: true,
+		ScidAlias:        private,
+		FundMax:          fundMax,
+	}
+	if !fundMax {
+		req.LocalFundingAmount = localAmount
+	}
+	if taproot {
+		req.CommitmentType = lnrpc.CommitmentType_TAPROOT
+	}
+	if satPerVbyte > 0 {
+		req.SatPerVbyte = satPerVbyte
+	}
+
+	// Coin control: restrict inputs to the selected UTXOs. A
+	// malformed outpoint aborts the whole operation — silently
+	// skipping one would widen coin selection past what the
+	// operator chose.
+	for _, op := range outpoints {
+		outPoint, err := parseOutpoint(op)
+		if err != nil {
+			return nil, err
+		}
+		req.Outpoints = append(req.Outpoints, outPoint)
+	}
+	return req, nil
 }
 
 // ── Internal helpers ─────────────────────────────────────

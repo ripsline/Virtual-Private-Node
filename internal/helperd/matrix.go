@@ -64,9 +64,9 @@ var freshnessMatrix = map[string][]string{
 	helper.VerbSyncthingInstall: {
 		paths.StateSyncthingAPIKey,
 	},
-	// An lnd start or restart can regenerate the TLS
-	// certificate (tlsautorefresh detects parameter changes and
-	// approaching expiry at startup), so the staged copy must
+	// An lnd start or restart can replace an expired TLS
+	// certificate; tlsautorefresh also detects configured SAN
+	// changes at startup, so the staged copy must
 	// follow. CONDITIONAL: the handler applies this entry only
 	// when the unit acted on is lnd and the action is not stop
 	// — no other unit changes a staged fact.

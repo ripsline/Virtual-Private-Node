@@ -112,7 +112,7 @@ func fetchStatus(
 					s.lndAlias = lndInfo.Alias
 					s.lndURIs = lndInfo.URIs
 					// LND reports Version as e.g.
-					// "0.20.0-beta commit=v0.20.0-beta".
+					// "0.21.2-beta commit=v0.21.2-beta".
 					// Strip the commit=... suffix so
 					// the user-facing display shows just
 					// the semver. Any downstream code

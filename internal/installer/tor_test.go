@@ -3,6 +3,7 @@
 package installer
 
 import (
+	"errors"
 	"os"
 	"reflect"
 	"strings"
@@ -170,7 +171,10 @@ func withTorAddonTestDeps(t *testing.T) {
 	oldReadConfig := readTorConfigForAddon
 	oldReadOnion := readSyncthingOnionForAddon
 	oldSleep := sleepForTorAddon
+	oldValidate := validateTorConfigForAddon
+	oldWrite := writeTorConfigForAddon
 	oldRun := runTorServiceAction
+	oldReadUFWStatus := readUFWStatusForFeature
 	t.Cleanup(func() {
 		torBinaryPresentForAddon = oldPresent
 		torServiceEnabledForAddon = oldEnabled
@@ -178,8 +182,47 @@ func withTorAddonTestDeps(t *testing.T) {
 		readTorConfigForAddon = oldReadConfig
 		readSyncthingOnionForAddon = oldReadOnion
 		sleepForTorAddon = oldSleep
+		validateTorConfigForAddon = oldValidate
+		writeTorConfigForAddon = oldWrite
 		runTorServiceAction = oldRun
+		readUFWStatusForFeature = oldReadUFWStatus
 	})
+}
+
+func TestSyncthingPrerequisitesValidateCompleteProposedTorConfig(t *testing.T) {
+	withTorAddonTestDeps(t)
+	cfg := config.Default()
+	torBinaryPresentForAddon = func() bool { return true }
+	torServiceEnabledForAddon = func() bool { return true }
+	torServiceActiveForAddon = func() bool { return true }
+	readUFWStatusForFeature = func() (string, error) {
+		return "Status: active\n", nil
+	}
+	readTorConfigForAddon = func(string) ([]byte, error) {
+		return []byte(mustBuildTorConfig(t, cfg)), nil
+	}
+
+	validated := ""
+	validateTorConfigForAddon = func(content []byte) error {
+		validated = string(content)
+		return nil
+	}
+	if err := VerifySyncthingInstallPrerequisites(cfg); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(validated,
+		"HiddenServiceDir /var/lib/tor/syncthing/") {
+		t.Fatalf("preflight did not validate proposed Syncthing torrc:\n%s",
+			validated)
+	}
+
+	validateTorConfigForAddon = func([]byte) error {
+		return errors.New("invalid proposed config")
+	}
+	if err := VerifySyncthingInstallPrerequisites(cfg); err == nil ||
+		!strings.Contains(err.Error(), "validate proposed Syncthing") {
+		t.Fatalf("invalid proposed torrc error=%v", err)
+	}
 }
 
 func TestSyncthingTorPrerequisiteRequiresExpectedBaseState(t *testing.T) {
@@ -213,23 +256,185 @@ func TestSyncthingTorPrerequisiteRequiresExpectedBaseState(t *testing.T) {
 	}
 }
 
-func TestSyncthingTorRestartNeverEnablesService(t *testing.T) {
+func setSyncthingTorTransactionDeps(
+	t *testing.T, cfg *config.AppConfig, current *[]byte,
+) {
+	t.Helper()
 	withTorAddonTestDeps(t)
+	baseCfg := *cfg
+	baseCfg.SyncthingEnabled = false
+	*current = []byte(mustBuildTorConfig(t, &baseCfg))
+	torBinaryPresentForAddon = func() bool { return true }
+	torServiceEnabledForAddon = func() bool { return true }
+	torServiceActiveForAddon = func() bool { return true }
+	readTorConfigForAddon = func(string) ([]byte, error) {
+		return append([]byte(nil), (*current)...), nil
+	}
+	readSyncthingOnionForAddon = func(string) ([]byte, error) {
+		return []byte(strings.Repeat("a", 56) + ".onion\n"), nil
+	}
+	sleepForTorAddon = func(time.Duration) {}
+	validateTorConfigForAddon = func([]byte) error { return nil }
+}
+
+func TestSyncthingTorConfigValidatesWritesAndReloads(t *testing.T) {
+	cfg := config.Default()
+	cfg.SyncthingEnabled = true
+	var current []byte
+	setSyncthingTorTransactionDeps(t, cfg, &current)
+
+	var validated [][]byte
+	validateTorConfigForAddon = func(content []byte) error {
+		validated = append(validated, append([]byte(nil), content...))
+		return nil
+	}
+	var writes [][]byte
+	writeTorConfigForAddon = func(content []byte) error {
+		current = append([]byte(nil), content...)
+		writes = append(writes, append([]byte(nil), content...))
+		return nil
+	}
 	var actions []string
 	runTorServiceAction = func(action string) error {
 		actions = append(actions, action)
 		return nil
 	}
-	torServiceActiveForAddon = func() bool { return true }
-	readSyncthingOnionForAddon = func(string) ([]byte, error) {
-		return []byte(strings.Repeat("a", 56) + ".onion\n"), nil
-	}
-	sleepForTorAddon = func(time.Duration) {}
-	if err := restartTorForSyncthing(); err != nil {
+
+	if err := configureAndReloadTorForSyncthing(cfg); err != nil {
 		t.Fatal(err)
 	}
-	if want := []string{"restart"}; !reflect.DeepEqual(actions, want) {
+	wantConfig := []byte(mustBuildTorConfig(t, cfg))
+	if len(validated) != 1 || !reflect.DeepEqual(validated[0], wantConfig) {
+		t.Fatalf("validated configs=%q want proposed config", validated)
+	}
+	if len(writes) != 1 || !reflect.DeepEqual(writes[0], wantConfig) {
+		t.Fatalf("writes=%q want proposed config", writes)
+	}
+	if want := []string{"reload"}; !reflect.DeepEqual(actions, want) {
 		t.Fatalf("Tor actions=%v want=%v", actions, want)
+	}
+}
+
+func TestSyncthingTorConfigValidationFailureDoesNotMutate(t *testing.T) {
+	cfg := config.Default()
+	cfg.SyncthingEnabled = true
+	var current []byte
+	setSyncthingTorTransactionDeps(t, cfg, &current)
+	original := append([]byte(nil), current...)
+
+	validateTorConfigForAddon = func([]byte) error {
+		return errors.New("invalid config")
+	}
+	writes := 0
+	writeTorConfigForAddon = func([]byte) error {
+		writes++
+		return nil
+	}
+	actions := 0
+	runTorServiceAction = func(string) error {
+		actions++
+		return nil
+	}
+
+	if err := configureAndReloadTorForSyncthing(cfg); err == nil {
+		t.Fatal("invalid Tor configuration accepted")
+	}
+	if writes != 0 || actions != 0 || !reflect.DeepEqual(current, original) {
+		t.Fatalf("validation failure mutated state: writes=%d actions=%d",
+			writes, actions)
+	}
+}
+
+func TestSyncthingTorReloadFailureRollsBack(t *testing.T) {
+	cfg := config.Default()
+	cfg.SyncthingEnabled = true
+	var current []byte
+	setSyncthingTorTransactionDeps(t, cfg, &current)
+	original := append([]byte(nil), current...)
+
+	var writes [][]byte
+	writeTorConfigForAddon = func(content []byte) error {
+		current = append([]byte(nil), content...)
+		writes = append(writes, append([]byte(nil), content...))
+		return nil
+	}
+	var actions []string
+	runTorServiceAction = func(action string) error {
+		actions = append(actions, action)
+		if len(actions) == 1 {
+			return errors.New("reload failed")
+		}
+		return nil
+	}
+
+	err := configureAndReloadTorForSyncthing(cfg)
+	if err == nil || !strings.Contains(err.Error(), "previous configuration restored") {
+		t.Fatalf("reload failure=%v, want successful rollback", err)
+	}
+	if len(writes) != 2 || !reflect.DeepEqual(current, original) {
+		t.Fatalf("writes=%d current config was not restored", len(writes))
+	}
+	if want := []string{"reload", "reload"}; !reflect.DeepEqual(actions, want) {
+		t.Fatalf("Tor actions=%v want=%v", actions, want)
+	}
+}
+
+func TestSyncthingTorOnionFailureRollsBack(t *testing.T) {
+	cfg := config.Default()
+	cfg.SyncthingEnabled = true
+	var current []byte
+	setSyncthingTorTransactionDeps(t, cfg, &current)
+	original := append([]byte(nil), current...)
+
+	writes := 0
+	writeTorConfigForAddon = func(content []byte) error {
+		current = append([]byte(nil), content...)
+		writes++
+		return nil
+	}
+	var actions []string
+	runTorServiceAction = func(action string) error {
+		actions = append(actions, action)
+		return nil
+	}
+	readSyncthingOnionForAddon = func(string) ([]byte, error) {
+		return nil, os.ErrNotExist
+	}
+
+	err := configureAndReloadTorForSyncthing(cfg)
+	if err == nil || !strings.Contains(err.Error(), "previous configuration restored") {
+		t.Fatalf("onion failure=%v, want successful rollback", err)
+	}
+	if writes != 2 || !reflect.DeepEqual(current, original) {
+		t.Fatalf("writes=%d current config was not restored", writes)
+	}
+	if want := []string{"reload", "reload"}; !reflect.DeepEqual(actions, want) {
+		t.Fatalf("Tor actions=%v want=%v", actions, want)
+	}
+}
+
+func TestSyncthingTorRollbackFailureIsSurfaced(t *testing.T) {
+	cfg := config.Default()
+	cfg.SyncthingEnabled = true
+	var current []byte
+	setSyncthingTorTransactionDeps(t, cfg, &current)
+
+	writes := 0
+	writeTorConfigForAddon = func(content []byte) error {
+		writes++
+		if writes == 2 {
+			return errors.New("restore failed")
+		}
+		current = append([]byte(nil), content...)
+		return nil
+	}
+	runTorServiceAction = func(string) error {
+		return errors.New("reload failed")
+	}
+
+	err := configureAndReloadTorForSyncthing(cfg)
+	if err == nil || !strings.Contains(err.Error(), "rollback failed") {
+		t.Fatalf("rollback failure not surfaced: %v", err)
 	}
 }
 

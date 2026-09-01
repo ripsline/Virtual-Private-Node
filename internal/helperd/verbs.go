@@ -164,9 +164,9 @@ func verbServiceAction(_ *verbCtx, params json.RawMessage) (any, error) {
 					"-u %s", p.Unit, p.Action, p.Unit)
 		}
 	}
-	// LND rewrites its TLS certificate during startup when its
-	// parameters changed or the certificate nears expiry
-	// (tlsautorefresh in lnd.conf), so a start or restart of
+	// LND replaces an expired TLS certificate during startup;
+	// tlsautorefresh also replaces it when configured SAN inputs
+	// changed. A start or restart of
 	// the lnd unit can invalidate the staged certificate copy
 	// the TUI reads. Re-stage it so the board keeps
 	// matching the certificate LND actually serves. The

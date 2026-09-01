@@ -18,7 +18,7 @@ import (
 
 const (
 	bitcoinVersion   = "29.3"
-	lndVersion       = "0.20.0-beta"
+	lndVersion       = "0.21.2-beta"
 	syncthingVersion = "2.1.1"
 	bitcoinUser      = "bitcoin"
 	lndUser          = "lnd"
@@ -743,10 +743,11 @@ func buildInstallSteps(
 		{Key: "lnd.tls-san", Kind: StepGate,
 			Name: "Verifying LND TLS onion certificate",
 			Fn:   verifyLNDTLSOnionSAN},
-		// LND owns its TLS certificate lifecycle
-		// (tlsautorefresh), so the cert can be rewritten by a
-		// startup no TUI operation requested. This watch
-		// re-stages the TUI's copy within seconds of any
+		// LND owns its TLS certificate lifecycle. At startup it
+		// replaces an expired certificate, and tlsautorefresh
+		// also replaces one whose configured SAN inputs changed.
+		// No TUI operation necessarily requested that startup.
+		// This watch re-stages the TUI's copy within seconds of any
 		// rewrite. After lnd.start so a migration pass arms it
 		// on the certificate LND is actually serving.
 		{Key: "lnd.certwatch",
@@ -803,8 +804,8 @@ func UpgradeP2PToHybridSteps(
 	// the TLS cert here. LND has tlsautorefresh=1 in
 	// its config, so when we rewrite lnd.conf with the
 	// new tlsextraip line and restart LND, LND detects
-	// the parameter change and regenerates the cert
-	// itself, atomically, as part of its startup. This
+	// the parameter change and replaces the cert and key
+	// itself as part of startup. This
 	// avoids the race where our gRPC client tries to
 	// read the cert during the window between manual
 	// deletion and LND's regeneration.
@@ -901,17 +902,10 @@ func SyncthingInstallSteps(
 			}},
 		{Name: "Adding Syncthing firewall rule",
 			Fn: allowSyncthingFirewallRule},
-		{Name: "Rebuilding Tor config",
+		{Name: "Reloading Tor configuration",
 			Fn: func() error {
-				baseCfg := *cfg
-				baseCfg.SyncthingEnabled = false
-				if err := verifySyncthingTorPrerequisite(
-					&baseCfg); err != nil {
-					return err
-				}
-				return RebuildTorConfig(cfg)
+				return configureAndReloadTorForSyncthing(cfg)
 			}},
-		{Name: "Restarting Tor", Fn: restartTorForSyncthing},
 		{Name: "Starting Syncthing", Fn: startSyncthing},
 		{Name: "Registering backup folder",
 			Fn: registerBackupFolder},

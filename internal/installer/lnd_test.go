@@ -31,6 +31,24 @@ func mustBuildLNDConfig(
 	return content
 }
 
+func activeLNDConfigValues(content string) map[string][]string {
+	values := make(map[string][]string)
+	for _, line := range strings.Split(content, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, "#") ||
+			strings.HasPrefix(line, "[") {
+			continue
+		}
+		key, value, ok := strings.Cut(line, "=")
+		if !ok {
+			continue
+		}
+		key = strings.TrimSpace(key)
+		values[key] = append(values[key], strings.TrimSpace(value))
+	}
+	return values
+}
+
 // The generated lnd.conf binds by the literal loopback
 // addresses defined once in paths — the same constants every
 // client dials — and carries no host name anywhere. On this
@@ -169,6 +187,33 @@ func TestBuildLNDConfigUsesIndependentBitcoindRPCIdentity(t *testing.T) {
 	}
 }
 
+func TestBuildLNDConfigPinsTorAndHealthPolicy(t *testing.T) {
+	content := mustBuildLNDConfig(
+		t, config.Default(), "", "", "lnd", "secret")
+	values := activeLNDConfigValues(content)
+	want := map[string]string{
+		"lnddir":                              "/var/lib/lnd",
+		"tor.privatekeypath":                  "/var/lib/lnd/v3_onion_private_key",
+		"tor.encryptkey":                      "false",
+		"tor.skip-proxy-for-clearnet-targets": "false",
+		"protocol.simple-taproot-chans":       "true",
+		"protocol.no-onion-messages":          "false",
+		"protocol.rbf-coop-close":             "true",
+		"healthcheck.tls.attempts":            "0",
+		"healthcheck.torconnection.interval":  "1m",
+		"healthcheck.torconnection.timeout":   "5s",
+		"healthcheck.torconnection.backoff":   "1m",
+		"healthcheck.torconnection.attempts":  "10",
+	}
+	for key, wantValue := range want {
+		got := values[key]
+		if len(got) != 1 || got[0] != wantValue {
+			t.Errorf("config values for %q = %q, want exactly [%q]",
+				key, got, wantValue)
+		}
+	}
+}
+
 func TestBuildLNDConfigNetworkProfiles(t *testing.T) {
 	tests := []struct {
 		network string
@@ -264,6 +309,8 @@ func TestLNDServiceUnit(t *testing.T) {
 
 	for _, unit := range []string{plain, unlock} {
 		for _, want := range []string{
+			"After=bitcoind.service tor.service",
+			"Wants=bitcoind.service",
 			"Type=notify",
 			"User=lnd",
 			"Group=lnd",
@@ -285,6 +332,13 @@ func TestLNDServiceUnit(t *testing.T) {
 		}
 		if strings.Contains(unit, backupGroup) {
 			t.Error("normal lnd unit has channel-backup export access")
+		}
+		for _, forbidden := range []string{
+			"Wants=tor.service", "Restart=always", "Restart=on-success",
+		} {
+			if strings.Contains(unit, forbidden) {
+				t.Errorf("unit unexpectedly contains %q", forbidden)
+			}
 		}
 	}
 

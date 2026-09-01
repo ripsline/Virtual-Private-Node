@@ -80,11 +80,41 @@ func RebuildTorConfig(cfg *config.AppConfig) error {
 	if err != nil {
 		return err
 	}
-	if err := system.SudoWriteFile(
-		paths.Torrc, []byte(content), 0640); err != nil {
+	return writeTorConfig([]byte(content))
+}
+
+func writeTorConfig(content []byte) error {
+	if err := system.SudoWriteFile(paths.Torrc, content, 0640); err != nil {
 		return err
 	}
 	return system.SudoRun("chown", "root:debian-tor", paths.Torrc)
+}
+
+func validateTorConfig(content []byte) error {
+	tmp, err := os.CreateTemp("", "vpn-torrc-")
+	if err != nil {
+		return fmt.Errorf("create Tor validation file: %w", err)
+	}
+	tmpPath := tmp.Name()
+	defer os.Remove(tmpPath)
+
+	if _, err := tmp.Write(content); err != nil {
+		tmp.Close()
+		return fmt.Errorf("write Tor validation file: %w", err)
+	}
+	if err := tmp.Close(); err != nil {
+		return fmt.Errorf("close Tor validation file: %w", err)
+	}
+	if err := system.SudoRun(
+		"tor",
+		"--defaults-torrc", "/usr/share/tor/tor-service-defaults-torrc",
+		"-f", tmpPath,
+		"--RunAsDaemon", "0",
+		"--verify-config",
+	); err != nil {
+		return fmt.Errorf("validate Tor configuration: %w", err)
+	}
+	return nil
 }
 
 var (
@@ -102,6 +132,8 @@ var (
 	readTorConfigForAddon      = os.ReadFile
 	readSyncthingOnionForAddon = os.ReadFile
 	sleepForTorAddon           = time.Sleep
+	validateTorConfigForAddon  = validateTorConfig
+	writeTorConfigForAddon     = writeTorConfig
 	runTorServiceAction        = func(action string) error {
 		return system.SudoRun("systemctl", action, "tor")
 	}
@@ -160,7 +192,23 @@ func VerifySyncthingInstallPrerequisites(cfg *config.AppConfig) error {
 	if err := requireActiveUFW(); err != nil {
 		return err
 	}
-	return verifySyncthingTorPrerequisite(cfg)
+	if err := verifySyncthingTorPrerequisite(cfg); err != nil {
+		return err
+	}
+
+	// Validate the complete proposed add-on configuration before any
+	// Syncthing installation step mutates the host. The transaction below
+	// validates it again immediately before the authoritative write.
+	proposedCfg := *cfg
+	proposedCfg.SyncthingEnabled = true
+	proposed, err := BuildTorConfig(&proposedCfg)
+	if err != nil {
+		return fmt.Errorf("build proposed Syncthing Tor configuration: %w", err)
+	}
+	if err := validateTorConfigForAddon([]byte(proposed)); err != nil {
+		return fmt.Errorf("validate proposed Syncthing Tor configuration: %w", err)
+	}
+	return nil
 }
 
 func validV3OnionHostname(hostname string) bool {
@@ -195,19 +243,79 @@ func waitForSyncthingOnion() error {
 		sleepForTorAddon(time.Second)
 	}
 	return fmt.Errorf(
-		"Syncthing onion hostname was not created after Tor restart: %w",
+		"Syncthing onion hostname was not created after Tor reload: %w",
 		lastErr)
 }
 
-// restartTorForSyncthing applies the already-written canonical configuration,
-// proves Tor returned active, and waits for the new hidden-service identity.
-// It deliberately does not enable Tor.
-func restartTorForSyncthing() error {
-	if err := restartTor(); err != nil {
-		return err
+func rollbackSyncthingTorConfig(previous []byte) error {
+	if err := writeTorConfigForAddon(previous); err != nil {
+		return fmt.Errorf("restore previous Tor configuration: %w", err)
+	}
+	if err := runTorServiceAction("reload"); err != nil {
+		return fmt.Errorf("reload restored Tor configuration: %w", err)
 	}
 	if !torServiceActiveForAddon() {
-		return fmt.Errorf("Tor is not active after Syncthing configuration restart")
+		return fmt.Errorf("Tor is not active after configuration rollback")
 	}
-	return waitForSyncthingOnion()
+	return nil
+}
+
+func syncthingTorFailure(previous []byte, cause error) error {
+	if rollbackErr := rollbackSyncthingTorConfig(previous); rollbackErr != nil {
+		return fmt.Errorf("apply Syncthing Tor configuration: %w; rollback failed: %v",
+			cause, rollbackErr)
+	}
+	return fmt.Errorf(
+		"apply Syncthing Tor configuration: %w; previous configuration restored",
+		cause)
+}
+
+// configureAndReloadTorForSyncthing validates the complete proposed torrc,
+// writes it atomically, and applies it with a SIGHUP-backed systemd reload.
+// Reload preserves LND's controller connection and dynamic onion registration.
+// Any post-write failure restores and reloads the exact prior base config.
+// This add-on operation deliberately does not enable or restart Tor.
+func configureAndReloadTorForSyncthing(cfg *config.AppConfig) error {
+	baseCfg := *cfg
+	baseCfg.SyncthingEnabled = false
+	if err := verifySyncthingTorPrerequisite(&baseCfg); err != nil {
+		return err
+	}
+
+	previous, err := readTorConfigForAddon(paths.Torrc)
+	if err != nil {
+		return fmt.Errorf("read Tor configuration for rollback: %w", err)
+	}
+	expectedBase, err := BuildTorConfig(&baseCfg)
+	if err != nil {
+		return fmt.Errorf("build expected base Tor configuration: %w", err)
+	}
+	if !bytes.Equal(previous, []byte(expectedBase)) {
+		return fmt.Errorf(
+			"Tor configuration changed during prerequisite validation — " +
+				"refusing Syncthing installation")
+	}
+
+	proposed, err := BuildTorConfig(cfg)
+	if err != nil {
+		return fmt.Errorf("build Syncthing Tor configuration: %w", err)
+	}
+	proposedBytes := []byte(proposed)
+	if err := validateTorConfigForAddon(proposedBytes); err != nil {
+		return err
+	}
+	if err := writeTorConfigForAddon(proposedBytes); err != nil {
+		return fmt.Errorf("write Syncthing Tor configuration: %w", err)
+	}
+	if err := runTorServiceAction("reload"); err != nil {
+		return syncthingTorFailure(previous, err)
+	}
+	if !torServiceActiveForAddon() {
+		return syncthingTorFailure(previous,
+			fmt.Errorf("Tor is not active after configuration reload"))
+	}
+	if err := waitForSyncthingOnion(); err != nil {
+		return syncthingTorFailure(previous, err)
+	}
+	return nil
 }

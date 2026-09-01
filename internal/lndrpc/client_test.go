@@ -29,7 +29,7 @@ func TestNodeInfoFields(t *testing.T) {
 	info := &NodeInfo{
 		Pubkey: "02abc123", Alias: "mynode", Channels: 5,
 		Peers: 10, BlockHeight: 850000, SyncedChain: true,
-		SyncedGraph: true, Version: "0.20.0-beta",
+		SyncedGraph: true, Version: "0.21.2-beta",
 	}
 	if info.Channels != 5 {
 		t.Errorf("Channels: got %d", info.Channels)
@@ -184,6 +184,57 @@ func TestParseOutpoint(t *testing.T) {
 		if _, err := parseOutpoint(s); err == nil {
 			t.Errorf("accepted %q", s)
 		}
+	}
+}
+
+func TestBuildOpenChannelRequestUsesFinalTaproot(t *testing.T) {
+	txid := strings.Repeat("ab", 32)
+	req, err := buildOpenChannelRequest(
+		[]byte{2, 3, 4}, 250000, true, true,
+		[]string{txid + ":7"}, false, 12,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if req.CommitmentType != lnrpc.CommitmentType_TAPROOT {
+		t.Fatalf("commitment type=%v want=%v",
+			req.CommitmentType, lnrpc.CommitmentType_TAPROOT)
+	}
+	if req.LocalFundingAmount != 250000 || !req.Private ||
+		!req.ScidAlias || req.FundMax || req.SatPerVbyte != 12 {
+		t.Fatalf("unexpected open request: %+v", req)
+	}
+	if len(req.Outpoints) != 1 ||
+		req.Outpoints[0].TxidStr != txid ||
+		req.Outpoints[0].OutputIndex != 7 {
+		t.Fatalf("unexpected outpoints: %+v", req.Outpoints)
+	}
+}
+
+func TestBuildOpenChannelRequestDefaults(t *testing.T) {
+	req, err := buildOpenChannelRequest(
+		[]byte{2, 3, 4}, 250000, false, false,
+		nil, true, 0,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if req.CommitmentType != lnrpc.CommitmentType_UNKNOWN_COMMITMENT_TYPE {
+		t.Fatalf("commitment type=%v want default", req.CommitmentType)
+	}
+	if !req.FundMax || req.LocalFundingAmount != 0 {
+		t.Fatalf("fund-max request carries amount: %+v", req)
+	}
+}
+
+func TestBuildOpenChannelRequestRejectsPublicTaproot(t *testing.T) {
+	_, err := buildOpenChannelRequest(
+		[]byte{2, 3, 4}, 250000, false, true,
+		nil, false, 12,
+	)
+	if err == nil || !strings.Contains(err.Error(),
+		"taproot channels must be private") {
+		t.Fatalf("public Taproot request error=%v", err)
 	}
 }
 

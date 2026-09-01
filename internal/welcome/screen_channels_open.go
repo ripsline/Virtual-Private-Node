@@ -450,10 +450,19 @@ func (s *ChannelOpenScreen) handleToggleKey(
 	case "space":
 		switch s.toggleIdx {
 		case 0:
+			if s.private && s.taproot {
+				s.error = "Taproot channels must be private; select Legacy first"
+				return s, nil
+			}
 			s.private = !s.private
 		case 1:
+			if !s.taproot && !s.private {
+				s.error = "Taproot channels must be private; select Private first"
+				return s, nil
+			}
 			s.taproot = !s.taproot
 		}
+		s.error = ""
 		return s, nil
 	case "backspace":
 		return s, emitFocusParent
@@ -754,6 +763,11 @@ func (s *ChannelOpenScreen) clearForm() *ChannelOpenScreen {
 func (s *ChannelOpenScreen) submitOpenChannel() (
 	Screen, tea.Cmd,
 ) {
+	if s.taproot && !s.private {
+		s.error = "Taproot channels must be private"
+		return s, nil
+	}
+
 	// Validate peer confirmed
 	if !s.peerConfirmed {
 		s.error = "Select a peer first"
