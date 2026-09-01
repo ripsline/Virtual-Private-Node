@@ -981,12 +981,7 @@ func (s *OnChainHomeScreen) renderLabelPopup(
 
 func (s *OnChainHomeScreen) HelpBindings() []key.Binding {
 	if !s.ctx.walletExists() {
-		return []key.Binding{
-			kEnterCreateWallet,
-			kSidebar,
-			kBack,
-			kQuit,
-		}
+		return walletUnavailableHelpBindings(s.ctx)
 	}
 	if s.labelEditing {
 		return s.labelPopupBindings()

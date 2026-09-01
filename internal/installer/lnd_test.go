@@ -193,6 +193,8 @@ func TestBuildLNDConfigPinsTorAndHealthPolicy(t *testing.T) {
 	values := activeLNDConfigValues(content)
 	want := map[string]string{
 		"lnddir":                              "/var/lib/lnd",
+		"db.backend":                          "sqlite",
+		"db.use-native-sql":                   "true",
 		"tor.privatekeypath":                  "/var/lib/lnd/v3_onion_private_key",
 		"tor.encryptkey":                      "false",
 		"tor.skip-proxy-for-clearnet-targets": "false",
@@ -204,12 +206,22 @@ func TestBuildLNDConfigPinsTorAndHealthPolicy(t *testing.T) {
 		"healthcheck.torconnection.timeout":   "5s",
 		"healthcheck.torconnection.backoff":   "1m",
 		"healthcheck.torconnection.attempts":  "10",
+		"healthcheck.diskspace.diskrequired":  "0.10",
+		"healthcheck.diskspace.attempts":      "2",
+		"healthcheck.diskspace.interval":      "12h",
 	}
 	for key, wantValue := range want {
 		got := values[key]
 		if len(got) != 1 || got[0] != wantValue {
 			t.Errorf("config values for %q = %q, want exactly [%q]",
 				key, got, wantValue)
+		}
+	}
+	for _, forbidden := range []string{
+		"db.bolt.", "db.sqlite.", "skip-native-sql-migration",
+	} {
+		if strings.Contains(content, forbidden) {
+			t.Errorf("config contains unsupported database setting %q", forbidden)
 		}
 	}
 }

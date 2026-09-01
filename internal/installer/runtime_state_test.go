@@ -1,32 +1,56 @@
 package installer
 
 import (
-	"os"
-	"path/filepath"
+	"errors"
 	"testing"
+
+	"github.com/lightningnetwork/lnd/lnrpc"
 
 	"github.com/virtualprivatenode/vpn/internal/paths"
 )
 
-func TestWalletExistsAtUsesRegularFileOnly(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "wallet.db")
-	if exists, err := walletExistsAt(path); err != nil || exists {
-		t.Fatalf("missing wallet: exists=%v err=%v", exists, err)
+func TestWalletExistsFromState(t *testing.T) {
+	tests := []struct {
+		name   string
+		state  lnrpc.WalletState
+		exists bool
+		known  bool
+	}{
+		{"non-existing", lnrpc.WalletState_NON_EXISTING, false, true},
+		{"locked", lnrpc.WalletState_LOCKED, true, true},
+		{"unlocked", lnrpc.WalletState_UNLOCKED, true, true},
+		{"rpc active", lnrpc.WalletState_RPC_ACTIVE, true, true},
+		{"server active", lnrpc.WalletState_SERVER_ACTIVE, true, true},
+		{"waiting", lnrpc.WalletState_WAITING_TO_START, false, false},
+		{"unknown", lnrpc.WalletState(99), false, false},
 	}
-	if err := os.WriteFile(path, []byte("wallet"), 0o600); err != nil {
-		t.Fatal(err)
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			exists, err := walletExistsFromState(test.state, nil)
+			if test.known && err != nil {
+				t.Fatalf("known state returned an error: %v", err)
+			}
+			if !test.known && err == nil {
+				t.Fatal("unknown state reported a wallet fact")
+			}
+			if exists != test.exists {
+				t.Fatalf("exists=%v, want %v", exists, test.exists)
+			}
+		})
 	}
-	if exists, err := walletExistsAt(path); err != nil || !exists {
-		t.Fatalf("regular wallet: exists=%v err=%v", exists, err)
+
+	probeErr := errors.New("state RPC unavailable")
+	if exists, err := walletExistsFromState(
+		lnrpc.WalletState_NON_EXISTING, probeErr,
+	); err == nil || exists || !errors.Is(err, probeErr) {
+		t.Fatalf("RPC error: exists=%v err=%v", exists, err)
 	}
-	if err := os.Remove(path); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.Symlink("elsewhere", path); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := walletExistsAt(path); err == nil {
-		t.Fatal("symlink accepted as wallet state")
+}
+
+func TestWalletExistsRejectsUnknownProfileBeforeObservation(t *testing.T) {
+	if _, err := WalletExists("signet"); err == nil {
+		t.Fatal("raw signet profile reached live wallet observation")
 	}
 }
 

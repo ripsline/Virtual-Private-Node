@@ -43,15 +43,16 @@ var (
 	kUpDownChannels   = bind("↑↓", "channels", "up", "down")
 
 	// Enter variants
-	kEnterOpen         = bind("enter", "open", "enter")
-	kEnterClose        = bind("enter", "close", "enter")
-	kEnterDetails      = bind("enter", "details", "enter")
-	kEnterNext         = bind("enter", "next", "enter")
-	kEnterConfirm      = bind("enter", "confirm", "enter")
-	kEnterCreate       = bind("enter", "create", "enter")
-	kEnterRemove       = bind("enter", "remove", "enter")
-	kEnterToggle       = bind("enter", "toggle", "enter")
-	kEnterCreateWallet = bind("enter", "create wallet", "enter")
+	kEnterOpen            = bind("enter", "open", "enter")
+	kEnterClose           = bind("enter", "close", "enter")
+	kEnterDetails         = bind("enter", "details", "enter")
+	kEnterNext            = bind("enter", "next", "enter")
+	kEnterConfirm         = bind("enter", "confirm", "enter")
+	kEnterCreate          = bind("enter", "create", "enter")
+	kEnterRemove          = bind("enter", "remove", "enter")
+	kEnterToggle          = bind("enter", "toggle", "enter")
+	kEnterCreateWallet    = bind("enter", "create wallet", "enter")
+	kEnterRetryWalletRead = bind("enter", "retry wallet state", "enter")
 )
 
 // ── Button navigation helper ────────────────────────────
