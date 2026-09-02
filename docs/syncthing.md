@@ -2,8 +2,9 @@
 
 Syncthing automatically syncs your LND `channel.backup` file from
 your Virtual Private Node (Node) to your local device. If your Node
-dies, you can recover your channels with your 24-word seed phrase
-and this backup file.
+dies, your 24-word seed phrase and this file can recover settled channel
+funds through LND's emergency recovery procedure. Recovery asks reachable
+peers to force-close the channels; it does not restore them for continued use.
 
 Syncthing encrypts all connections using mutual TLS authentication.
 Only devices you explicitly approve can connect. The `channel.backup`
@@ -89,7 +90,7 @@ to accept a shared folder called `lnd-backup`.
 
 Your `channel.backup` file will sync automatically whenever:
 
-- Your LND channel state changes (open, close, update)
+- LND creates or updates the backup when it starts or a channel opens or closes
 - Your local device is online and connected
 
 The sync happens in seconds. You don't need to keep your computer
@@ -113,6 +114,8 @@ the System section.
 - The sync port (22000) rejects all unapproved devices immediately
 - The `channel.backup` file is encrypted by LND and useless
   without your 24-word seed phrase
+- The backup contains static recovery information, not current balances or
+  commitment state; restoring it closes channels and depends on reachable peers
 - The Node publishes only a completed copy through its own
   `/var/lib/vpn/exports` boundary; no temporary file is placed in
   the synchronized folder

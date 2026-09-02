@@ -281,6 +281,13 @@ func TestWalletAndVerificationReadsFailIndependently(t *testing.T) {
 	if !got.WalletExists {
 		t.Fatalf("live wallet state = %+v", got)
 	}
+	walletErr := errors.New("LND state RPC unavailable")
+	walletExists = func(string) (bool, error) {
+		return false, walletErr
+	}
+	if _, err := verbReadWalletState(&verbCtx{}, nil); !errors.Is(err, walletErr) {
+		t.Fatalf("unknown wallet fact was not preserved: %v", err)
+	}
 	if _, err := verbReadKeyVerificationState(
 		&verbCtx{}, nil); err == nil {
 		t.Fatal("unreadable verification marker reported a state")

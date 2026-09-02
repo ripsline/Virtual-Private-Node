@@ -517,12 +517,7 @@ func (s *ChannelsHomeScreen) View(
 
 func (s *ChannelsHomeScreen) HelpBindings() []key.Binding {
 	if !s.ctx.walletExists() {
-		return []key.Binding{
-			kEnterCreateWallet,
-			kSidebar,
-			kBack,
-			kQuit,
-		}
+		return walletUnavailableHelpBindings(s.ctx)
 	}
 	if s.zeroBalanceMsg {
 		return actionButtonBindings(

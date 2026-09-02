@@ -81,6 +81,14 @@ func (c *ScreenContext) walletKnown() bool {
 	return c.State != nil && c.State.WalletKnown
 }
 
+func walletUnavailableHelpBindings(c *ScreenContext) []key.Binding {
+	enter := kEnterCreateWallet
+	if !c.walletKnown() {
+		enter = kEnterRetryWalletRead
+	}
+	return []key.Binding{enter, kSidebar, kBack, kQuit}
+}
+
 // ── OnChainContext ───────────────────────────────────────
 // Shared on-chain state that the on-chain send screen
 // reads. Model owns the data and keeps it synced.

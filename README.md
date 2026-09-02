@@ -54,7 +54,8 @@ funds.
 ### Requirements
 
 - Fresh Debian 13 amd64 machine
-- 2 (v)CPU, 4+ GB RAM, 90+ GB SSD
+- 2 (v)CPU, 4+ GB RAM, 90+ GB total SSD. LND safety-stops at 10% free,
+  leaving about 81 GB of operational usage on a 90 GB filesystem.
 
 ### Privacy
 
@@ -232,11 +233,33 @@ later from **System → Services → LND → P2P Upgrade**:
 The upgrade is one-way — once your IP is published to the network
 gossip, it cannot be retracted.
 
+### LND Database and Recovery
+
+Fresh v0.7.0 installations use LND's local SQLite backend and native SQL
+stores. VPN does not migrate an existing bbolt node, and the database settings
+must not be changed after initialization. SQLite's WAL, checkpoint, locking,
+and durability behavior remains at the pinned LND release's defaults.
+
+LND checks disk space every 12 hours and makes two attempts before gracefully
+stopping when filesystem free space reaches 10%. Because
+`Restart=on-failure` does not restart that successful safety shutdown, free
+space and then start LND explicitly. VPN does not delete, recreate, or repair
+a database automatically.
+
+The seed and `channel.backup` are the supported routine disaster-recovery
+artifacts. An SCB does not restore live channels: it asks reachable peers to
+force-close so settled funds can be swept on-chain. VPN does not synchronize
+the SQLite databases or advertise a live database-copy procedure. See LND's
+[operational safety](https://github.com/lightningnetwork/lnd/blob/master/docs/safety.md)
+and [recovery](https://github.com/lightningnetwork/lnd/blob/master/docs/recovery.md)
+guides before attempting a restore or whole-node move.
+
 ### Syncthing Channel Backups
 
 Syncthing automatically syncs your LND `channel.backup` file to
-your local device. No cloud services. No trust. If your Node dies,
-recover your channels with your seed phrase and the backup file.
+your local device. No cloud services. No trust. If your Node dies, the
+seed phrase and this file can recover settled channel funds through LND's
+emergency channel-closure procedure.
 
 The sync connection is direct between your Node and your device
 over an encrypted channel. Syncthing uses mutual TLS authentication
@@ -373,7 +396,9 @@ For manual binary verification before installation, see
 | /var/lib/vpn/state/ | Root-written facts and credentials deliberately staged read-only for the TUI, including the Syncthing web password |
 | /var/lib/vpn/exports/lnd-backup/ | Read-only Syncthing export of the completed `channel.backup` |
 | /var/lib/bitcoin/ | Mainnet Core data at the root; testnet4 under `testnet4/`; public signet under `signet/` |
-| /var/lib/lnd/data/chain/bitcoin/{mainnet,testnet4,signet}/ | Profile-specific LND wallet, macaroon, and channel state; `signet/` is default public signet only |
+| /var/lib/lnd/data/chain/bitcoin/{mainnet,testnet4,signet}/ | Profile-specific wallet and macaroon state in `chain.sqlite`, plus credentials and `channel.backup`; `signet/` is default public signet only |
+| /var/lib/lnd/data/graph/{mainnet,testnet4,signet}/ | Profile-specific channel/graph KV state in `channel.sqlite` and native invoice, payment, and graph state in `lnd.sqlite` |
+| /var/lib/lnd/data/watchtower/bitcoin/{mainnet,testnet4,signet}/ | Profile-specific `watchtower.sqlite`; LND creates it even when the watchtower server is disabled |
 | /var/lib/syncthing/ | Syncthing's private data |
 | /var/log/vpn.log | Application log (install, verification, status) |
 

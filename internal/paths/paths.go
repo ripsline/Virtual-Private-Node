@@ -178,11 +178,6 @@ func LNDMacaroon(network string) string {
 	return fmt.Sprintf("/var/lib/lnd/data/chain/bitcoin/%s/admin.macaroon", network)
 }
 
-// LNDWalletDB returns LND's authoritative wallet database path for a network.
-func LNDWalletDB(network string) string {
-	return fmt.Sprintf("/var/lib/lnd/data/chain/bitcoin/%s/wallet.db", network)
-}
-
 // ChannelBackup returns the path to the channel backup for a given network.
 func ChannelBackup(network string) string {
 	return fmt.Sprintf("/var/lib/lnd/data/chain/bitcoin/%s/channel.backup", network)

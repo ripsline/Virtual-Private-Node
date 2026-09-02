@@ -33,7 +33,7 @@ import (
 //     the feature renders as unavailable with a logged reason,
 //     not a stale or default value. Staleness must surface as
 //     visible breakage.
-//   - nothing wallet-authoritative lives here. The seed, wallet.db,
+//   - nothing wallet-authoritative lives here. The seed, LND databases,
 //     and the auto-unlock password file are NOT board facts;
 //     the admin macaroon copy is a revocable credential the
 //     admin user needs to operate the node (it is the same

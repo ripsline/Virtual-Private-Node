@@ -1,34 +1,49 @@
 package installer
 
 import (
+	"errors"
 	"fmt"
-	"os"
+
+	"github.com/lightningnetwork/lnd/lnrpc"
 
 	"github.com/virtualprivatenode/vpn/internal/config"
-	"github.com/virtualprivatenode/vpn/internal/paths"
 )
 
-// WalletExists observes LND's authoritative wallet database rather than a
-// duplicated TUI-written boolean. A non-regular or symlinked object is an
-// error, not evidence that a wallet exists.
+// WalletExists asks LND's always-running State service whether its wallet has
+// been initialized. SQLite creates chain.sqlite before a wallet exists, so no
+// database-file path can answer this question reliably.
 func WalletExists(network string) (bool, error) {
-	profile, err := config.NetworkConfigFromName(network)
+	_, err := config.NetworkConfigFromName(network)
 	if err != nil {
 		return false, err
 	}
-	return walletExistsAt(paths.LNDWalletDB(profile.LNDNetwork))
+
+	state, stateErr := readLNDWalletState()
+	return walletExistsFromState(state, stateErr)
 }
 
-func walletExistsAt(path string) (bool, error) {
-	info, err := os.Lstat(path)
-	if os.IsNotExist(err) {
+func walletExistsFromState(
+	state lnrpc.WalletState, stateErr error,
+) (bool, error) {
+	if stateErr != nil {
+		return false, fmt.Errorf("read LND wallet state: %w", stateErr)
+	}
+
+	switch state {
+	case lnrpc.WalletState_NON_EXISTING:
 		return false, nil
+
+	case lnrpc.WalletState_LOCKED,
+		lnrpc.WalletState_UNLOCKED,
+		lnrpc.WalletState_RPC_ACTIVE,
+		lnrpc.WalletState_SERVER_ACTIVE:
+
+		return true, nil
+
+	case lnrpc.WalletState_WAITING_TO_START:
+		return false, errors.New("LND is waiting to start; wallet state is unknown")
+
+	default:
+		return false, fmt.Errorf("unknown LND wallet state %d", state)
 	}
-	if err != nil {
-		return false, fmt.Errorf("inspect LND wallet state: %w", err)
-	}
-	if info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() {
-		return false, fmt.Errorf("LND wallet state %s is not a regular file", path)
-	}
-	return true, nil
 }

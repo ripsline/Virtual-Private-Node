@@ -200,10 +200,12 @@ protocol.wumbo-channels=true
 protocol.option-scid-alias=true
 
 [db]
-# Compact the bolt database on startup to reclaim disk
-# space from deleted records. Runs at most once per week.
-db.bolt.auto-compact=true
-db.bolt.auto-compact-min-age=168h
+# Fresh v0.7.0 nodes use LND's local SQLite backend and its native SQL
+# stores. These settings are permanent for the lifetime of the node.
+# Leave SQLite durability, locking, WAL, checkpoint, and vacuum behavior
+# at the pinned LND release's defaults.
+db.backend=sqlite
+db.use-native-sql=true
 
 [healthcheck]
 # Keep LND's chain-backend check at its upstream defaults.
@@ -222,10 +224,10 @@ healthcheck.torconnection.interval=1m
 healthcheck.torconnection.timeout=5s
 healthcheck.torconnection.backoff=1m
 healthcheck.torconnection.attempts=10
-# Graceful shutdown if disk space falls below 5%%. On a
-# 90GB SSD this triggers at ~4.5GB free — enough headroom
-# for bolt compaction while avoiding false shutdowns.
-healthcheck.diskspace.diskrequired=0.05
+# Graceful shutdown if filesystem free space falls to 10%%.
+# On a 90GB filesystem this preserves roughly 9GB and allows
+# about 81GB of operational usage before the safety stop.
+healthcheck.diskspace.diskrequired=0.10
 healthcheck.diskspace.attempts=2
 healthcheck.diskspace.interval=12h
 `, listenLine, paths.LNDGRPCEndpoint, restListenLine, externalLine,

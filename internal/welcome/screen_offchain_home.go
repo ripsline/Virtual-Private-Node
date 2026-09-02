@@ -492,12 +492,7 @@ func (s *WalletHomeScreen) View(
 
 func (s *WalletHomeScreen) HelpBindings() []key.Binding {
 	if !s.ctx.walletExists() {
-		return []key.Binding{
-			kEnterCreateWallet,
-			kSidebar,
-			kBack,
-			kQuit,
-		}
+		return walletUnavailableHelpBindings(s.ctx)
 	}
 	if s.focusZone == walletHomeZoneList {
 		return homeListBindings(

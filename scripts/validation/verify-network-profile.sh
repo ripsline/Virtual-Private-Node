@@ -185,6 +185,17 @@ assert_file_contains "LND block ZMQ" "${lnd_conf}" \
     "bitcoind.zmqpubrawblock=tcp://127.0.0.1:${zmq_block}"
 assert_file_contains "LND transaction ZMQ" "${lnd_conf}" \
     "bitcoind.zmqpubrawtx=tcp://127.0.0.1:${zmq_tx}"
+assert_file_contains "LND SQLite backend" "${lnd_conf}" \
+    "db.backend=sqlite"
+assert_file_contains "LND native SQL" "${lnd_conf}" \
+    "db.use-native-sql=true"
+assert_file_contains "LND disk safety threshold" "${lnd_conf}" \
+    "healthcheck.diskspace.diskrequired=0.10"
+assert_file_excludes "LND no bbolt tuning" "${lnd_conf}" "db.bolt."
+assert_file_excludes "LND no custom SQLite pragmas" "${lnd_conf}" \
+    "db.sqlite.pragmaoptions="
+assert_file_excludes "LND no skipped native migration" "${lnd_conf}" \
+    "skip-native-sql-migration"
 assert_file_excludes "LND no Bitcoin cookie" "${lnd_conf}" "bitcoind.rpccookie="
 assert_file_excludes "LND no custom signet challenge" "${lnd_conf}" \
     "bitcoin.signetchallenge="
@@ -270,22 +281,44 @@ assert_equal "RUN lnd active" \
 assert_equal "RUN Tor active" \
     "$(systemctl is-active tor.service 2>/dev/null || true)" active
 
-if [[ -f /var/lib/lnd/data/chain/bitcoin/${lnd_network}/wallet.db ]]; then
-    pass "STATE wallet uses ${lnd_network}"
-else
-    pass "STATE wallet not created yet"
-fi
+state_json=$(/usr/local/bin/lncli \
+    --rpcserver=127.0.0.1:10009 \
+    --tlscertpath=/var/lib/lnd/tls.cert \
+    state 2>/dev/null || true)
+wallet_state=$(python3 -c '
+import json, sys
+try:
+    print(json.load(sys.stdin).get("state", ""))
+except Exception:
+    print("")
+' <<<"${state_json}")
+case "${wallet_state}" in
+    NON_EXISTING)
+        pass "STATE LND reports no wallet"
+        ;;
+    LOCKED|UNLOCKED|RPC_ACTIVE|SERVER_ACTIVE)
+        pass "STATE LND reports existing wallet (${wallet_state})"
+        ;;
+    *)
+        fail "STATE LND wallet fact is known" \
+            "State/GetState returned '${wallet_state:-unavailable}'"
+        ;;
+esac
 for foreign in mainnet testnet4 signet; do
     if [[ ${foreign} == "${lnd_network}" ]]; then
         continue
     fi
-    foreign_wallet=/var/lib/lnd/data/chain/bitcoin/${foreign}/wallet.db
-    if [[ ! -e ${foreign_wallet} && ! -L ${foreign_wallet} ]]; then
-        pass "STATE no ${foreign} wallet reuse"
-    else
-        fail "STATE no ${foreign} wallet reuse" \
-            "unexpected ${foreign_wallet} exists"
-    fi
+    for foreign_state in \
+        /var/lib/lnd/data/chain/bitcoin/${foreign} \
+        /var/lib/lnd/data/graph/${foreign} \
+        /var/lib/lnd/data/watchtower/bitcoin/${foreign}; do
+        if [[ ! -e ${foreign_state} && ! -L ${foreign_state} ]]; then
+            pass "STATE no ${foreign} reuse at ${foreign_state}"
+        else
+            fail "STATE no ${foreign} reuse at ${foreign_state}" \
+                "unexpected path exists"
+        fi
+    done
 done
 
 assert_file_contains "CLI bitcoin wrapper RPC port" /home/vpn/.bashrc \
