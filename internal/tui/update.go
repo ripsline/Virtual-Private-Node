@@ -1,8 +1,6 @@
 package tui
 
 import (
-	"fmt"
-
 	tea "charm.land/bubbletea/v2"
 
 	"github.com/virtualprivatenode/vpn/internal/helper"
@@ -152,6 +150,28 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	// ── L16 screen-to-Model messages ────────────────
 	case closeTabMsg:
 		return m.closeTab(m.activeTab)
+	case closeOnChainSendMsg:
+		if msg.screen == nil || msg.screen.step != ocStepResult {
+			return m, nil
+		}
+		// Done belongs to its screen even if navigation changes before delivery.
+		for i, tab := range m.tabs {
+			if tab.Screen != msg.screen || onChainSendBusy(tab.Screen) {
+				continue
+			}
+			if tab.Section == m.nav.ActiveSection() {
+				for index, visible := range m.effectiveTabs() {
+					if visible.Screen == msg.screen {
+						return m.closeTab(index)
+					}
+				}
+			} else {
+				m.tabs = append(m.tabs[:i], m.tabs[i+1:]...)
+				m.sectionFocus[tab.Section] = 0
+				return m, nil
+			}
+		}
+		return m, nil
 	case focusSidebarMsg:
 		m.focusSidebar()
 		return m, nil
@@ -214,9 +234,6 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 	case refreshStatusMsg:
 		return m, fetchStatus(m.cfg, m.state, m.lndClient)
-	case clearUtxoSelectionMsg:
-		m.clearUtxoSelection()
-		return m, nil
 	case openTabMsg:
 		// Dedup by kind + index if Index is set
 		if msg.Index != 0 {
@@ -245,6 +262,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					t.Section == sec {
 					m.activeTab = i
 					m.rememberTabPosition()
+					if msg.Replace && onChainSendBusy(t.Screen) {
+						return m, nil
+					}
 					if msg.Replace &&
 						msg.Screen != nil {
 						m.setTabScreen(i, msg.Screen)
@@ -375,13 +395,6 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case utxoListMsg:
 		if msg.err == nil {
 			m.ocCtx.Utxos = msg.utxos
-			// Prune selections beyond new UTXO range
-			for idx := range m.ocCtx.UtxoSelected {
-				if idx >= len(m.ocCtx.Utxos) {
-					delete(m.ocCtx.UtxoSelected, idx)
-				}
-			}
-			m.recalcSelectedTotal()
 		}
 		return m, nil
 	case onChainTxMsg:
@@ -435,25 +448,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		m.ocCtx.SendFeeTiers = msg.tiers
-		// Fan out to every screen that may want fee
-		// tiers. Each routeToScreen call returns an
-		// updated Model and a possibly-nil cmd; thread
-		// the model through and batch the cmds so none
-		// get dropped.
-		//
-		// The m = rm threading looks redundant because
-		// routeToScreen's screen-writeback goes through
-		// the m.tabs slice (shared backing array) and
-		// its screenCtx mutations go through a pointer,
-		// so today the discarded returns would still
-		// land in shared memory. The threading is
-		// defensive: the day someone adds a non-pointer
-		// Model mutation to routeToScreen, this loop
-		// stays correct without needing a second look.
-		// Contrast with routeToSectionScreen, which
-		// writes to the m.sectionScreens array and was
-		// converted to a pointer receiver for the same
-		// reason.
+		// Keep each screen update and batch the resulting commands.
 		var cmds []tea.Cmd
 		for _, kind := range []tabKind{
 			tabChannel, tabOnChain, tabOpenChannel,
@@ -468,8 +463,6 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		}
 		return m, tea.Batch(cmds...)
-	case feeEstimateMsg:
-		return m.dispatchToTab(tabOnChain, msg)
 	case installStepDoneMsg:
 		// Route to whichever install flow tab is open.
 		// Only one install runs at a time, so first
@@ -624,42 +617,6 @@ func (m Model) handleKey(
 	}
 
 	return m, nil
-}
-
-// ── Coin control helpers ─────────────────────────────────
-
-func (m *Model) toggleUtxoSelection(idx int) {
-	if idx < 0 || idx >= len(m.ocCtx.Utxos) {
-		return
-	}
-	if m.ocCtx.UtxoSelected[idx] {
-		delete(m.ocCtx.UtxoSelected, idx)
-	} else {
-		m.ocCtx.UtxoSelected[idx] = true
-	}
-	m.recalcSelectedTotal()
-}
-
-func (m *Model) recalcSelectedTotal() {
-	m.ocCtx.UtxoSelectedTotal = 0
-	m.ocCtx.UtxoOutpoints = nil
-	for idx := range m.ocCtx.UtxoSelected {
-		if idx < len(m.ocCtx.Utxos) {
-			m.ocCtx.UtxoSelectedTotal +=
-				m.ocCtx.Utxos[idx].AmountSats
-			m.ocCtx.UtxoOutpoints = append(
-				m.ocCtx.UtxoOutpoints,
-				fmt.Sprintf("%s:%d",
-					m.ocCtx.Utxos[idx].Txid,
-					m.ocCtx.Utxos[idx].Vout))
-		}
-	}
-}
-
-func (m *Model) clearUtxoSelection() {
-	m.ocCtx.UtxoSelected = make(map[int]bool)
-	m.ocCtx.UtxoSelectedTotal = 0
-	m.ocCtx.UtxoOutpoints = nil
 }
 
 func buildChannelHistoryEntries(
@@ -935,28 +892,17 @@ func (m Model) closeTab(
 	}
 
 	closingTab := tabs[tabIdx]
+	// Keep a submitted send reachable until its bounded RPC returns.
+	if onChainSendBusy(closingTab.Screen) {
+		return m, nil
+	}
 
 	// Screens own all subview state; just clear the
 	// Model-level subview flag on any tab close.
 	m.subview = svNone
 
-	// Build a set of tabs to remove. Always includes
-	// the closing tab itself; if the closing tab is a
-	// parent, also includes all tabs in the same
-	// section whose Parent matches the closing tab's
-	// kind. Cascade is silent — no confirmation.
-	//
-	// Async results that arrive after a child is
-	// cascade-closed will land in routeToScreen,
-	// find no matching tab, and be dropped silently.
-	// This is safe for the existing flows because
-	// state-changing async messages
-	// (syncthingPairedMsg, syncthingRemovedMsg)
-	// update m.cfg directly in their handlers, not
-	// only in the screen handler — so the side
-	// effect persists even if the tab is gone.
-	// Future flows that change state only via screen
-	// handlers would break this assumption.
+	// Closing a parent also removes its child tabs in the same section.
+	// Future asynchronous results will no longer reach the removed screens.
 	shouldRemove := func(t openTab) bool {
 		if t.Section != closingTab.Section {
 			return false
@@ -1098,12 +1044,12 @@ func (m *Model) setTabScreen(
 	}
 }
 
-// Send and receive workflows continue in hidden sections. Other workflows
-// retain their visible-section routing until their lifecycle is reviewed.
+// Payment, invoice, and on-chain send results reach their open tabs across sections.
+// Other workflows retain visible-section routing until their lifecycle is reviewed.
 func (m Model) routeToScreen(kind tabKind, msg tea.Msg) (Model, tea.Cmd, bool) {
 	section := m.nav.ActiveSection()
 	for i, tab := range m.tabs {
-		if tab.Section != section && kind != tabSend && kind != tabReceive {
+		if tab.Section != section && kind != tabSend && kind != tabReceive && kind != tabOnChain {
 			continue
 		}
 		if tab.Kind == kind && tab.Screen != nil {

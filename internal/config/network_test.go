@@ -32,7 +32,7 @@ func TestNetworkProfiles(t *testing.T) {
 				t.Fatalf("unexpected profile: %+v", net)
 			}
 			if net.ExpectedGenesis == "" || net.LNDBitcoinFlag == "" ||
-				net.Bech32HRP == "" || net.AddressPlaceholder == "" ||
+				net.AddressPlaceholder == "" ||
 				net.InvoicePlaceholder == "" {
 				t.Fatalf("incomplete profile: %+v", net)
 			}
@@ -70,34 +70,6 @@ func TestPublicSignetIdentityIsPinned(t *testing.T) {
 		net.BitcoinFlag != "signet=1" || net.BitcoinCLIFlag != "-signet" ||
 		net.LNDBitcoinFlag != "bitcoin.signet=true" {
 		t.Fatalf("public signet identity drifted: %+v", net)
-	}
-}
-
-func TestNetworkAddressPrefixes(t *testing.T) {
-	tests := []struct {
-		network string
-		accept  []string
-		reject  []string
-	}{
-		{NetworkMainnet, []string{"bc1qexample000", "1example000000", "3example000000"}, []string{"tb1qexample000", "mexample000000"}},
-		{NetworkTestnet4, []string{"tb1qexample000", "mexample000000", "nexample000000", "2example000000"}, []string{"bc1qexample000", "sb1qexample000"}},
-		{NetworkPublicSignet, []string{"tb1qexample000", "mexample000000", "nexample000000", "2example000000"}, []string{"bc1qexample000", "sb1qexample000"}},
-	}
-	for _, tt := range tests {
-		net, err := NetworkConfigFromName(tt.network)
-		if err != nil {
-			t.Fatal(err)
-		}
-		for _, address := range tt.accept {
-			if !net.AcceptsOnChainAddress(address) {
-				t.Errorf("%s rejected %q", tt.network, address)
-			}
-		}
-		for _, address := range tt.reject {
-			if net.AcceptsOnChainAddress(address) {
-				t.Errorf("%s accepted %q", tt.network, address)
-			}
-		}
 	}
 }
 

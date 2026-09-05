@@ -26,9 +26,15 @@ type SendCoinsResult struct {
 	Txid string
 }
 
-type FeeEstimate struct {
-	FeeSats     int64
-	SatPerVbyte uint64
+type SendCoinsRequest struct {
+	Address          string
+	AmountSats       int64
+	SatPerVbyte      int64
+	SendAll          bool
+	Label            string
+	Outpoints        []string
+	MinConfs         int32
+	SpendUnconfirmed bool
 }
 
 type OnChainTx struct {
@@ -127,81 +133,47 @@ func (c *Client) ListUnspent(
 
 // ── Send on-chain ────────────────────────────────────────
 
-func (c *Client) SendCoins(
-	address string, amountSats int64,
-	satPerVbyte int64, sendAll bool,
-	outpoints []string,
-) (*SendCoinsResult, error) {
+func (c *Client) SendCoins(input SendCoinsRequest) (*SendCoinsResult, error) {
+	req, err := buildSendCoinsRequest(input)
+	if err != nil {
+		return nil, err
+	}
 	rpc := c.rpc()
 	if rpc == nil {
 		return nil, errNotConnected
 	}
 	ctx, cancel := c.callCtx(60 * time.Second)
 	defer cancel()
-
-	req := &lnrpc.SendCoinsRequest{
-		Addr:             address,
-		Amount:           amountSats,
-		SatPerVbyte:      uint64(satPerVbyte),
-		SendAll:          sendAll,
-		MinConfs:         0,
-		SpendUnconfirmed: true,
-	}
-
-	// Coin control: restrict inputs to the selected UTXOs. A
-	// malformed outpoint aborts the whole operation — silently
-	// skipping one would widen coin selection past what the
-	// operator chose.
-	for _, op := range outpoints {
-		outPoint, err := parseOutpoint(op)
-		if err != nil {
-			return nil, err
-		}
-		req.Outpoints = append(req.Outpoints, outPoint)
-	}
-
 	resp, err := rpc.SendCoins(ctx, req)
 	if err != nil {
 		c.handleError(err)
 		return nil, err
 	}
-
-	return &SendCoinsResult{
-		Txid: resp.GetTxid(),
-	}, nil
+	return &SendCoinsResult{Txid: resp.GetTxid()}, nil
 }
 
-// ── Fee estimation ───────────────────────────────────────
-
-func (c *Client) EstimateFee(
-	address string, amountSats int64,
-	targetConf int32,
-) (*FeeEstimate, error) {
-	rpc := c.rpc()
-	if rpc == nil {
-		return nil, errNotConnected
+func buildSendCoinsRequest(input SendCoinsRequest) (*lnrpc.SendCoinsRequest, error) {
+	if input.SatPerVbyte < 1 || input.AmountSats < 0 || (input.SendAll && input.AmountSats != 0) {
+		return nil, fmt.Errorf("invalid send amount or fee rate")
 	}
-	ctx, cancel := c.callCtx(defaultTimeout)
-	defer cancel()
-
-	addrToAmount := map[string]int64{
-		address: amountSats,
-	}
-
-	resp, err := rpc.EstimateFee(ctx,
-		&lnrpc.EstimateFeeRequest{
-			AddrToAmount: addrToAmount,
-			TargetConf:   targetConf,
-		})
-	if err != nil {
-		c.handleError(err)
+	if _, err := lnrpc.ExtractMinConfs(input.MinConfs, input.SpendUnconfirmed); err != nil {
 		return nil, err
 	}
-
-	return &FeeEstimate{
-		FeeSats:     resp.GetFeeSat(),
-		SatPerVbyte: resp.GetSatPerVbyte(),
-	}, nil
+	req := &lnrpc.SendCoinsRequest{
+		Addr: input.Address, Amount: input.AmountSats,
+		SatPerVbyte: uint64(input.SatPerVbyte), SendAll: input.SendAll,
+		Label: input.Label, MinConfs: input.MinConfs,
+		SpendUnconfirmed: input.SpendUnconfirmed,
+	}
+	// Reject the entire request if any selected outpoint is malformed.
+	for _, op := range input.Outpoints {
+		outpoint, err := parseOutpoint(op)
+		if err != nil {
+			return nil, err
+		}
+		req.Outpoints = append(req.Outpoints, outpoint)
+	}
+	return req, nil
 }
 
 // ── Get on-chain transactions ────────────────────────────

@@ -42,8 +42,6 @@ type NetworkConfig struct {
 	P2PPort                 int
 	ZMQBlockPort            int
 	ZMQTxPort               int
-	Bech32HRP               string
-	Base58Prefixes          string
 	InvoicePrefix           string
 	AddressPlaceholder      string
 	InvoicePlaceholder      string
@@ -61,8 +59,6 @@ var networkConfigs = map[string]NetworkConfig{
 		P2PPort:            8333,
 		ZMQBlockPort:       28332,
 		ZMQTxPort:          28333,
-		Bech32HRP:          "bc",
-		Base58Prefixes:     "13",
 		InvoicePrefix:      "lnbc",
 		AddressPlaceholder: "bc1p...",
 		InvoicePlaceholder: "lnbc...",
@@ -82,8 +78,6 @@ var networkConfigs = map[string]NetworkConfig{
 		P2PPort:            48333,
 		ZMQBlockPort:       28334,
 		ZMQTxPort:          28335,
-		Bech32HRP:          "tb",
-		Base58Prefixes:     "2mn",
 		InvoicePrefix:      "lntb",
 		AddressPlaceholder: "tb1p...",
 		InvoicePlaceholder: "lntb...",
@@ -104,8 +98,6 @@ var networkConfigs = map[string]NetworkConfig{
 		P2PPort:                 38333,
 		ZMQBlockPort:            28336,
 		ZMQTxPort:               28337,
-		Bech32HRP:               "tb",
-		Base58Prefixes:          "2mn",
 		InvoicePrefix:           "lntbs",
 		AddressPlaceholder:      "tb1p...",
 		InvoicePlaceholder:      "lntbs...",
@@ -133,19 +125,6 @@ func NetworkConfigFromName(name string) (*NetworkConfig, error) {
 func ValidateNetwork(name string) error {
 	_, err := NetworkConfigFromName(name)
 	return err
-}
-
-// AcceptsOnChainAddress performs the TUI's deliberately shallow network
-// prefix check. LND remains the authoritative full decoder. Unknown profiles
-// cannot reach this method because lookup fails closed.
-func (n *NetworkConfig) AcceptsOnChainAddress(address string) bool {
-	if strings.HasPrefix(strings.ToLower(address), n.Bech32HRP+"1") {
-		return true
-	}
-	if address == "" || !strings.ContainsRune(n.Base58Prefixes, rune(address[0])) {
-		return false
-	}
-	return true
 }
 
 // AcceptsInvoicePrefix distinguishes testnet4's lntb HRP from public signet's

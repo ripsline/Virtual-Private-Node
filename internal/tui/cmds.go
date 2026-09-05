@@ -285,22 +285,10 @@ func listUnspentCmd(
 	}
 }
 
-func sendCoinsCmd(
-	client *lndrpc.Client, addr string,
-	amount int64, feeRate int64, sendAll bool,
-	outpoints []string,
-) tea.Cmd {
+func sendCoinsCmd(client app.OnChainSendClient, attempt *onChainSendAttempt) tea.Cmd {
+	prepared := attempt.prepared
 	return func() tea.Msg {
-		if client == nil {
-			return sendCoinsResultMsg{err: fmt.Errorf(
-				"LND not connected")}
-		}
-		result, err := client.SendCoins(
-			addr, amount, feeRate, sendAll, outpoints)
-		if err != nil {
-			return sendCoinsResultMsg{err: err}
-		}
-		return sendCoinsResultMsg{txid: result.Txid}
+		return sendCoinsResultMsg{attempt: attempt, result: app.SendOnChain(client, prepared)}
 	}
 }
 
@@ -324,24 +312,6 @@ func fetchFeeTiersCmd(
 ) tea.Cmd {
 	return func() tea.Msg {
 		return fetchFeeTiers(cfg)
-	}
-}
-
-func estimateTxFeeCmd(
-	client *lndrpc.Client, addr string,
-	amount int64, targetConf int32,
-) tea.Cmd {
-	return func() tea.Msg {
-		if client == nil {
-			return feeEstimateMsg{err: fmt.Errorf(
-				"LND not connected")}
-		}
-		est, err := client.EstimateFee(
-			addr, amount, targetConf)
-		if err != nil {
-			return feeEstimateMsg{err: err}
-		}
-		return feeEstimateMsg{feeSats: est.FeeSats}
 	}
 }
 
