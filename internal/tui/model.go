@@ -5,6 +5,7 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 
+	"github.com/virtualprivatenode/vpn/internal/app"
 	"github.com/virtualprivatenode/vpn/internal/config"
 	"github.com/virtualprivatenode/vpn/internal/helper"
 	"github.com/virtualprivatenode/vpn/internal/installer"
@@ -163,12 +164,14 @@ type invoiceSettledMsg struct {
 	err     error
 }
 type payReqDecodedMsg struct {
-	decoded *lndrpc.DecodedPayReq
+	attempt *paymentAttempt
+	payment app.PreparedPayment
 	err     error
 }
 type sendPaymentResultMsg struct {
-	result *lndrpc.SendPaymentResult
-	err    error
+	attempt *paymentAttempt
+	result  *lndrpc.SendPaymentResult
+	err     error
 }
 type paymentHistoryMsg struct {
 	entries []lndrpc.PaymentEntry

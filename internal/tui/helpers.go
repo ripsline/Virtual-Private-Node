@@ -529,19 +529,6 @@ func confIndicator(confs int32) string {
 	}
 }
 
-// ── Parse helpers ──────────────────────────────────────
-
-func cleanPayReq(s string) string {
-	s = strings.ReplaceAll(s, "[", "")
-	s = strings.ReplaceAll(s, "]", "")
-	s = strings.ReplaceAll(s, "\"", "")
-	s = strings.ReplaceAll(s, "'", "")
-	s = strings.TrimSpace(s)
-	s = strings.TrimPrefix(s, "lightning:")
-	s = strings.TrimPrefix(s, "LIGHTNING:")
-	return s
-}
-
 // ── Wallet creation prompt ──────────────────────────────
 // Shared across all three section home screens when no
 // wallet exists. Renders a centered call-to-action with
