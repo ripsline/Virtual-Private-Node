@@ -13,7 +13,7 @@ import (
 	"github.com/virtualprivatenode/vpn/internal/helperd"
 	"github.com/virtualprivatenode/vpn/internal/installer"
 	"github.com/virtualprivatenode/vpn/internal/paths"
-	"github.com/virtualprivatenode/vpn/internal/welcome"
+	"github.com/virtualprivatenode/vpn/internal/tui"
 )
 
 var version = "dev"
@@ -159,7 +159,7 @@ func runConsole() {
 			err)
 		prefs = config.DefaultPreferences()
 	}
-	welcome.Show(cfg, prefs, version)
+	tui.Show(cfg, prefs, version)
 }
 
 type command int

@@ -77,7 +77,7 @@ type InstallStep struct {
 	// "btc.download"). Names carry versions and copy edits; keys
 	// identify the step across binary versions. Runtime step
 	// lists (P2P upgrade, Syncthing) leave Key empty — they run
-	// through the welcome engine and never touch the ledger.
+	// through the TUI engine and never touch the ledger.
 	Key string
 	// Name is display-only.
 	Name  string

@@ -924,7 +924,7 @@ func (m wizardModel) viewDone(p *wizPane) {
 
 // ── View plumbing ────────────────────────────────────────
 
-// wizPane is a minimal line collector in the welcome pane
+// wizPane is a minimal line collector in the TUI pane
 // idiom — chrome, not machinery (no ScreenContext).
 type wizPane struct {
 	width int
