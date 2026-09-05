@@ -531,8 +531,8 @@ func waitForLND() error {
 	return fmt.Errorf("LND did not respond after 120 seconds")
 }
 
-// ── Exported wrappers for the welcome package ───────────
-// These wrap the unexported helpers so the welcome
+// ── Exported wrappers for the tui package ───────────
+// These wrap the unexported helpers so the tui
 // package can call them from screens without leaking
 // the rest of the installer package.
 
