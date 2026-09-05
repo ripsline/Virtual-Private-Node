@@ -5,7 +5,7 @@
 // Bubble Tea runtime, performs side effects and returns a
 // message. These are intentionally separate from Model:
 // they have no receiver, depend only on their typed
-// arguments, and are thin wrappers over internal/lndrpc,
+// arguments, and are thin wrappers over internal/app, daemon clients,
 // internal/installer, and system shell-outs.
 //
 // Organization (by comment banner below):
@@ -18,10 +18,8 @@
 //   - Shell-out overlays
 //   - System actions
 //
-// Behaviour note: fetchPaymentHistoryCmd uses separate
-// err variables per RPC and rolls them up into a single
-// message-level err. See design-decisions.md
-// ("Multi-RPC fetch cmds must aggregate their errors").
+// Behaviour note: fetchPaymentHistoryCmd reports either RPC's failure so
+// the wallet home screen retains its last complete history after a partial fetch.
 
 package tui
 
@@ -36,6 +34,7 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 
+	"github.com/virtualprivatenode/vpn/internal/app"
 	"github.com/virtualprivatenode/vpn/internal/config"
 	"github.com/virtualprivatenode/vpn/internal/helper"
 	"github.com/virtualprivatenode/vpn/internal/installer"
@@ -245,35 +244,17 @@ func waitForInvoiceCmd(
 	}
 }
 
-func decodePayReqCmd(
-	client *lndrpc.Client, payReq string,
-) tea.Cmd {
+func preparePaymentCmd(client app.LightningPaymentClient, attempt *paymentAttempt) tea.Cmd {
 	return func() tea.Msg {
-		if client == nil {
-			return payReqDecodedMsg{
-				err: fmt.Errorf("LND not connected")}
-		}
-		decoded, err := client.DecodePayReq(payReq)
-		if err != nil {
-			return payReqDecodedMsg{err: err}
-		}
-		return payReqDecodedMsg{decoded: decoded}
+		payment, err := app.PrepareLightningPayment(client, attempt.request)
+		return payReqDecodedMsg{attempt: attempt, payment: payment, err: err}
 	}
 }
 
-func sendPaymentCmd(
-	client *lndrpc.Client, payReq string,
-) tea.Cmd {
+func sendPaymentCmd(client app.LightningPaymentClient, attempt *paymentAttempt, payment app.PreparedPayment) tea.Cmd {
 	return func() tea.Msg {
-		if client == nil {
-			return sendPaymentResultMsg{
-				err: fmt.Errorf("LND not connected")}
-		}
-		result, err := client.SendPayment(payReq)
-		if err != nil {
-			return sendPaymentResultMsg{err: err}
-		}
-		return sendPaymentResultMsg{result: result}
+		result, err := app.SendLightningPayment(client, payment)
+		return sendPaymentResultMsg{attempt: attempt, result: result, err: err}
 	}
 }
 
@@ -282,8 +263,6 @@ func sendPaymentCmd(
 // is tracked independently and rolled up into rpcErr so
 // the handler's `if msg.err == nil` partial-data guard
 // doesn't overwrite last-good entries on a flaky fetch.
-// See design-decisions.md ("Multi-RPC fetch cmds must
-// aggregate their errors").
 func fetchPaymentHistoryCmd(
 	client *lndrpc.Client,
 ) tea.Cmd {

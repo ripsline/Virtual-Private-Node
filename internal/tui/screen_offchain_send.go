@@ -1,12 +1,11 @@
 package tui
 
 import (
-	"strings"
-
 	"charm.land/bubbles/v2/key"
 	"charm.land/bubbles/v2/textinput"
 	tea "charm.land/bubbletea/v2"
 
+	"github.com/virtualprivatenode/vpn/internal/app"
 	"github.com/virtualprivatenode/vpn/internal/lndrpc"
 	"github.com/virtualprivatenode/vpn/internal/theme"
 )
@@ -31,9 +30,18 @@ const (
 
 // ── SendScreen ───────────────────────────────────────────
 
+// Each submission has its own identity, including across closed/reopened tabs.
+// The request makes this a non-zero-sized object with a distinct address.
+type paymentAttempt struct {
+	request app.PaymentRequest
+}
+
 type SendScreen struct {
-	ctx  *ScreenContext
-	step sendStep
+	ctx      *ScreenContext
+	step     sendStep
+	payments app.LightningPaymentClient
+	attempt  *paymentAttempt
+	prepared app.PreparedPayment
 
 	// Input state
 	sendInput   textinput.Model
@@ -41,25 +49,22 @@ type SendScreen struct {
 	focusZone   int // 0=input field, 1=buttons
 	inputError  string
 
-	// Decoded (set after payReqDecodedMsg)
-	decodedAmt  int64
-	decodedDesc string
-	decodedDest string
-
 	// Confirm state
 	confirmBtnIdx int // 0=Go Back, 1=Confirm
 
 	// Result state
-	error     string
-	preimage  string
-	routeHops []lndrpc.RouteHop
-	feeSats   int64
+	result lndrpc.SendPaymentResult
 }
 
 func NewSendScreen(
 	ctx *ScreenContext,
 ) *SendScreen {
+	var payments app.LightningPaymentClient
+	if ctx.LndClient != nil {
+		payments = ctx.LndClient
+	}
 	return &SendScreen{
+		payments:    payments,
 		ctx:         ctx,
 		step:        sendStepInput,
 		sendInput:   newSendPayReqInput(ctx.Cfg.Network),
@@ -256,32 +261,18 @@ func (s *SendScreen) handleInputKey(
 	return s, nil
 }
 
-// submitSendPayment validates the pay req and fires
-// decodePayReqCmd.
-func (s *SendScreen) submitSendPayment() (
-	Screen, tea.Cmd,
-) {
-	payReq := strings.TrimSpace(
-		s.sendInput.Value())
-	if payReq == "" {
-		s.inputError = "Paste a payment request"
-		return s, nil
-	}
-	payReq = cleanPayReq(payReq)
-	s.sendInput.SetValue(payReq)
-	profile, err := s.ctx.Cfg.NetworkConfig()
+// submitSendPayment validates input before scheduling daemon work.
+func (s *SendScreen) submitSendPayment() (Screen, tea.Cmd) {
+	s.attempt = nil
+	request, err := app.ParseLightningPayment(s.ctx.Cfg.Network, s.sendInput.Value())
 	if err != nil {
-		s.inputError = "Unsupported node network profile"
+		s.inputError = err.Error()
 		return s, nil
 	}
-	if !profile.AcceptsInvoicePrefix(payReq) {
-		s.inputError =
-			"Invoice is not for " + profile.DisplayName
-		return s, nil
-	}
+	s.sendInput.SetValue(request.Invoice())
 	s.inputError = ""
-	return s, decodePayReqCmd(
-		s.ctx.LndClient, payReq)
+	s.attempt = &paymentAttempt{request: request}
+	return s, preparePaymentCmd(s.payments, s.attempt)
 }
 
 // ── Confirm step ────────────────────────────────────────
@@ -322,9 +313,7 @@ func (s *SendScreen) handleConfirmKey(
 		case 1: // Confirm
 			s.step = sendStepInFlight
 			return s, sendPaymentCmd(
-				s.ctx.LndClient,
-				strings.TrimSpace(
-					s.sendInput.Value()))
+				s.payments, s.attempt, s.prepared)
 		}
 	}
 	return s, nil
@@ -333,11 +322,10 @@ func (s *SendScreen) handleConfirmKey(
 // backToInput returns to the input step, clearing
 // decoded state and error.
 func (s *SendScreen) backToInput() {
+	s.attempt = nil
+	s.prepared = app.PreparedPayment{}
 	s.step = sendStepInput
 	s.inputError = ""
-	s.decodedAmt = 0
-	s.decodedDesc = ""
-	s.decodedDest = ""
 	s.confirmBtnIdx = 0
 	s.focusZone = sendZoneInput
 	s.sendInput.Focus()
@@ -399,17 +387,17 @@ func (s *SendScreen) handlePaste(
 func (s *SendScreen) handlePayReqDecoded(
 	msg payReqDecodedMsg,
 ) (Screen, tea.Cmd) {
+	// The attempt must still own this screen, and its invoice must still be
+	// the one in the form. This also covers edits made while decoding.
+	if s.step != sendStepInput || s.attempt == nil || msg.attempt != s.attempt ||
+		s.sendInput.Value() != s.attempt.request.Invoice() {
+		return s, nil
+	}
 	if msg.err != nil {
 		s.inputError = msg.err.Error()
 		return s, nil
 	}
-	if msg.decoded.IsExpired {
-		s.inputError = "This invoice has expired"
-		return s, nil
-	}
-	s.decodedAmt = msg.decoded.AmountSats
-	s.decodedDesc = msg.decoded.Description
-	s.decodedDest = msg.decoded.Destination
+	s.prepared = msg.payment
 	s.confirmBtnIdx = 1 // default to Confirm
 	s.step = sendStepConfirm
 	return s, nil
@@ -418,15 +406,17 @@ func (s *SendScreen) handlePayReqDecoded(
 func (s *SendScreen) handleSendResult(
 	msg sendPaymentResultMsg,
 ) (Screen, tea.Cmd) {
+	if s.step != sendStepInFlight || s.attempt == nil || msg.attempt != s.attempt {
+		return s, nil
+	}
+	s.result = lndrpc.SendPaymentResult{Status: "UNKNOWN"}
 	if msg.err != nil {
-		s.error = msg.err.Error()
-	} else if msg.result.Status == "SUCCEEDED" {
-		s.preimage = msg.result.Preimage
-		s.feeSats = msg.result.FeeSats
-		s.routeHops = msg.result.Hops
-		s.error = ""
-	} else {
-		s.error = msg.result.Error
+		s.result.Error = msg.err.Error()
+	} else if msg.result != nil {
+		s.result = *msg.result
+	}
+	if s.result.Status != "SUCCEEDED" && s.result.Error == "" {
+		s.result.Error = "Check Payment History before retrying."
 	}
 	s.step = sendStepResult
 	return s, nil
@@ -480,17 +470,18 @@ func (s *SendScreen) viewConfirm(
 ) string {
 	p := newPane(w)
 	p.title(theme.Warning, "Confirm Payment")
+	details := s.prepared.Details()
 
 	p.field("Amount:      ",
-		formatSats(s.decodedAmt)+" sats")
-	if s.decodedDesc != "" {
-		p.field("Description: ", s.decodedDesc)
+		formatSats(details.AmountSats)+" sats")
+	if details.Description != "" {
+		p.field("Description: ", details.Description)
 	}
 	p.labelLine("Destination:")
-	p.mono(s.decodedDest)
+	p.mono(details.Destination)
 	p.blank()
 	p.warn("Send " +
-		formatSats(s.decodedAmt) + " sats?")
+		formatSats(details.AmountSats) + " sats?")
 
 	// ── Buttons pinned to bottom ──
 	btnFocused := s.ctx.ContentFocused
@@ -505,7 +496,7 @@ func (s *SendScreen) viewInFlight(
 	p := newPane(w)
 	p.title(theme.Header, "Sending Payment...")
 	p.line(" " + theme.Value.Render(
-		"Routing "+formatSats(s.decodedAmt)+
+		"Routing "+formatSats(s.prepared.Details().AmountSats)+
 			" sats"))
 	p.blank()
 	p.dim("May take up to 60 seconds over Tor.")
@@ -518,25 +509,32 @@ func (s *SendScreen) viewResult(
 ) string {
 	p := newPane(w)
 
-	if s.error != "" {
-		p.title(theme.Warning, "Payment Failed")
-		p.warnWrap(s.error)
+	if s.result.Status != "SUCCEEDED" {
+		title := "Payment Status Unknown"
+		switch s.result.Status {
+		case "FAILED":
+			title = "Payment Failed"
+		case "IN_FLIGHT":
+			title = "Payment Still In Flight"
+		}
+		p.title(theme.Warning, title)
+		p.warnWrap(s.result.Error)
 	} else {
 		p.title(theme.Success, "Payment Sent")
 		p.field("Amount: ",
-			formatSats(s.decodedAmt)+" sats")
+			formatSats(s.prepared.Details().AmountSats)+" sats")
 		p.field("Fee:    ",
-			formatSats(s.feeSats)+" sats")
-		if s.preimage != "" {
+			formatSats(s.result.FeeSats)+" sats")
+		if s.result.Preimage != "" {
 			p.blank()
 			p.labelLine("Preimage:")
-			p.mono(s.preimage)
+			p.mono(s.result.Preimage)
 		}
-		if len(s.routeHops) > 0 {
+		if len(s.result.Hops) > 0 {
 			p.blank()
 			p.labelLine("Route:")
 			p.line(renderRouteDiagram(
-				s.routeHops, w))
+				s.result.Hops, w))
 		}
 	}
 
