@@ -1,30 +1,8 @@
-// Package tui — cmds.go
-//
-// tea.Cmd factories. Each function here returns a tea.Cmd
-// (or a tea.Cmd-producing closure) that, when run by the
-// Bubble Tea runtime, performs side effects and returns a
-// message. These are intentionally separate from Model:
-// they have no receiver, depend only on their typed
-// arguments, and are thin wrappers over internal/app, daemon clients,
-// internal/installer, and system shell-outs.
-//
-// Organization (by comment banner below):
-//   - Polling & version
-//   - Syncthing actions
-//   - LND queries & fund-moving
-//   - On-chain queries & fund-moving
-//   - Fee estimation
-//   - Transaction labeling
-//   - Shell-out overlays
-//   - System actions
-//
-// Behaviour note: fetchPaymentHistoryCmd reports either RPC's failure so
-// the wallet home screen retains its last complete history after a partial fetch.
+// Command factories connect screen messages to application and system operations.
 
 package tui
 
 import (
-	"encoding/hex"
 	"fmt"
 	"os"
 	"os/exec"
@@ -199,49 +177,24 @@ func fetchClosedChannelsCmd(
 	}
 }
 
-func createInvoiceCmd(
-	client *lndrpc.Client, amount int64, memo string,
-	blind bool,
-) tea.Cmd {
+func createInvoiceCmd(client app.LightningInvoiceClient, attempt *invoiceAttempt) tea.Cmd {
 	return func() tea.Msg {
-		if client == nil {
-			return invoiceCreatedMsg{
-				err: fmt.Errorf("LND not connected")}
-		}
-		inv, err := client.AddInvoice(amount, memo, blind)
-		if err != nil {
-			return invoiceCreatedMsg{err: err}
-		}
-		return invoiceCreatedMsg{
-			payReq:      inv.PaymentRequest,
-			paymentHash: inv.PaymentHash,
-			amountSats:  inv.AmountSats,
-		}
+		invoice, err := app.CreateLightningInvoice(client, attempt.request)
+		return invoiceCreatedMsg{attempt: attempt, invoice: invoice, err: err}
 	}
 }
 
-func waitForInvoiceCmd(
-	client *lndrpc.Client, paymentHash string,
-) tea.Cmd {
+func checkInvoiceCmd(client app.LightningInvoiceClient, attempt *invoiceAttempt, invoice app.LightningInvoice) tea.Cmd {
 	return func() tea.Msg {
-		if client == nil {
-			return invoiceSettledMsg{
-				err: fmt.Errorf("LND not connected")}
-		}
-		hashBytes, err := hex.DecodeString(paymentHash)
-		if err != nil {
-			return invoiceSettledMsg{err: err}
-		}
-		inv, err := client.WaitForInvoiceSettlement(
-			hashBytes, 3600*time.Second)
-		if err != nil {
-			return invoiceSettledMsg{err: err}
-		}
-		return invoiceSettledMsg{
-			settled: inv.Settled,
-			expired: inv.IsExpired,
-		}
+		state, err := app.CheckLightningInvoice(client, invoice)
+		return invoiceStatusMsg{attempt: attempt, state: state, err: err}
 	}
+}
+
+func scheduleInvoiceCheck(attempt *invoiceAttempt) tea.Cmd {
+	return tea.Tick(2*time.Second, func(time.Time) tea.Msg {
+		return invoiceCheckMsg{attempt: attempt}
+	})
 }
 
 func preparePaymentCmd(client app.LightningPaymentClient, attempt *paymentAttempt) tea.Cmd {

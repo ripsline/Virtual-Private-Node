@@ -153,14 +153,16 @@ type newAddressMsg struct {
 	err     error
 }
 type invoiceCreatedMsg struct {
-	payReq      string
-	paymentHash string
-	amountSats  int64
-	err         error
+	attempt *invoiceAttempt
+	invoice app.LightningInvoice
+	err     error
 }
-type invoiceSettledMsg struct {
-	settled bool
-	expired bool
+type invoiceCheckMsg struct {
+	attempt *invoiceAttempt
+}
+type invoiceStatusMsg struct {
+	attempt *invoiceAttempt
+	state   app.InvoiceState
 	err     error
 }
 type payReqDecodedMsg struct {

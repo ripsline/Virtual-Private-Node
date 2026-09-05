@@ -20,7 +20,7 @@ type Screen interface {
 	HandleKey(key string, msg tea.KeyPressMsg) (Screen, tea.Cmd)
 
 	// HandleMsg processes async results (e.g.
-	// invoiceSettledMsg), paste messages, and any
+	// invoiceStatusMsg), paste messages, and any
 	// future non-key message types.
 	HandleMsg(msg tea.Msg) (Screen, tea.Cmd)
 

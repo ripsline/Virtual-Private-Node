@@ -150,3 +150,21 @@ func TestPaymentOutcomeHeadings(t *testing.T) {
 		})
 	}
 }
+
+func TestPaymentResultsReachHiddenWalletSection(t *testing.T) {
+	client := &screenPaymentClient{result: &lndrpc.SendPaymentResult{Status: "SUCCEEDED"}}
+	s := paymentScreen(client)
+	m := Model{nav: NewNavSidebar(), screenCtx: s.ctx,
+		tabs: []openTab{{Kind: tabSend, Section: secWallet, Screen: s}}}
+	decode := submitInvoice(t, s, "lnbc1approved")
+	updated, _ := m.Update(decode())
+	m = updated.(Model)
+	if s.step != sendStepConfirm {
+		t.Fatal("hidden payment tab lost its decoded invoice")
+	}
+	_, send := s.HandleKey("enter", tea.KeyPressMsg{})
+	m.Update(send())
+	if s.step != sendStepResult || s.result.Status != "SUCCEEDED" {
+		t.Fatal("hidden payment tab lost its payment result")
+	}
+}
