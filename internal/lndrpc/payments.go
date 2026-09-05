@@ -209,32 +209,3 @@ func (c *Client) recoverPaymentOutcome(
 			"before retrying: sending again could pay twice.",
 	}, nil
 }
-
-// WaitForInvoiceSettlement polls an invoice until settled or expired.
-// Uses re-subscribe pattern (Approach 1) — polls every 2 seconds.
-func (c *Client) WaitForInvoiceSettlement(
-	paymentHash []byte, expiry time.Duration,
-) (*Invoice, error) {
-	deadline := time.Now().Add(expiry)
-
-	for time.Now().Before(deadline) {
-		inv, err := c.LookupInvoice(paymentHash)
-		if err != nil {
-			time.Sleep(2 * time.Second)
-			continue
-		}
-		if inv.Settled {
-			return inv, nil
-		}
-		if inv.IsExpired {
-			return inv, nil
-		}
-		time.Sleep(2 * time.Second)
-	}
-
-	inv, err := c.LookupInvoice(paymentHash)
-	if err != nil {
-		return nil, fmt.Errorf("invoice lookup: %w", err)
-	}
-	return inv, nil
-}

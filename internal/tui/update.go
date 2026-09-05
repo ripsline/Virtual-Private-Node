@@ -359,7 +359,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m.dispatchToTab(tabOCReceive, msg)
 	case invoiceCreatedMsg:
 		return m.dispatchToTab(tabReceive, msg)
-	case invoiceSettledMsg:
+	case invoiceCheckMsg, invoiceStatusMsg:
 		return m.dispatchToTab(tabReceive, msg)
 	case payReqDecodedMsg:
 		return m.dispatchToTab(tabSend, msg)
@@ -1098,32 +1098,19 @@ func (m *Model) setTabScreen(
 	}
 }
 
-// routeToScreen delivers a message to the screen on the
-// tab matching the given kind. Routes by tab kind, not
-// by which tab is active — an invoiceCreatedMsg must
-// reach the receive screen even if the user switched to
-// a different tab while the async operation was in
-// flight. Returns (model, cmd, true) if routed, or
-// (model, nil, false) if no matching screen exists.
-//
-// screenCtx.HasTabs and screenCtx.ContentFocused are
-// both refreshed before dispatch so HandleMsg sees the
-// same view of focus state that HandleKey would. Without
-// this, a screen that branches on ContentFocused inside
-// HandleMsg (e.g. to decide whether to consume a paste)
-// would see whatever the last key event left the flag
-// as — silently wrong when the async message arrives
-// during sidebar or tab-bar focus.
-func (m Model) routeToScreen(
-	kind tabKind, msg tea.Msg,
-) (Model, tea.Cmd, bool) {
-	tabs := m.effectiveTabs()
-	for i, tab := range tabs {
+// Send and receive workflows continue in hidden sections. Other workflows
+// retain their visible-section routing until their lifecycle is reviewed.
+func (m Model) routeToScreen(kind tabKind, msg tea.Msg) (Model, tea.Cmd, bool) {
+	section := m.nav.ActiveSection()
+	for i, tab := range m.tabs {
+		if tab.Section != section && kind != tabSend && kind != tabReceive {
+			continue
+		}
 		if tab.Kind == kind && tab.Screen != nil {
-			m.screenCtx.HasTabs = m.hasDetailTabs()
-			m.screenCtx.ContentFocused = m.contentFocused
+			m.screenCtx.HasTabs = true
+			m.screenCtx.ContentFocused = m.contentFocused && tab.Section == section
 			newScreen, cmd := tab.Screen.HandleMsg(msg)
-			m.setTabScreen(i, newScreen)
+			m.tabs[i].Screen = newScreen
 			return m, cmd, true
 		}
 	}

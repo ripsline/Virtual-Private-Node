@@ -8,22 +8,19 @@ import (
 	"charm.land/bubbles/v2/textinput"
 	tea "charm.land/bubbletea/v2"
 
+	"github.com/virtualprivatenode/vpn/internal/app"
 	"github.com/virtualprivatenode/vpn/internal/theme"
 )
-
-// ── Receive screen steps ────────────────────────────────
 
 type recvStep int
 
 const (
-	recvStepInput   recvStep = iota // amount + memo entry
-	recvStepWaiting                 // invoice created, waiting for payment
-	recvStepPaid                    // payment received
-	recvStepExpired                 // invoice expired
-	recvStepError                   // connection lost / error
+	recvStepInput    recvStep = iota // amount + memo entry
+	recvStepCreating                 // invoice creation in progress
+	recvStepWaiting                  // invoice created, waiting for payment
+	recvStepPaid                     // payment received
+	recvStepExpired                  // invoice expired
 )
-
-// ── Input focus zones ───────────────────────────────────
 
 const (
 	recvZoneAmount  = 0
@@ -32,11 +29,19 @@ const (
 	recvZoneButtons = 3
 )
 
-// ── ReceiveScreen ───────────────────────────────────────
+// Each creation attempt owns its results, even after a tab is closed and reopened.
+type invoiceAttempt struct {
+	request app.InvoiceRequest
+}
 
 type ReceiveScreen struct {
-	ctx  *ScreenContext
-	step recvStep
+	ctx         *ScreenContext
+	step        recvStep
+	invoices    app.LightningInvoiceClient
+	attempt     *invoiceAttempt
+	invoice     app.LightningInvoice
+	checking    bool
+	lookupError string
 
 	// Input state
 	amountInput AmountInput
@@ -46,27 +51,21 @@ type ReceiveScreen struct {
 	btnIdx      int  // 0=Clear, 1=Create Invoice
 	inputError  string
 
-	// Invoice state (set after creation)
-	payReq      string
-	paymentHash string
-	amountSats  int64
-
-	// Waiting state
 	buttonIdx int // 0=Show QR, 1=Copyable Invoice
-
-	// Result state
-	settled bool
-	expired bool
-	error   string
 }
 
 func NewReceiveScreen(
 	ctx *ScreenContext,
 ) *ReceiveScreen {
+	var invoices app.LightningInvoiceClient
+	if ctx.LndClient != nil {
+		invoices = ctx.LndClient
+	}
 	amt := NewAmountInput()
 	amt.Focus() // amount is the initial focus zone
 	return &ReceiveScreen{
 		ctx:         ctx,
+		invoices:    invoices,
 		step:        recvStepInput,
 		amountInput: amt,
 		memoInput:   newRecvMemoInput(),
@@ -75,8 +74,6 @@ func NewReceiveScreen(
 		btnIdx:      1, // default to Create Invoice
 	}
 }
-
-// ── Screen interface ────────────────────────────────────
 
 func (s *ReceiveScreen) Init() tea.Cmd {
 	return nil
@@ -88,14 +85,20 @@ func (s *ReceiveScreen) HandleKey(
 	switch s.step {
 	case recvStepInput:
 		return s.handleInputKey(keyStr, msg)
+	case recvStepCreating:
+		switch keyStr {
+		case "ctrl+c":
+			return s, tea.Quit
+		case "left":
+			return s, emitFocusSidebar
+		case "backspace":
+			return s, emitFocusParent
+		}
+		return s, nil
 	case recvStepWaiting:
 		return s.handleWaitingKey(keyStr)
-	case recvStepPaid:
-		return s.handlePaidKey(keyStr)
-	case recvStepExpired:
-		return s.handleExpiredKey(keyStr)
-	case recvStepError:
-		return s.handleErrorKey(keyStr)
+	case recvStepPaid, recvStepExpired:
+		return s.handleResultKey(keyStr)
 	}
 	return s, nil
 }
@@ -108,8 +111,13 @@ func (s *ReceiveScreen) HandleMsg(
 		return s.handlePaste(msg)
 	case invoiceCreatedMsg:
 		return s.handleInvoiceCreated(msg)
-	case invoiceSettledMsg:
-		return s.handleInvoiceSettled(msg)
+	case invoiceCheckMsg:
+		if s.step == recvStepWaiting && s.attempt != nil && msg.attempt == s.attempt && !s.checking {
+			s.checking = true
+			return s, checkInvoiceCmd(s.invoices, s.attempt, s.invoice)
+		}
+	case invoiceStatusMsg:
+		return s.handleInvoiceStatus(msg)
 	}
 	return s, nil
 }
@@ -118,14 +126,17 @@ func (s *ReceiveScreen) View(w, h int) string {
 	switch s.step {
 	case recvStepInput:
 		return s.viewInput(w, h)
+	case recvStepCreating:
+		p := newPane(w)
+		p.title(theme.Header, "Creating Invoice")
+		p.dim("Waiting for LND...")
+		return p.render()
 	case recvStepWaiting:
 		return s.viewWaiting(w, h)
 	case recvStepPaid:
 		return s.viewPaid(w, h)
 	case recvStepExpired:
 		return s.viewExpired(w, h)
-	case recvStepError:
-		return s.viewError(w, h)
 	}
 	return ""
 }
@@ -134,10 +145,12 @@ func (s *ReceiveScreen) HelpBindings() []key.Binding {
 	switch s.step {
 	case recvStepInput:
 		return s.inputBindings()
+	case recvStepCreating:
+		return []key.Binding{kSidebar, kBack, kQuit}
 	case recvStepWaiting:
 		return actionButtonBindings(
 			s.buttonIdx, s.ctx.HasTabs)
-	case recvStepPaid, recvStepExpired, recvStepError:
+	case recvStepPaid, recvStepExpired:
 		return resultBindings(s.ctx.HasTabs)
 	}
 	return nil
@@ -175,8 +188,6 @@ func (s *ReceiveScreen) inputBindings() []key.Binding {
 	return binds
 }
 
-// ── Focus helpers ──────────────────────────────────────
-
 func (s *ReceiveScreen) focusInputZone() {
 	s.amountInput.Blur()
 	s.memoInput.Blur()
@@ -189,8 +200,6 @@ func (s *ReceiveScreen) focusInputZone() {
 		// no text input to focus
 	}
 }
-
-// ── Input step ──────────────────────────────────────────
 
 func (s *ReceiveScreen) handleInputKey(
 	keyStr string, msg tea.KeyPressMsg,
@@ -216,8 +225,6 @@ func (s *ReceiveScreen) advanceToButtons() {
 	s.focusZone = recvZoneButtons
 	s.btnIdx = 1 // default to Create Invoice
 }
-
-// ── Per-zone key handlers ─────────────────────────────
 
 func (s *ReceiveScreen) handleAmountKey(
 	keyStr string, msg tea.KeyPressMsg,
@@ -363,28 +370,23 @@ func (s *ReceiveScreen) handleButtonKey(
 	return s, nil
 }
 
-// submitInvoice validates and creates the invoice.
-func (s *ReceiveScreen) submitInvoice() (
-	Screen, tea.Cmd,
-) {
+func (s *ReceiveScreen) submitInvoice() (Screen, tea.Cmd) {
+	if s.step != recvStepInput {
+		return s, nil
+	}
 	if s.amountInput.Empty() {
 		s.inputError = "Enter an amount"
 		return s, nil
 	}
-	amt := s.amountInput.Sats()
-	if amt < 1 {
-		s.inputError = "Minimum 1 sat"
-		return s, nil
-	}
-	s.amountSats = amt
+	s.attempt = &invoiceAttempt{request: app.InvoiceRequest{
+		AmountSats: s.amountInput.Sats(),
+		Memo:       s.memoInput.Value(),
+		Blinded:    s.blindPaths,
+	}}
+	s.step = recvStepCreating
 	s.inputError = ""
-	return s, createInvoiceCmd(
-		s.ctx.LndClient, amt,
-		s.memoInput.Value(),
-		s.blindPaths)
+	return s, createInvoiceCmd(s.invoices, s.attempt)
 }
-
-// ── Waiting step ────────────────────────────────────────
 
 func (s *ReceiveScreen) handleWaitingKey(
 	keyStr string,
@@ -414,58 +416,32 @@ func (s *ReceiveScreen) handleWaitingKey(
 		}
 		return s, nil
 	case "enter":
-		if s.buttonIdx == 0 && s.payReq != "" {
+		if s.buttonIdx == 0 && s.invoice.PaymentRequest() != "" {
 			return s, func() tea.Msg {
 				return showQRMsg{
-					URL: s.payReq,
+					URL: s.invoice.PaymentRequest(),
 					Label: fmt.Sprintf(
 						"Invoice — %s sats",
-						formatSats(s.amountSats)),
+						formatSats(s.invoice.AmountSats())),
 				}
 			}
 		}
-		if s.buttonIdx == 1 && s.payReq != "" {
-			return s, showInvoiceCmd(s.payReq)
+		if s.buttonIdx == 1 && s.invoice.PaymentRequest() != "" {
+			return s, showInvoiceCmd(s.invoice.PaymentRequest())
 		}
 	}
 	return s, nil
 }
 
-// ── Paid step ───────────────────────────────────────────
-
-func (s *ReceiveScreen) handlePaidKey(
-	keyStr string,
-) (Screen, tea.Cmd) {
+func (s *ReceiveScreen) handleResultKey(keyStr string) (Screen, tea.Cmd) {
 	switch keyStr {
 	case "ctrl+c":
 		return s, tea.Quit
 	case "enter":
-		return s, tea.Batch(
-			emitCloseTab,
-			emitRefreshStatus,
-			fetchPaymentHistoryCmd(
-				s.ctx.LndClient))
-	case "left":
-		return s, emitFocusSidebar
-	case "up", "shift+tab":
-		if s.ctx.HasTabs {
-			return s, emitFocusTabBar
+		if s.step == recvStepPaid {
+			return s, tea.Batch(emitCloseTab, emitRefreshStatus,
+				fetchPaymentHistoryCmd(s.ctx.LndClient))
 		}
-	case "backspace":
-		return s, emitFocusParent
-	}
-	return s, nil
-}
-
-// ── Expired step ────────────────────────────────────────
-
-func (s *ReceiveScreen) handleExpiredKey(
-	keyStr string,
-) (Screen, tea.Cmd) {
-	switch keyStr {
-	case "ctrl+c":
-		return s, tea.Quit
-	case "enter":
 		return s, emitCloseTab
 	case "left":
 		return s, emitFocusSidebar
@@ -478,30 +454,6 @@ func (s *ReceiveScreen) handleExpiredKey(
 	}
 	return s, nil
 }
-
-// ── Error step ──────────────────────────────────────────
-
-func (s *ReceiveScreen) handleErrorKey(
-	keyStr string,
-) (Screen, tea.Cmd) {
-	switch keyStr {
-	case "ctrl+c":
-		return s, tea.Quit
-	case "enter":
-		return s, emitCloseTab
-	case "left":
-		return s, emitFocusSidebar
-	case "up", "shift+tab":
-		if s.ctx.HasTabs {
-			return s, emitFocusTabBar
-		}
-	case "backspace":
-		return s, emitFocusParent
-	}
-	return s, nil
-}
-
-// ── Paste handling ──────────────────────────────────────
 
 func (s *ReceiveScreen) handlePaste(
 	msg tea.PasteMsg,
@@ -519,50 +471,47 @@ func (s *ReceiveScreen) handlePaste(
 	return s, cmd
 }
 
-// ── Async message handlers ──────────────────────────────
-
-func (s *ReceiveScreen) handleInvoiceCreated(
-	msg invoiceCreatedMsg,
-) (Screen, tea.Cmd) {
+func (s *ReceiveScreen) handleInvoiceCreated(msg invoiceCreatedMsg) (Screen, tea.Cmd) {
+	if s.step != recvStepCreating || s.attempt == nil || msg.attempt != s.attempt {
+		return s, nil
+	}
 	if msg.err != nil {
-		errStr := msg.err.Error()
-		if s.blindPaths && (strings.Contains(errStr,
-			"blinded") || strings.Contains(errStr,
-			"routes to self")) {
-			s.inputError = errStr +
-				" — try turning off blinded paths"
-		} else {
-			s.inputError = errStr
+		s.inputError = msg.err.Error()
+		if s.attempt.request.Blinded && (strings.Contains(s.inputError, "blinded") || strings.Contains(s.inputError, "routes to self")) {
+			s.inputError += " - try turning off blinded paths"
 		}
+		s.attempt = nil
+		s.step = recvStepInput
 		return s, nil
 	}
-	s.payReq = msg.payReq
-	s.paymentHash = msg.paymentHash
-	s.amountSats = msg.amountSats
+	s.invoice = msg.invoice
 	s.step = recvStepWaiting
-	return s, waitForInvoiceCmd(
-		s.ctx.LndClient, msg.paymentHash)
+	s.checking = true
+	return s, checkInvoiceCmd(s.invoices, s.attempt, s.invoice)
 }
 
-func (s *ReceiveScreen) handleInvoiceSettled(
-	msg invoiceSettledMsg,
-) (Screen, tea.Cmd) {
-	if msg.err != nil {
-		s.error = msg.err.Error()
-		s.step = recvStepError
+func (s *ReceiveScreen) handleInvoiceStatus(msg invoiceStatusMsg) (Screen, tea.Cmd) {
+	if s.step != recvStepWaiting || s.attempt == nil || msg.attempt != s.attempt || !s.checking {
 		return s, nil
 	}
-	if msg.settled {
-		s.settled = true
-		s.step = recvStepPaid
-	} else if msg.expired {
-		s.expired = true
-		s.step = recvStepExpired
+	s.checking = false
+	s.lookupError = ""
+	if msg.err != nil {
+		s.lookupError = msg.err.Error()
+	} else {
+		switch msg.state {
+		case app.InvoicePaid:
+			s.step = recvStepPaid
+			return s, nil
+		case app.InvoiceExpired:
+			s.step = recvStepExpired
+			return s, nil
+		}
 	}
-	return s, nil
+	// Only this screen schedules the next lookup. Closing its tab drops the
+	// pending result or timer, so no further lookups are started.
+	return s, scheduleInvoiceCheck(s.attempt)
 }
-
-// ── Views ───────────────────────────────────────────────
 
 func (s *ReceiveScreen) viewInput(w, h int) string {
 	p := newPane(w)
@@ -593,7 +542,6 @@ func (s *ReceiveScreen) viewInput(w, h int) string {
 	p.dim("Visible to the sender.")
 	p.blank()
 
-	// ── Blinded paths toggle ──
 	blindFocused := isFocused &&
 		s.focusZone == recvZoneBlind
 	blindLabel := theme.Header
@@ -611,7 +559,6 @@ func (s *ReceiveScreen) viewInput(w, h int) string {
 
 	p.appendError(s.inputError)
 
-	// ── Buttons pinned to bottom ──
 	btnFocused := isFocused &&
 		s.focusZone == recvZoneButtons
 	return p.renderWithBottomButtons(
@@ -626,12 +573,12 @@ func (s *ReceiveScreen) viewWaiting(
 	p.title(theme.Header, "Waiting for Payment")
 
 	p.field("Amount: ",
-		formatSats(s.amountSats)+" sats")
+		formatSats(s.invoice.AmountSats())+" sats")
 	p.blank()
 
-	if s.payReq != "" {
+	if s.invoice.PaymentRequest() != "" {
 		p.labelLine("Invoice:")
-		display := s.payReq
+		display := s.invoice.PaymentRequest()
 		maxChars := (w - 2) * 4 // ~4 wrapped lines
 		if len(display) > maxChars {
 			display = display[:maxChars] + "..."
@@ -639,10 +586,14 @@ func (s *ReceiveScreen) viewWaiting(
 		p.monoWrap(display)
 		p.blank()
 
-		p.dim("Waiting for payment...")
+		if s.lookupError != "" {
+			p.warnWrap("Unable to check payment: " + s.lookupError)
+			p.dim("Retrying while this tab remains open.")
+		} else {
+			p.dim("Waiting for payment...")
+		}
 	}
 
-	// ── Buttons pinned to bottom ──
 	btnFocused := s.ctx.ContentFocused
 	return p.renderWithBottomButtons(
 		[]string{"Show QR", "Copyable Invoice"},
@@ -655,7 +606,7 @@ func (s *ReceiveScreen) viewPaid(
 	p := newPane(w)
 	p.title(theme.Success, "Payment Received")
 	p.field("Amount: ",
-		formatSats(s.amountSats)+" sats")
+		formatSats(s.invoice.AmountSats())+" sats")
 	return p.renderWithBottomButtons(
 		[]string{"Done"}, 0,
 		s.ctx.ContentFocused, h)
@@ -667,22 +618,6 @@ func (s *ReceiveScreen) viewExpired(
 	p := newPane(w)
 	p.title(theme.Warning, "Invoice Expired")
 	p.dim("Create a new invoice to try again.")
-	return p.renderWithBottomButtons(
-		[]string{"Done"}, 0,
-		s.ctx.ContentFocused, h)
-}
-
-func (s *ReceiveScreen) viewError(
-	w, h int,
-) string {
-	p := newPane(w)
-	p.title(theme.Warning, "Receive Failed")
-	p.warnWrap(s.error)
-	p.blank()
-	p.dim("The connection to LND was lost while")
-	p.dim("waiting for payment. Your invoice may")
-	p.dim("still be valid — check your payment")
-	p.dim("history after reconnecting.")
 	return p.renderWithBottomButtons(
 		[]string{"Done"}, 0,
 		s.ctx.ContentFocused, h)
