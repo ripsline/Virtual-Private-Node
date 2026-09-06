@@ -89,8 +89,7 @@ func TestNilClientSafety(t *testing.T) {
 	if _, err := c.SendPayment("lnbc1"); err == nil {
 		t.Error("should error")
 	}
-	if _, err := c.CloseChannel(
-		strings.Repeat("ab", 32)+":0", false, 0); err == nil {
+	if result := c.CloseChannel(ChannelCloseRequest{ChannelPoint: strings.Repeat("ab", 32) + ":0"}); result.Err == nil || result.Submitted {
 		t.Error("should error")
 	}
 }

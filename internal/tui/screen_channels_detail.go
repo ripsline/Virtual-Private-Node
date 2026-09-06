@@ -10,31 +10,17 @@ import (
 	"github.com/virtualprivatenode/vpn/internal/theme"
 )
 
-// ── ChannelDetailScreen ────────────────────────────────
-// Channel detail view. Displays channel info and a Close
-// Channel button. When the user presses Close, the screen
-// delegates to an embedded ChannelCloseScreen rather than
-// opening a separate tab — the close flow, result, and
-// tab close all happen within this detail tab. No stale
-// detail tab after channel closure.
-//
-// The close screen is a separate type composed via a
-// pointer field (option 2 in the design discussion). The
-// detail screen acts as a thin router: when closeScreen
-// is non-nil, all interface methods delegate to it. The
-// close screen stays independently testable.
-
+// ChannelDetailScreen retains the selected funding outpoint and owns its close
+// flow. The embedded screen owns approval and the result for that channel.
 type ChannelDetailScreen struct {
-	ctx     *ScreenContext
-	channel channelInfo
+	ctx         *ScreenContext
+	channel     channelInfo
+	unavailable bool
 
 	// Button index for detail view (0=Cancel, 1=Close)
 	viewBtnIdx int
 
-	// Fee tiers snapshot for passing to close screen
-	feeTiers [4]feeTier
-
-	// Close flow delegation — nil means detail view,
+	// A nil close screen means the detail view is active;
 	// non-nil means the close flow is active and all
 	// input/rendering delegates to it.
 	closeScreen *ChannelCloseScreen
@@ -43,12 +29,10 @@ type ChannelDetailScreen struct {
 func NewChannelDetailScreen(
 	ctx *ScreenContext,
 	ch channelInfo,
-	feeTiers [4]feeTier,
 ) *ChannelDetailScreen {
 	return &ChannelDetailScreen{
-		ctx:      ctx,
-		channel:  ch,
-		feeTiers: feeTiers,
+		ctx:     ctx,
+		channel: ch,
 	}
 }
 
@@ -72,8 +56,8 @@ func (s *ChannelDetailScreen) HandleKey(
 		return s, cmd
 	}
 
-	// Pending channels: view-only, no button
-	if s.channel.Pending {
+	// Pending or unavailable channels have no close action.
+	if s.channel.Pending || s.unavailable {
 		switch keyStr {
 		case "ctrl+c":
 			return s, tea.Quit
@@ -123,25 +107,22 @@ func (s *ChannelDetailScreen) HandleMsg(
 		s.closeScreen = newClose.(*ChannelCloseScreen)
 		return s, cmd
 	}
-	switch msg := msg.(type) {
+	switch msg.(type) {
 	case tabActivatedMsg:
 		// Re-find the channel in live status data
 		// so the detail view reflects any changes
 		// since this tab was last viewed (e.g.
 		// balance change after payment settlement).
 		if s.ctx.Status != nil {
+			s.unavailable = true
 			for _, ch := range s.ctx.Status.channels {
 				if ch.ChannelPoint ==
 					s.channel.ChannelPoint {
+					s.unavailable = false
 					s.channel = ch
 					break
 				}
 			}
-		}
-		return s, nil
-	case feeTiersMsg:
-		if msg.err == nil {
-			s.feeTiers = msg.tiers
 		}
 		return s, nil
 	}
@@ -160,7 +141,10 @@ func (s *ChannelDetailScreen) View(
 
 	name := ch.PeerAlias
 	if name == "" {
-		name = ch.RemotePubkey[:16] + "..."
+		name = ch.RemotePubkey
+		if len(name) > 16 {
+			name = name[:16] + "..."
+		}
 	}
 	p.title(theme.Header, name)
 
@@ -170,6 +154,9 @@ func (s *ChannelDetailScreen) View(
 	}
 	if ch.Pending {
 		status = theme.Dim.Render("pending")
+	}
+	if s.unavailable {
+		status = theme.Warning.Render("unavailable; check pending channels and history")
 	}
 
 	p.line(" " + theme.Label.Render("Status:    ") +
@@ -215,8 +202,8 @@ func (s *ChannelDetailScreen) View(
 			fmt.Sprintf("%d", ch.ChanID))
 	}
 
-	// Cancel / Close Channel pinned to bottom (not for pending)
-	if !ch.Pending {
+	// Only available open channels offer a close action.
+	if !ch.Pending && !s.unavailable {
 		btnFocused := s.ctx.ContentFocused
 		return p.renderWithBottomButtons(
 			[]string{"Cancel", "Close Channel"},
@@ -230,7 +217,7 @@ func (s *ChannelDetailScreen) HelpBindings() []key.Binding {
 	if s.closeScreen != nil {
 		return s.closeScreen.HelpBindings()
 	}
-	if s.channel.Pending {
+	if s.channel.Pending || s.unavailable {
 		return viewDetailBindings(s.ctx.HasTabs)
 	}
 	return detailActionBindings(
@@ -242,13 +229,14 @@ func (s *ChannelDetailScreen) HelpBindings() []key.Binding {
 func (s *ChannelDetailScreen) launchClose() (
 	Screen, tea.Cmd,
 ) {
+	if s.unavailable || s.channel.Pending {
+		return s, nil
+	}
 	s.closeScreen = NewChannelCloseScreen(
 		s.ctx,
 		s.channel.ChannelPoint,
 		s.channel.PeerAlias,
 		s.channel.Capacity,
-		s.channel.LocalBalance,
-		s.channel.RemoteBalance,
-		s.feeTiers)
-	return s, fetchFeeTiersCmd(s.ctx.Cfg)
+		s.channel.LocalBalance)
+	return s, closeFeeTiersCmd(s.closeScreen)
 }

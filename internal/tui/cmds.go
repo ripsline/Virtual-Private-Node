@@ -118,24 +118,29 @@ func openChannelCmd(client app.ChannelOpenClient, attempt *channelOpenAttempt) t
 	}
 }
 
-func closeChannelCmd(
-	client *lndrpc.Client,
-	chanPoint string,
-	force bool,
-	satPerVbyte uint64,
-) tea.Cmd {
+type channelCloseAttempt struct {
+	prepared               app.PreparedChannelClose
+	alias                  string
+	capacity, localBalance int64
+}
+
+type channelCloseFeesMsg struct {
+	screen *ChannelCloseScreen
+	tiers  [4]feeTier
+	err    error
+}
+
+func closeChannelCmd(client app.ChannelCloseClient, attempt *channelCloseAttempt) tea.Cmd {
 	return func() tea.Msg {
-		if client == nil {
-			return closeChannelMsg{
-				err: fmt.Errorf("LND not connected")}
-		}
-		result, err := client.CloseChannel(
-			chanPoint, force, satPerVbyte)
-		if err != nil {
-			return closeChannelMsg{err: err}
-		}
-		return closeChannelMsg{
-			txid: result.ClosingTxid}
+		return channelCloseResultMsg{attempt: attempt, result: app.CloseChannel(client, attempt.prepared)}
+	}
+}
+
+func closeFeeTiersCmd(screen *ChannelCloseScreen) tea.Cmd {
+	fetch := fetchFeeTiersCmd(screen.ctx.Cfg)
+	return func() tea.Msg {
+		msg := fetch().(feeTiersMsg)
+		return channelCloseFeesMsg{screen: screen, tiers: msg.tiers, err: msg.err}
 	}
 }
 

@@ -161,19 +161,21 @@ func (s *ChannelsHomeScreen) handleEnter() (
 		ch := channels[s.cursor]
 		label := ch.PeerAlias
 		if label == "" {
-			label = ch.RemotePubkey[:12] + ".."
+			label = ch.RemotePubkey
+			if len(label) > 12 {
+				label = label[:12] + ".."
+			}
 		}
 		if len(label) > 17 {
 			label = label[:17] + "..."
 		}
 		screen := NewChannelDetailScreen(
-			s.ctx, ch, s.feeTiers())
-		idx := s.cursor
+			s.ctx, ch)
 		return s, func() tea.Msg {
 			return openTabMsg{
 				Kind:   tabChannel,
 				Label:  label,
-				Index:  idx,
+				Key:    ch.ChannelPoint,
 				Screen: screen,
 			}
 		}
@@ -538,14 +540,6 @@ func (s *ChannelsHomeScreen) channels() []channelInfo {
 		return nil
 	}
 	return s.ctx.Status.channels
-}
-
-func (s *ChannelsHomeScreen) feeTiers() [4]feeTier {
-	// Fee tiers are stored on OnChainContext but the
-	// screen doesn't have access to it. Return zero
-	// tiers — ChannelDetailScreen will receive them
-	// via feeTiersMsg routed by Model.
-	return [4]feeTier{}
 }
 
 func (s *ChannelsHomeScreen) clampCursor() {
