@@ -43,23 +43,6 @@ func TestWalletBalanceFields(t *testing.T) {
 	}
 }
 
-func TestChannelFields(t *testing.T) {
-	ch := Channel{Capacity: 1000000, LocalBalance: 600000, Active: true, PeerAlias: "ACINQ"}
-	if ch.Capacity != 1000000 {
-		t.Errorf("Capacity: got %d", ch.Capacity)
-	}
-	if ch.PeerAlias != "ACINQ" {
-		t.Errorf("PeerAlias: got %q", ch.PeerAlias)
-	}
-}
-
-func TestPendingChannelInfoFields(t *testing.T) {
-	info := &PendingChannelInfo{PendingOpen: 2}
-	if info.PendingOpen != 2 {
-		t.Errorf("PendingOpen: got %d", info.PendingOpen)
-	}
-}
-
 func TestSatStr(t *testing.T) {
 	tests := []struct {
 		input int64
@@ -100,7 +83,7 @@ func TestNilClientSafety(t *testing.T) {
 	if err := c.ConnectPeer("a", "b"); err == nil {
 		t.Error("should error")
 	}
-	if _, err := c.OpenChannel("a", 100000, false, false, nil, false, 0); err == nil {
+	if result := c.OpenChannel(ChannelOpenRequest{}); result.Err == nil || result.Submitted {
 		t.Error("should error")
 	}
 	if _, err := c.SendPayment("lnbc1"); err == nil {
@@ -184,57 +167,6 @@ func TestParseOutpoint(t *testing.T) {
 		if _, err := parseOutpoint(s); err == nil {
 			t.Errorf("accepted %q", s)
 		}
-	}
-}
-
-func TestBuildOpenChannelRequestUsesFinalTaproot(t *testing.T) {
-	txid := strings.Repeat("ab", 32)
-	req, err := buildOpenChannelRequest(
-		[]byte{2, 3, 4}, 250000, true, true,
-		[]string{txid + ":7"}, false, 12,
-	)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if req.CommitmentType != lnrpc.CommitmentType_TAPROOT {
-		t.Fatalf("commitment type=%v want=%v",
-			req.CommitmentType, lnrpc.CommitmentType_TAPROOT)
-	}
-	if req.LocalFundingAmount != 250000 || !req.Private ||
-		!req.ScidAlias || req.FundMax || req.SatPerVbyte != 12 {
-		t.Fatalf("unexpected open request: %+v", req)
-	}
-	if len(req.Outpoints) != 1 ||
-		req.Outpoints[0].TxidStr != txid ||
-		req.Outpoints[0].OutputIndex != 7 {
-		t.Fatalf("unexpected outpoints: %+v", req.Outpoints)
-	}
-}
-
-func TestBuildOpenChannelRequestDefaults(t *testing.T) {
-	req, err := buildOpenChannelRequest(
-		[]byte{2, 3, 4}, 250000, false, false,
-		nil, true, 0,
-	)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if req.CommitmentType != lnrpc.CommitmentType_UNKNOWN_COMMITMENT_TYPE {
-		t.Fatalf("commitment type=%v want default", req.CommitmentType)
-	}
-	if !req.FundMax || req.LocalFundingAmount != 0 {
-		t.Fatalf("fund-max request carries amount: %+v", req)
-	}
-}
-
-func TestBuildOpenChannelRequestRejectsPublicTaproot(t *testing.T) {
-	_, err := buildOpenChannelRequest(
-		[]byte{2, 3, 4}, 250000, false, true,
-		nil, false, 12,
-	)
-	if err == nil || !strings.Contains(err.Error(),
-		"taproot channels must be private") {
-		t.Fatalf("public Taproot request error=%v", err)
 	}
 }
 

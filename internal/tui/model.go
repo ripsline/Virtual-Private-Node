@@ -145,8 +145,8 @@ type syncthingDevicesMsg struct {
 	err     error
 }
 type channelOpenResultMsg struct {
-	txid string
-	err  error
+	attempt *channelOpenAttempt
+	result  app.ChannelOpenResult
 }
 type newAddressMsg struct {
 	address string

@@ -8,6 +8,7 @@ import (
 	"charm.land/bubbles/v2/textinput"
 	tea "charm.land/bubbletea/v2"
 
+	"github.com/virtualprivatenode/vpn/internal/app"
 	"github.com/virtualprivatenode/vpn/internal/lndrpc"
 	"github.com/virtualprivatenode/vpn/internal/theme"
 )
@@ -70,7 +71,6 @@ type ChannelOpenScreen struct {
 	// Amount selection
 	amountIdx   int // 0=coin control btn, 1=amount
 	amountInput AmountInput
-	amount      int64
 	fundMax     bool
 
 	// Fee rate
@@ -83,15 +83,15 @@ type ChannelOpenScreen struct {
 	toggleIdx int
 
 	// UTXO selection (coin control)
-	utxos             []lndrpc.UTXO
-	txs               []lndrpc.OnChainTx
-	utxoSelected      map[int]bool
-	utxoSelectedTotal int64
-	utxoOutpoints     []string
-	utxoCursor        int
-	utxoFetched       bool // lazy fetch guard
-	ccZone            int  // sub-step focus zone
-	ccBtnIdx          int  // sub-step button index
+	utxos       []lndrpc.UTXO
+	txs         []lndrpc.OnChainTx
+	selection   app.CoinSelection
+	refresh     *channelOpenRefresh
+	utxoErr     error
+	utxoCursor  int
+	utxoFetched bool
+	ccZone      int // sub-step focus zone
+	ccBtnIdx    int // sub-step button index
 
 	// Selection state (✓ indicators)
 	peerConfirmed   bool
@@ -107,9 +107,10 @@ type ChannelOpenScreen struct {
 	confirmBtnIdx int
 
 	// Result
-	inFlight bool
-	txid     string
-	error    string
+	client  app.ChannelOpenClient
+	attempt *channelOpenAttempt
+	result  app.ChannelOpenResult
+	error   string
 }
 
 func NewChannelOpenScreen(
@@ -127,7 +128,9 @@ func NewChannelOpenScreen(
 		pubkeyInput:  newChanPubkeyInput(),
 		hostInput:    newChanHostInput(),
 		customBtnIdx: 1,
-		utxoSelected: make(map[int]bool),
+	}
+	if ctx.LndClient != nil {
+		s.client = ctx.LndClient
 	}
 	return s
 }
@@ -135,10 +138,7 @@ func NewChannelOpenScreen(
 // ── Screen interface ────────────────────────────────────
 
 func (s *ChannelOpenScreen) Init() tea.Cmd {
-	return tea.Batch(
-		fetchChannelUtxosCmd(s.ctx.LndClient),
-		fetchChannelTxsCmd(s.ctx.LndClient),
-		fetchFeeTiersCmd(s.ctx.Cfg))
+	return tea.Batch(s.refreshCoins(), fetchFeeTiersCmd(s.ctx.Cfg))
 }
 
 func (s *ChannelOpenScreen) HandleKey(
@@ -166,13 +166,10 @@ func (s *ChannelOpenScreen) HandleMsg(
 ) (Screen, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tabActivatedMsg:
-		// Always refetch on tab re-focus so data
-		// reflects any changes since last viewed,
-		// matching channel history's pattern.
-		return s, tea.Batch(
-			fetchChannelUtxosCmd(s.ctx.LndClient),
-			fetchChannelTxsCmd(s.ctx.LndClient),
-			fetchFeeTiersCmd(s.ctx.Cfg))
+		if s.step >= coStepOpening {
+			return s, nil
+		}
+		return s, tea.Batch(s.refreshCoins(), fetchFeeTiersCmd(s.ctx.Cfg))
 	case tea.PasteMsg:
 		return s.handlePaste(msg)
 	case channelOpenResultMsg:
@@ -200,7 +197,7 @@ func (s *ChannelOpenScreen) View(w, h int) string {
 	case coStepOpening:
 		return s.viewOpening(w, h)
 	case coStepResult:
-		return s.viewResult(w)
+		return s.viewResult(w, h)
 	}
 	return ""
 }
@@ -217,7 +214,7 @@ func (s *ChannelOpenScreen) HelpBindings() []key.Binding {
 		return actionButtonBindings(
 			s.confirmBtnIdx, s.ctx.HasTabs)
 	case coStepOpening:
-		return inFlightBindings()
+		return []key.Binding{kSidebar, kUpShiftTabBar}
 	case coStepResult:
 		return resultBindings(s.ctx.HasTabs)
 	}
@@ -499,9 +496,8 @@ func (s *ChannelOpenScreen) handleButtonKey(
 	case "enter":
 		switch s.btnIdx {
 		case 0: // Clear
-			return s.clearForm(), tea.Batch(
-				fetchChannelUtxosCmd(s.ctx.LndClient),
-				fetchChannelTxsCmd(s.ctx.LndClient))
+			s.clearForm()
+			return s, s.refreshCoins()
 		case 1: // Open Channel
 			return s.submitOpenChannel()
 		}
@@ -600,24 +596,18 @@ func (s *ChannelOpenScreen) handlePaste(
 func (s *ChannelOpenScreen) handleOpenResult(
 	msg channelOpenResultMsg,
 ) (Screen, tea.Cmd) {
-	s.inFlight = false
-	if msg.err != nil {
-		s.error = msg.err.Error()
-	} else {
-		s.txid = msg.txid
-		s.error = ""
+	if s.step != coStepOpening || s.attempt == nil || msg.attempt != s.attempt {
+		return s, nil
 	}
+	s.result = msg.result
 	s.step = coStepResult
-	if msg.err == nil {
-		return s, emitRefreshStatus
-	}
-	return s, nil
+	return s, emitRefreshStatus
 }
 
 func (s *ChannelOpenScreen) handleFeeTiers(
 	msg feeTiersMsg,
 ) (Screen, tea.Cmd) {
-	if msg.err != nil {
+	if msg.err != nil || s.step >= coStepConfirm {
 		return s, nil
 	}
 	s.feeTiers = msg.tiers
@@ -632,21 +622,10 @@ func (s *ChannelOpenScreen) handleFeeTiers(
 
 // ── Form actions ───────────────────────────────────────
 
-// validateCustomAmount checks the custom amount field is
-// non-empty and within the 20,000 — 1,000,000,000 sats
-// channel-size bounds. The upper bound matches LND's wumbo
-// channel limit (10 BTC) enabled via protocol.wumbo-channels
-// in lnd.conf.
 func (s *ChannelOpenScreen) validateCustomAmount() (int64, string) {
-	if s.amountInput.Empty() {
-		return 0, "empty amount"
-	}
 	n := s.amountInput.Sats()
-	if n < 20000 {
-		return 0, "min 20,000 sats"
-	}
-	if n > 1000000000 {
-		return 0, "max 1,000,000,000 sats (10 BTC)"
+	if err := app.ValidateChannelAmount(n); err != nil {
+		return 0, err.Error()
 	}
 	return n, ""
 }
@@ -661,10 +640,9 @@ func (s *ChannelOpenScreen) confirmAmountAndAdvance() bool {
 		return false
 	}
 	s.error = ""
-	s.amount = n
 	// FundMax when amount matches selected UTXO total
-	s.fundMax = len(s.utxoSelected) > 0 &&
-		n == s.utxoSelectedTotal
+	total, err := s.selection.Total(s.utxos)
+	s.fundMax = err == nil && s.selection.Len() > 0 && n == total
 	s.amountConfirmed = true
 	s.amountInput.Blur()
 	s.focusZone = coZoneFee
@@ -672,36 +650,13 @@ func (s *ChannelOpenScreen) confirmAmountAndAdvance() bool {
 	return true
 }
 
-// ── Backward-entry helpers ─────────────────────────────
-//
-// When focus returns to a zone from forward (via
-// shift+tab or up), that zone's "confirmed" state is
-// dropped — the user is re-entering to potentially make
-// changes. The cursor lands on the same item they
-// previously committed (so they can see where they were),
-// but there's no checkmark. Committing requires explicit
-// forward navigation (enter/tab/down).
-//
-// Each helper owns one zone's reset logic. Handlers in
-// other zones call these when their keystrokes cause a
-// backward transition, rather than inlining the reset.
-// See design-decisions.md: "Backward-entry helpers for
-// multi-zone form screens."
-
-// enterPeersBackward: focus returned to peers from the
-// amounts zone. Decommits the peer while keeping the
-// cursor on the previously-selected row.
+// Backward navigation keeps entered values but requires another explicit review.
 func (s *ChannelOpenScreen) enterPeersBackward() {
 	s.focusZone = coZonePeers
 	s.peerConfirmed = false
 	s.error = ""
 }
 
-// enterAmountsBackward: focus returned to amounts from
-// the fee zone. Decommits the amount but preserves the
-// value in the input for review/editing. If there's a
-// committed amount, populates the AmountInput so the
-// user can arrow left/right through the number.
 func (s *ChannelOpenScreen) enterAmountsBackward() {
 	s.focusZone = coZoneAmounts
 	s.amountConfirmed = false
@@ -710,26 +665,18 @@ func (s *ChannelOpenScreen) enterAmountsBackward() {
 	s.amountInput.Focus()
 }
 
-// enterFeeBackward: focus returned to fee from the
-// toggles zone. Refocuses the fee input for editing.
 func (s *ChannelOpenScreen) enterFeeBackward() {
 	s.focusZone = coZoneFee
 	s.feeInput.Focus()
 	s.error = ""
 }
 
-// enterTogglesBackward: focus returned to toggles from
-// the buttons zone. Toggles have no "draft vs committed"
-// distinction — each toggle is its own commit — so the
-// only state to reset is the error message. Included for
-// symmetry so the navigation handlers in the buttons zone
-// don't inline the focus assignment.
 func (s *ChannelOpenScreen) enterTogglesBackward() {
 	s.focusZone = coZoneToggles
 	s.error = ""
 }
 
-func (s *ChannelOpenScreen) clearForm() *ChannelOpenScreen {
+func (s *ChannelOpenScreen) clearForm() {
 	s.peerIdx = 0
 	s.peerConfirmed = false
 	s.customPubkey = ""
@@ -738,7 +685,6 @@ func (s *ChannelOpenScreen) clearForm() *ChannelOpenScreen {
 	s.amountIdx = 0
 	s.amountConfirmed = false
 	s.amountInput.Clear()
-	s.amount = 0
 	s.fundMax = false
 	s.feeInput = NewFeeInput()
 	if s.feeTiers[0].SatPerVB > 0 {
@@ -748,79 +694,46 @@ func (s *ChannelOpenScreen) clearForm() *ChannelOpenScreen {
 	s.private = true
 	s.taproot = true
 	s.toggleIdx = 0
-	s.utxoSelected = make(map[int]bool)
-	s.utxoSelectedTotal = 0
-	s.utxoOutpoints = nil
+	s.selection.Clear()
+	s.utxoErr = nil
+	s.attempt = nil
+	s.refresh = nil
 	s.utxoCursor = 0
 	s.utxoFetched = false
 	s.txs = nil
 	s.focusZone = coZonePeers
 	s.btnIdx = 1
 	s.error = ""
-	return s
 }
 
 func (s *ChannelOpenScreen) submitOpenChannel() (
 	Screen, tea.Cmd,
 ) {
-	if s.taproot && !s.private {
-		s.error = "Taproot channels must be private"
-		return s, nil
-	}
-
-	// Validate peer confirmed
 	if !s.peerConfirmed {
 		s.error = "Select a peer first"
 		return s, nil
 	}
-	pubkey := s.selectedPubkey()
-	if pubkey == "" {
-		s.error = "Select a peer first"
-		return s, nil
-	}
-
-	// Mandatory coin control
-	if len(s.utxoSelected) == 0 {
-		s.error = "Select UTXOs in Coin control first"
-		return s, nil
-	}
-
-	// Validate amount confirmed
 	if !s.amountConfirmed {
 		s.error = "Select a channel size first"
 		return s, nil
 	}
-
-	// Validate amount value
-	if !s.fundMax {
-		n, errMsg := s.validateCustomAmount()
-		if errMsg != "" {
-			s.error = errMsg
-			return s, nil
-		}
-		s.amount = n
-	}
-
-	// FundMax minimum check
-	if s.fundMax && s.utxoSelectedTotal < 20000 {
-		s.error = "min 20,000 sats"
+	if s.utxoErr != nil {
+		s.error = s.utxoErr.Error()
 		return s, nil
 	}
-
-	// Custom amount vs selected UTXOs check
-	feeRate := s.feeInput.Sats()
-	if !s.fundMax {
-		estFee := estimateSimpleFee(
-			len(s.utxoSelected), 2, feeRate)
-		if s.amount+estFee > s.utxoSelectedTotal {
-			s.error = "Amount plus fee exceeds " +
-				"selected UTXOs"
-			return s, nil
-		}
+	prepared, err := app.PrepareChannelOpen(app.ChannelOpenInput{
+		Pubkey: s.selectedPubkey(), Host: s.selectedHost(),
+		AmountSats: s.amountInput.Sats(), FundMax: s.fundMax,
+		Private: s.private, Taproot: s.taproot, SatPerVbyte: s.feeInput.Sats(),
+		Outpoints: s.selection.Outpoints(),
+	}, s.utxos)
+	if err != nil {
+		s.error = err.Error()
+		return s, nil
 	}
-
+	s.attempt = &channelOpenAttempt{prepared: prepared, alias: s.selectedAlias()}
 	s.error = ""
-	s.confirmBtnIdx = 1
+	s.confirmBtnIdx = 0
 	s.step = coStepConfirm
 	return s, nil
 }
@@ -968,14 +881,9 @@ func (s *ChannelOpenScreen) viewInput(
 		ccPrefix = theme.NavActive.Render("▸")
 		ccStyle = theme.Action
 	}
-	var ccLabel string
-	if len(s.utxoSelected) > 0 {
-		ccLabel = fmt.Sprintf(
-			"[Coin control: %d UTXO (%s sats)]",
-			len(s.utxoSelected),
-			formatSats(s.utxoSelectedTotal))
-	} else {
-		ccLabel = "[Coin control]"
+	ccLabel := "[Coin control]"
+	if s.selection.Len() > 0 {
+		ccLabel = "[Coin control: " + s.selectionSummary() + "]"
 	}
 	p.line(fmt.Sprintf("%s %s",
 		ccPrefix, ccStyle.Render(ccLabel)))
@@ -993,45 +901,18 @@ func (s *ChannelOpenScreen) viewInput(
 		amtStyle = theme.Action
 	}
 
-	hasCoinCtrl := len(s.utxoSelected) > 0
 	if s.amountConfirmed && !s.amountInput.Focused() {
-		// Auto-confirmed or committed state
-		annotation := ""
-		if hasCoinCtrl &&
-			s.amount == s.utxoSelectedTotal {
-			annotation = theme.Dim.Render(
-				"  full UTXO(s), no change")
+		label := formatSats(s.amountInput.Sats()) + " sats"
+		if s.fundMax {
+			label = "Max (capacity determined by LND)"
 		}
-		p.line(fmt.Sprintf("%s %s%s",
-			amtPrefix,
-			amtStyle.Render(
-				formatSats(s.amount)+" sats"),
-			annotation))
+		p.line(fmt.Sprintf("%s %s", amtPrefix, amtStyle.Render(label)))
 	} else {
-		// Editing state with input field
-		inputW := w - 14
-		if inputW > 20 {
-			inputW = 20
+		s.amountInput.SetWidth(min(w-14, 20))
+		p.line(fmt.Sprintf("%s %s %s", amtPrefix, amtStyle.Render("Amount:"), s.amountInput.View()))
+		if total, err := s.selection.Total(s.utxos); err == nil && total > 0 && s.amountInput.Sats() == total {
+			p.dim(" Max: LND determines capacity and any change.")
 		}
-		s.amountInput.SetWidth(inputW)
-		amtLine := fmt.Sprintf("%s %s %s",
-			amtPrefix,
-			amtStyle.Render("Amount:"),
-			s.amountInput.View())
-		// Change annotation
-		if hasCoinCtrl && !s.amountInput.Empty() {
-			typed := s.amountInput.Sats()
-			if typed == s.utxoSelectedTotal {
-				amtLine += theme.Dim.Render(
-					"  full UTXO(s), no change")
-			} else if typed < s.utxoSelectedTotal {
-				change := s.utxoSelectedTotal - typed
-				amtLine += theme.Warning.Render(
-					fmt.Sprintf("  ~%s sats change",
-						formatSats(change)))
-			}
-		}
-		p.line(amtLine)
 	}
 	p.blank()
 

@@ -114,8 +114,23 @@ const (
 	WalletStateActive  WalletState = "SERVER_ACTIVE"
 )
 
+type ChannelOpenRequest struct {
+	Pubkey                    string
+	AmountSats                int64
+	Private, Taproot, FundMax bool
+	Outpoints                 []string
+	SatPerVbyte               uint64
+	MinConfs                  int32
+	SpendUnconfirmed          bool
+}
+
+// Submitted means the funding RPC was attempted, even if its response was lost.
+// It does not imply that LND accepted or broadcast the transaction.
 type ChannelOpenResult struct {
 	FundingTxID string
+	OutputIndex uint32
+	Submitted   bool
+	Err         error
 }
 
 type PeerInfo struct {
@@ -449,6 +464,7 @@ func (c *Client) ConnectPeer(pubkey, host string) error {
 		if strings.Contains(errStr, "already connected") {
 			return nil
 		}
+		logger.Status("LND peer connect warning: %v", err)
 		return err
 	}
 	return nil
@@ -472,87 +488,75 @@ func (c *Client) WaitForPeer(pubkey string, timeout time.Duration) error {
 	return fmt.Errorf("peer did not connect within %s", timeout)
 }
 
-// OpenChannel opens a channel to a peer. This is a fund-moving operation.
-// The caller MUST verify the peer is connected and show a confirmation
-// dialog before calling this. When outpoints is non-empty, only those
-// UTXOs are used to fund the channel (coin control). When fundMax is
-// true, the entire selected balance (minus fees) funds the channel,
-// producing no change output.
-func (c *Client) OpenChannel(pubkey string, localAmount int64, private bool, taproot bool, outpoints []string, fundMax bool, satPerVbyte uint64) (*ChannelOpenResult, error) {
+// OpenChannel submits one funding request. The explicit outpoints restrict LND's
+// funding pool; LND determines which coins to use and whether change is needed.
+func (c *Client) OpenChannel(input ChannelOpenRequest) ChannelOpenResult {
 	rpc := c.rpc()
 	if rpc == nil {
-		return nil, errNotConnected
+		return ChannelOpenResult{Err: errNotConnected}
 	}
-
-	pubkeyBytes, err := hex.DecodeString(pubkey)
+	req, err := buildOpenChannelRequest(input)
 	if err != nil {
-		return nil, fmt.Errorf("invalid pubkey: %w", err)
+		return ChannelOpenResult{Err: err}
 	}
-	req, err := buildOpenChannelRequest(
-		pubkeyBytes, localAmount, private, taproot, outpoints,
-		fundMax, satPerVbyte,
-	)
-	if err != nil {
-		return nil, err
-	}
-
 	ctx, cancel := c.callCtx(120 * time.Second)
 	defer cancel()
-
 	resp, err := rpc.OpenChannelSync(ctx, req)
+	result := ChannelOpenResult{Submitted: true, Err: err}
 	if err != nil {
 		c.handleError(err)
-		return nil, err
+		return result
 	}
-
 	txidBytes := resp.GetFundingTxidBytes()
-	txid := fmt.Sprintf("%x", txidBytes)
-	if len(txidBytes) == 32 {
-		reversed := make([]byte, 32)
-		for i := 0; i < 32; i++ {
-			reversed[i] = txidBytes[31-i]
-		}
-		txid = fmt.Sprintf("%x", reversed)
+	if len(txidBytes) != 32 {
+		result.Err = fmt.Errorf("LND returned an invalid funding transaction ID")
+		return result
 	}
-	return &ChannelOpenResult{FundingTxID: txid}, nil
+	reversed := make([]byte, 32)
+	for i := range reversed {
+		reversed[i] = txidBytes[31-i]
+	}
+	result.FundingTxID = hex.EncodeToString(reversed)
+	result.OutputIndex = resp.GetOutputIndex()
+	return result
 }
 
-func buildOpenChannelRequest(
-	pubkeyBytes []byte, localAmount int64, private, taproot bool,
-	outpoints []string, fundMax bool, satPerVbyte uint64,
-) (*lnrpc.OpenChannelRequest, error) {
-	if taproot && !private {
+func buildOpenChannelRequest(input ChannelOpenRequest) (*lnrpc.OpenChannelRequest, error) {
+	if input.Taproot && !input.Private {
 		return nil, fmt.Errorf("taproot channels must be private")
 	}
-
+	pubkey, err := hex.DecodeString(input.Pubkey)
+	if err != nil || len(pubkey) != 33 {
+		return nil, fmt.Errorf("invalid node public key")
+	}
+	if len(input.Outpoints) == 0 {
+		return nil, fmt.Errorf("channel funding requires explicit coin selection")
+	}
+	if input.FundMax && input.AmountSats != 0 {
+		return nil, fmt.Errorf("fund-max request must not carry a fixed amount")
+	}
 	req := &lnrpc.OpenChannelRequest{
-		NodePubkey:       pubkeyBytes,
-		Private:          private,
-		MinConfs:         0,
-		SpendUnconfirmed: true,
-		ScidAlias:        private,
-		FundMax:          fundMax,
+		NodePubkey: pubkey, LocalFundingAmount: input.AmountSats,
+		Private: input.Private, MinConfs: input.MinConfs,
+		SpendUnconfirmed: input.SpendUnconfirmed, ScidAlias: input.Private,
+		FundMax: input.FundMax, SatPerVbyte: input.SatPerVbyte,
 	}
-	if !fundMax {
-		req.LocalFundingAmount = localAmount
-	}
-	if taproot {
+	if input.Taproot {
 		req.CommitmentType = lnrpc.CommitmentType_TAPROOT
 	}
-	if satPerVbyte > 0 {
-		req.SatPerVbyte = satPerVbyte
-	}
-
-	// Coin control: restrict inputs to the selected UTXOs. A
-	// malformed outpoint aborts the whole operation — silently
-	// skipping one would widen coin selection past what the
-	// operator chose.
-	for _, op := range outpoints {
-		outPoint, err := parseOutpoint(op)
+	// Reject the entire selection if any outpoint is malformed or duplicated.
+	seen := make(map[string]bool, len(input.Outpoints))
+	for _, op := range input.Outpoints {
+		outpoint, err := parseOutpoint(op)
 		if err != nil {
 			return nil, err
 		}
-		req.Outpoints = append(req.Outpoints, outPoint)
+		identity := fmt.Sprintf("%s:%d", strings.ToLower(outpoint.TxidStr), outpoint.OutputIndex)
+		if seen[identity] {
+			return nil, fmt.Errorf("duplicate selected outpoint: %s", op)
+		}
+		seen[identity] = true
+		req.Outpoints = append(req.Outpoints, outpoint)
 	}
 	return req, nil
 }
