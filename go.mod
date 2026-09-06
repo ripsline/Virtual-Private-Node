@@ -6,6 +6,8 @@ require (
 	charm.land/bubbles/v2 v2.0.0
 	charm.land/bubbletea/v2 v2.0.2
 	charm.land/lipgloss/v2 v2.0.2
+	github.com/btcsuite/btcd v0.25.1-0.20260310163610-1c55c7c18179
+	github.com/btcsuite/btcd/btcutil v1.1.6
 	github.com/lightningnetwork/lnd v0.21.2-beta
 	github.com/mdp/qrterminal/v3 v3.2.1
 	golang.org/x/crypto v0.46.0
@@ -27,9 +29,7 @@ require (
 	github.com/aead/siphash v1.0.1 // indirect
 	github.com/atotto/clipboard v0.1.4 // indirect
 	github.com/beorn7/perks v1.0.1 // indirect
-	github.com/btcsuite/btcd v0.25.1-0.20260310163610-1c55c7c18179 // indirect
 	github.com/btcsuite/btcd/btcec/v2 v2.3.6 // indirect
-	github.com/btcsuite/btcd/btcutil v1.1.6 // indirect
 	github.com/btcsuite/btcd/btcutil/psbt v1.1.10 // indirect
 	github.com/btcsuite/btcd/chaincfg/chainhash v1.1.0 // indirect
 	github.com/btcsuite/btcd/v2transport v1.0.1 // indirect

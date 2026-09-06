@@ -2,6 +2,7 @@ package tui
 
 import (
 	"fmt"
+	"slices"
 	"strings"
 	"unicode/utf8"
 
@@ -11,6 +12,7 @@ import (
 	"charm.land/lipgloss/v2"
 	"charm.land/lipgloss/v2/tree"
 
+	"github.com/virtualprivatenode/vpn/internal/app"
 	"github.com/virtualprivatenode/vpn/internal/lndrpc"
 	"github.com/virtualprivatenode/vpn/internal/theme"
 )
@@ -48,19 +50,11 @@ type OnChainSendScreen struct {
 	// Buttons (step 4)
 	sendBtnIdx int // 0=Clear, 1=Create Transaction
 
-	// Validated values (set on confirm transition)
-	addrVal  string
-	amtVal   int64
-	feeRate  int64
-	labelVal string
-
-	// Confirm (step 5)
-	confirmBtnIdx int   // 0=Go Back, 1=Confirm & Broadcast
-	confirmFee    int64 // precise fee from estimateTxFeeCmd
-
-	// Result (step 7)
-	txid  string
-	error string
+	client        app.OnChainSendClient
+	attempt       *onChainSendAttempt
+	confirmBtnIdx int
+	result        app.OnChainSendResult
+	error         string
 }
 
 func NewOnChainSendScreen(
@@ -76,6 +70,9 @@ func NewOnChainSendScreen(
 		labelInput: newOCSendLabelInput(),
 		feeInput:   NewFeeInput(),
 		sendBtnIdx: 1, // default to Create Transaction
+	}
+	if ctx.LndClient != nil {
+		s.client = ctx.LndClient
 	}
 	return s
 }
@@ -113,8 +110,6 @@ func (s *OnChainSendScreen) HandleMsg(
 		return s.handleSendCoinsResult(msg)
 	case feeTiersMsg:
 		return s.handleFeeTiers(msg)
-	case feeEstimateMsg:
-		return s.handleFeeEstimate(msg)
 	}
 	return s, nil
 }
@@ -147,7 +142,7 @@ func (s *OnChainSendScreen) HelpBindings() []key.Binding {
 		return actionButtonBindings(
 			s.confirmBtnIdx, s.ctx.HasTabs)
 	case ocStepBroadcast:
-		return inFlightBindings()
+		return []key.Binding{kSidebar, kUpShiftTabBar}
 	case ocStepResult:
 		return resultBindings(s.ctx.HasTabs)
 	}
@@ -301,8 +296,7 @@ func (s *OnChainSendScreen) handleInputBackspace(
 			cmd := s.amtInput.Update(tea.Msg(msg))
 			return s, cmd
 		}
-		// Max button focused — non-input zone,
-		// navigate to parent.
+		// Backspace on the Max button returns to the parent.
 		return s, emitFocusParent
 	case ocStepLabel:
 		var cmd tea.Cmd
@@ -311,10 +305,8 @@ func (s *OnChainSendScreen) handleInputBackspace(
 		return s, cmd
 	case ocStepFee:
 		cmd := s.feeInput.Update(tea.Msg(msg))
-		s.syncMaxIfEngaged()
 		return s, cmd
 	case ocStepButtons:
-		// Non-input zone — navigate to parent.
 		return s, emitFocusParent
 	}
 	return s, nil
@@ -349,7 +341,6 @@ func (s *OnChainSendScreen) handleInputDown() (
 func (s *OnChainSendScreen) handleInputTab() (
 	Screen, tea.Cmd,
 ) {
-	// No lists to skip — same as down
 	return s.handleInputDown()
 }
 
@@ -418,7 +409,6 @@ func (s *OnChainSendScreen) handleInputDefault(
 		return s, cmd
 	case ocStepFee:
 		cmd := s.feeInput.Update(tea.Msg(msg))
-		s.syncMaxIfEngaged()
 		return s, cmd
 	}
 	return s, nil
@@ -460,15 +450,18 @@ func (s *OnChainSendScreen) handleConfirmKey(
 			s.backToInput()
 			return s, nil
 		case 1: // Confirm & Broadcast
+			if s.attempt == nil {
+				return s, nil
+			}
+			req := s.attempt.prepared.Request()
+			if !slices.Equal(req.Outpoints, s.ocCtx.Selection.Outpoints()) {
+				s.backToInput()
+				s.error = "Coin selection changed. Review the transaction again"
+				return s, nil
+			}
 			s.error = ""
 			s.step = ocStepBroadcast
-			return s, sendCoinsCmd(
-				s.ctx.LndClient,
-				s.addrVal,
-				s.amtVal,
-				s.feeRate,
-				s.sendAll,
-				s.ocCtx.UtxoOutpoints)
+			return s, sendCoinsCmd(s.client, s.attempt)
 		}
 	}
 	return s, nil
@@ -476,11 +469,22 @@ func (s *OnChainSendScreen) handleConfirmKey(
 
 // ── Broadcast step (step 6) ────────────────────────────
 
-func (s *OnChainSendScreen) handleBroadcastKey(
-	keyStr string,
-) (Screen, tea.Cmd) {
+func (s *OnChainSendScreen) handleBroadcastKey(keyStr string) (Screen, tea.Cmd) {
+	switch keyStr {
+	case "left":
+		return s, emitFocusSidebar
+	case "up", "shift+tab":
+		return s, emitFocusTabBar
+	}
 	return s, nil
 }
+
+func onChainSendBusy(screen Screen) bool {
+	s, ok := screen.(*OnChainSendScreen)
+	return ok && s.step == ocStepBroadcast
+}
+
+type closeOnChainSendMsg struct{ screen *OnChainSendScreen }
 
 // ── Result step (step 7) ───────────────────────────────
 
@@ -491,12 +495,7 @@ func (s *OnChainSendScreen) handleResultKey(
 	case "ctrl+c":
 		return s, tea.Quit
 	case "enter":
-		return s, tea.Batch(
-			emitCloseTab,
-			listUnspentCmd(s.ctx.LndClient),
-			fetchOnChainTxCmd(s.ctx.LndClient),
-			fetchStatus(s.ctx.Cfg, s.ctx.State,
-				s.ctx.LndClient))
+		return s, func() tea.Msg { return closeOnChainSendMsg{screen: s} }
 	case "left":
 		return s, emitFocusSidebar
 	case "up", "shift+tab":
@@ -533,7 +532,6 @@ func (s *OnChainSendScreen) handlePaste(
 		return s, cmd
 	case ocStepFee:
 		cmd := s.feeInput.Update(msg)
-		s.syncMaxIfEngaged()
 		return s, cmd
 	}
 	return s, nil
@@ -541,52 +539,24 @@ func (s *OnChainSendScreen) handlePaste(
 
 // ── Async message handlers ─────────────────────────────
 
-func (s *OnChainSendScreen) handleSendCoinsResult(
-	msg sendCoinsResultMsg,
-) (Screen, tea.Cmd) {
-	if msg.err != nil {
-		s.error = msg.err.Error()
-	} else {
-		s.txid = msg.txid
-		s.error = ""
-	}
-	s.step = ocStepResult
-	// On success: clear UTXO selection + apply label
-	if msg.err == nil {
-		cmds := []tea.Cmd{emitClearUtxoSelection}
-		if s.labelVal != "" {
-			cmds = append(cmds,
-				labelTxCmd(s.ctx.LndClient,
-					msg.txid, s.labelVal))
-		}
-		return s, tea.Batch(cmds...)
-	}
-	return s, nil
-}
-
-func (s *OnChainSendScreen) handleFeeTiers(
-	msg feeTiersMsg,
-) (Screen, tea.Cmd) {
-	if msg.err != nil {
+func (s *OnChainSendScreen) handleSendCoinsResult(msg sendCoinsResultMsg) (Screen, tea.Cmd) {
+	if s.step != ocStepBroadcast || s.attempt == nil || msg.attempt != s.attempt {
 		return s, nil
 	}
-	// Pre-fill fee input if still empty
-	if s.feeInput.Empty() &&
-		msg.tiers[0].SatPerVB > 0 {
-		s.feeInput.SetSats(
-			int64(msg.tiers[0].SatPerVB))
+	s.result = msg.result
+	s.step = ocStepResult
+	if msg.result.State == app.OnChainBroadcast && slices.Equal(
+		s.ocCtx.Selection.Outpoints(), s.attempt.prepared.Request().Outpoints) {
+		s.ocCtx.Selection.Clear()
 	}
-	s.syncMaxIfEngaged()
-	return s, nil
+	// Refresh wallet facts even if the RPC outcome is unknown. Never retry here.
+	return s, tea.Batch(listUnspentCmd(s.ctx.LndClient), fetchOnChainTxCmd(s.ctx.LndClient),
+		fetchStatus(s.ctx.Cfg, s.ctx.State, s.ctx.LndClient))
 }
 
-func (s *OnChainSendScreen) handleFeeEstimate(
-	msg feeEstimateMsg,
-) (Screen, tea.Cmd) {
-	if msg.err == nil {
-		s.confirmFee = msg.feeSats
-	} else {
-		s.error = msg.err.Error()
+func (s *OnChainSendScreen) handleFeeTiers(msg feeTiersMsg) (Screen, tea.Cmd) {
+	if msg.err == nil && s.step <= ocStepButtons && s.feeInput.Empty() && msg.tiers[0].SatPerVB > 0 {
+		s.feeInput.SetSats(int64(msg.tiers[0].SatPerVB))
 	}
 	return s, nil
 }
@@ -613,189 +583,41 @@ func (s *OnChainSendScreen) focusStep() {
 	}
 }
 
-// ── Max-family helpers (Sparrow model) ────────────────
-//
-// Max is a one-way engage: pressing the Max button sets
-// sendAll and fills the amount. Typing or backspace
-// disengages silently. Fee edits auto-sync the amount
-// while engaged. The Max button is a no-op when already
-// engaged.
-
-// computeMaxAmount returns the max sendable amount in
-// sats given the current fee rate and UTXO selection
-// (or full wallet balance if no selection).
-func (s *OnChainSendScreen) computeMaxAmount() int64 {
-	feeRate := s.getFeeRate()
-	if len(s.ocCtx.UtxoSelected) > 0 {
-		numInputs := max(
-			len(s.ocCtx.UtxoOutpoints), 1)
-		estFee := estimateSimpleFee(
-			numInputs, 1, feeRate)
-		maxAmt := s.ocCtx.UtxoSelectedTotal - estFee
-		if maxAmt < 0 {
-			return 0
-		}
-		return maxAmt
-	}
-	if s.ctx.Status != nil &&
-		s.ctx.Status.lndBalance != "" {
-		bal := parseBalance(
-			s.ctx.Status.lndBalance)
-		numInputs := max(
-			len(s.ocCtx.Utxos), 1)
-		estFee := estimateSimpleFee(
-			numInputs, 1, feeRate)
-		maxAmt := bal - estFee
-		if maxAmt < 0 {
-			return 0
-		}
-		return maxAmt
-	}
-	return 0
-}
-
-// applyMax engages send-all mode. No-op when already
-// engaged. Called from enter on the Max button.
+// Max is an intent, not a locally computed net amount. LND accounts for
+// fees and any required reserve change when constructing the transaction.
 func (s *OnChainSendScreen) applyMax() {
-	if s.sendAll {
-		return
-	}
 	s.sendAll = true
-	s.amtInput.SetSats(s.computeMaxAmount())
+	s.amtInput.Clear()
 }
 
-// disengageMax exits send-all mode. No-op when not
-// engaged. Called from typed-digit and backspace
-// handlers — the keystroke itself goes through to
-// AmountInput after this returns.
-func (s *OnChainSendScreen) disengageMax() {
-	if !s.sendAll {
-		return
-	}
-	s.sendAll = false
-}
+func (s *OnChainSendScreen) disengageMax() { s.sendAll = false }
 
-// syncMaxIfEngaged recomputes the max amount when
-// sendAll is active. No-op otherwise. Called after any
-// fee-rate mutation so the amount field stays in sync.
-func (s *OnChainSendScreen) syncMaxIfEngaged() {
-	if !s.sendAll {
-		return
-	}
-	s.amtInput.SetSats(s.computeMaxAmount())
-}
-
-// EngageMaxForSelection is the entry point called from
-// OnChainHomeScreen.openSend when UTXOs are pre-selected.
-// Sets sendAll and fills the amount from the selection
-// total minus estimated fee.
-func (s *OnChainSendScreen) EngageMaxForSelection() {
-	s.sendAll = true
-	s.amtInput.SetSats(s.computeMaxAmount())
-}
-
-// getFeeRate returns the current fee rate from the fee
-// input, defaulting to 1 sat/vB.
-func (s *OnChainSendScreen) getFeeRate() int64 {
-	n := s.feeInput.Sats()
-	if n < 1 {
-		return 1
-	}
-	return n
-}
-
-// validateAndConfirm validates all fields and transitions
-// to the confirm step.
-func (s *OnChainSendScreen) validateAndConfirm() (
-	Screen, tea.Cmd,
-) {
-	// Validate address
-	addr := strings.TrimSpace(
-		s.addrInput.Value())
-	if addr == "" {
-		s.error = "Enter an address"
-		s.step = ocStepAddr
-		s.focusStep()
+func (s *OnChainSendScreen) validateAndConfirm() (Screen, tea.Cmd) {
+	prepared, err := app.PrepareOnChainSend(s.ctx.Cfg.Network, app.OnChainSendInput{
+		Address: s.addrInput.Value(), AmountSats: s.amtInput.Sats(), SendAll: s.sendAll,
+		SatPerVbyte: s.feeInput.Sats(), Label: s.labelInput.Value(),
+		Outpoints: s.ocCtx.Selection.Outpoints(),
+	}, s.ocCtx.Utxos)
+	if err != nil {
+		s.error = err.Error()
 		return s, nil
 	}
-	if !isValidOnChainAddr(addr, s.ctx.Cfg.Network) {
-		s.error = "Invalid address"
-		s.step = ocStepAddr
-		s.focusStep()
-		return s, nil
-	}
-
-	// Validate amount
-	var amountSats int64
-	if s.sendAll {
-		amountSats = 0
-		displayVal := s.amtInput.Sats()
-		if displayVal > 0 {
-			s.amtVal = displayVal
-		}
-	} else {
-		if s.amtInput.Empty() {
-			s.error = "Enter an amount"
-			s.step = ocStepAmount
-			s.focusStep()
-			return s, nil
-		}
-		n := s.amtInput.Sats()
-		if n < 546 {
-			s.error =
-				"Minimum 546 sats (dust limit)"
-			s.step = ocStepAmount
-			s.focusStep()
-			return s, nil
-		}
-		amountSats = n
-	}
-
-	// Validate fee rate
-	feeRateVal := s.feeInput.Sats()
-	if s.feeInput.Empty() {
-		s.error = "Enter a fee rate"
-		s.step = ocStepFee
-		s.focusStep()
-		return s, nil
-	}
-	if feeRateVal < 1 {
-		s.error = "Minimum 1 sat/vB"
-		s.step = ocStepFee
-		s.focusStep()
-		return s, nil
-	}
-
-	s.addrVal = addr
-	s.amtVal = amountSats
-	s.feeRate = feeRateVal
-	s.labelVal = strings.TrimSpace(
-		s.labelInput.Value())
+	s.attempt = &onChainSendAttempt{prepared: prepared}
 	s.error = ""
-	s.confirmFee = 0
 	s.confirmBtnIdx = 0
 	s.step = ocStepConfirm
-
-	if !s.sendAll && addr != "" {
-		target := int32(1)
-		return s, estimateTxFeeCmd(
-			s.ctx.LndClient, addr,
-			amountSats, target)
-	}
 	return s, nil
 }
 
-// backToInput returns to the input form, preserving
-// entered text. Only clears validated state and error.
 func (s *OnChainSendScreen) backToInput() {
+	s.attempt = nil
 	s.step = ocStepButtons
 	s.error = ""
-	s.confirmFee = 0
 	s.confirmBtnIdx = 0
 }
 
 // resetInputs creates fresh inputs and resets all
-// input-phase state.
+// input-phase state, including unavailable selected coins.
 func (s *OnChainSendScreen) resetInputs() {
 	s.addrInput = newOnChainAddrInput(s.ctx.Cfg.Network)
 	s.amtInput = NewAmountInput()
@@ -805,12 +627,9 @@ func (s *OnChainSendScreen) resetInputs() {
 	s.maxFocused = false
 	s.step = ocStepAddr
 	s.sendBtnIdx = 1
-	s.confirmFee = 0
 	s.confirmBtnIdx = 0
-	s.addrVal = ""
-	s.amtVal = 0
-	s.feeRate = 0
-	s.labelVal = ""
+	s.attempt = nil
+	s.ocCtx.Selection.Clear()
 	s.error = ""
 	// Re-fill fee from cached tiers
 	if s.ocCtx.SendFeeTiers[0].SatPerVB > 0 {
@@ -875,14 +694,18 @@ func (s *OnChainSendScreen) viewInput(
 		maxStyle = theme.BtnFocused
 	}
 	maxLabel := "Max"
-	if n := len(s.ocCtx.UtxoSelected); n == 1 {
+	if n := s.ocCtx.Selection.Len(); n == 1 {
 		maxLabel = "Max (1 UTXO selected)"
 	} else if n > 1 {
 		maxLabel = fmt.Sprintf(
 			"Max (%d UTXOs selected)", n)
 	}
 	renderedMax := maxStyle.Render(maxLabel)
-	leftPart := amtMarker + " " + s.amtInput.View()
+	amountView := s.amtInput.View()
+	if s.sendAll {
+		amountView = theme.Value.Render("Max (net amount set by LND)")
+	}
+	leftPart := amtMarker + " " + amountView
 	gap := w - lipgloss.Width(leftPart) -
 		lipgloss.Width(renderedMax) - 2
 	if gap < 2 {
@@ -927,59 +750,19 @@ func (s *OnChainSendScreen) viewInput(
 	}
 	lines = append(lines, "")
 
-	// ── Transaction preview diagram ─────────────
-	sendAmt := s.amtInput.Sats()
-	feeRate := s.getFeeRate()
-	showPreview := sendAmt > 0
-
+	// Preview expresses intent only; a manual fee rate has no supported total quote.
 	var diagLines []string
-	if showPreview {
-		diagOutpoints := s.ocCtx.UtxoOutpoints
-		if len(diagOutpoints) == 0 && s.sendAll &&
-			len(s.ocCtx.Utxos) > 0 {
-			for _, u := range s.ocCtx.Utxos {
-				diagOutpoints = append(diagOutpoints,
-					fmt.Sprintf("%s:%d",
-						u.Txid, u.Vout))
-			}
-		}
-
-		numInputs := max(len(diagOutpoints), 1)
-		numOutputs := 2
+	if s.sendAll || s.amtInput.Sats() > 0 {
+		amount := formatSats(s.amtInput.Sats())
 		if s.sendAll {
-			numOutputs = 1
+			amount = "unknown"
 		}
-		estFee := estimateSimpleFee(
-			numInputs, numOutputs, feeRate)
-
-		dispAmt := formatSats(sendAmt)
-
-		var changeStr string
-		if !s.sendAll {
-			if len(s.ocCtx.UtxoSelected) > 0 {
-				ch := s.ocCtx.UtxoSelectedTotal -
-					sendAmt - estFee
-				if ch > 0 {
-					changeStr = "~" +
-						formatSats(ch)
-				} else {
-					changeStr = "~?"
-				}
-			} else {
-				changeStr = "~?"
-			}
+		diagLines = renderTxDiagram(buildDiagramInputs(s.ocCtx.Selection.Outpoints(), s.ocCtx.Utxos, s.ocCtx.OnChainTxs),
+			strings.TrimSpace(s.addrInput.Value()), amount, "unknown", "unknown", s.sendAll, w)
+		diagLines = append(diagLines, " "+theme.Dim.Render("Total fee unavailable for this manual rate; LND determines change."))
+		if s.sendAll {
+			diagLines = append(diagLines, " "+theme.Dim.Render("Max deducts fees and may leave reserve change."))
 		}
-
-		feeStr := "~" + formatSats(estFee)
-		destAddr := strings.TrimSpace(
-			s.addrInput.Value())
-		diagInputs := buildDiagramInputs(
-			diagOutpoints,
-			s.ocCtx.Utxos,
-			s.ocCtx.OnChainTxs)
-		diagLines = renderTxDiagram(
-			diagInputs, destAddr, dispAmt,
-			changeStr, feeStr, s.sendAll, w)
 	}
 
 	// Error
@@ -1035,197 +818,45 @@ func (s *OnChainSendScreen) viewInput(
 	return strings.Join(lines, "\n")
 }
 
-func (s *OnChainSendScreen) viewConfirm(
-	w, h int,
-) string {
-	isFocused := s.ctx.ContentFocused
-
-	var lines []string
-	lines = append(lines, "")
-	lines = append(lines, centerPad(
-		theme.Warning.Render("Confirm On-Chain Send"),
-		w))
-	lines = append(lines, "")
-
-	addr := s.addrVal
-	lineW := w - 14
-	if len(addr) <= lineW {
-		lines = append(lines,
-			" "+theme.Label.Render("To:       ")+
-				theme.Mono.Render(addr))
+func (s *OnChainSendScreen) viewConfirm(w, h int) string {
+	p := newPane(w)
+	p.title(theme.Warning, "Confirm On-Chain Send")
+	req := s.attempt.prepared.Request()
+	p.labelLine("To:")
+	p.monoWrap(req.Address)
+	if req.SendAll {
+		p.line("Amount: Max (net amount determined by LND)")
 	} else {
-		lines = append(lines,
-			" "+theme.Label.Render("To:       ")+
-				theme.Mono.Render(addr[:lineW]))
-		lines = append(lines,
-			"           "+
-				theme.Mono.Render(addr[lineW:]))
+		p.line("Amount: " + formatSats(req.AmountSats) + " sats")
 	}
-	switch {
-	case s.sendAll && s.amtVal > 0:
-		lines = append(lines,
-			" "+theme.Label.Render("Amount:   ")+
-				theme.Value.Render(
-					formatSats(s.amtVal)+
-						" sats (max)"))
-	case s.sendAll:
-		lines = append(lines,
-			" "+theme.Label.Render("Amount:   ")+
-				theme.Value.Render("Send All"))
-	default:
-		lines = append(lines,
-			" "+theme.Label.Render("Amount:   ")+
-				theme.Value.Render(
-					formatSats(s.amtVal)+
-						" sats"))
-	}
-	if len(s.ocCtx.UtxoOutpoints) > 0 {
-		lines = append(lines,
-			" "+theme.Label.Render("Inputs:   ")+
-				theme.Value.Render(
-					fmt.Sprintf("%d selected UTXOs",
-						len(s.ocCtx.UtxoSelected))))
-	}
-	if s.labelVal != "" {
-		lines = append(lines,
-			" "+theme.Label.Render("Label:    ")+
-				theme.Value.Render(s.labelVal))
-	}
-	lines = append(lines,
-		" "+theme.Label.Render("Fee Rate: ")+
-			theme.Value.Render(
-				fmt.Sprintf("%d sat/vB",
-					s.feeRate)))
-	if s.confirmFee > 0 {
-		lines = append(lines,
-			" "+theme.Label.Render("Est. Fee: ")+
-				theme.Value.Render(
-					formatSats(s.confirmFee)+
-						" sats"))
-		if !s.sendAll && s.amtVal > 0 {
-			total := s.amtVal + s.confirmFee
-			lines = append(lines,
-				" "+theme.Label.Render("Total:    ")+
-					theme.Value.Render(
-						formatSats(total)+" sats"))
-		}
-	}
-	lines = append(lines, "")
-
-	// ── Diagram with real fee numbers ───────────
-	var destAmt string
-	if s.amtVal > 0 {
-		destAmt = formatSats(s.amtVal)
-	} else if s.sendAll {
-		if len(s.ocCtx.UtxoSelected) > 0 {
-			destAmt = formatSats(
-				s.ocCtx.UtxoSelectedTotal)
-		} else {
-			destAmt = formatSats(
-				parseBalance(
-					s.ctx.Status.lndBalance))
-		}
+	if len(req.Outpoints) > 0 {
+		p.line(fmt.Sprintf("Inputs: %d selected UTXOs", len(req.Outpoints)))
 	} else {
-		destAmt = "0"
+		p.line("Inputs: LND selects eligible wallet coins")
 	}
-
-	var changeStr string
-	if !s.sendAll && s.confirmFee > 0 &&
-		len(s.ocCtx.UtxoSelected) > 0 {
-		ch := s.ocCtx.UtxoSelectedTotal -
-			s.amtVal - s.confirmFee
-		if ch > 0 {
-			changeStr = formatSats(ch)
-		}
+	p.line("Unconfirmed inputs: allowed, subject to LND checks")
+	if req.Label != "" {
+		p.valueWrap("Label: " + req.Label)
 	}
-
-	var feeStr string
-	if s.confirmFee > 0 {
-		feeStr = formatSats(s.confirmFee)
-	} else {
-		feeRate := s.getFeeRate()
-		numInputs := max(
-			len(s.ocCtx.UtxoOutpoints), 1)
-		numOutputs := 2
-		if s.sendAll {
-			numOutputs = 1
-		}
-		feeStr = "~" + formatSats(
-			estimateSimpleFee(
-				numInputs, numOutputs, feeRate))
+	p.line(fmt.Sprintf("Fee rate: %d sat/vB", req.SatPerVbyte))
+	p.line("Total fee: unavailable for this manual rate")
+	if req.SendAll {
+		p.line("Max deducts fees and may leave reserve change.")
 	}
-
-	diagOutpoints := s.ocCtx.UtxoOutpoints
-	if len(diagOutpoints) == 0 && s.sendAll &&
-		len(s.ocCtx.Utxos) > 0 {
-		for _, u := range s.ocCtx.Utxos {
-			diagOutpoints = append(diagOutpoints,
-				fmt.Sprintf("%s:%d",
-					u.Txid, u.Vout))
-		}
+	amount := formatSats(req.AmountSats)
+	if req.SendAll {
+		amount = "unknown"
 	}
-
-	diagInputs := buildDiagramInputs(
-		diagOutpoints,
-		s.ocCtx.Utxos,
-		s.ocCtx.OnChainTxs)
-	diagLines := renderTxDiagram(
-		diagInputs, s.addrVal, destAmt,
-		changeStr, feeStr, s.sendAll, w)
-	lines = append(lines, diagLines...)
-
-	// Warning
-	lines = append(lines, "")
-	switch {
-	case s.sendAll && len(s.ocCtx.UtxoOutpoints) > 0:
-		lines = append(lines,
-			" "+theme.Warning.Render(
-				"Send all selected UTXOs?"))
-	case s.sendAll:
-		lines = append(lines,
-			" "+theme.Warning.Render(
-				"Send entire balance?"))
-	default:
-		lines = append(lines,
-			" "+theme.Warning.Render(
-				"Send "+formatSats(s.amtVal)+
-					" sats?"))
+	p.blank()
+	for _, line := range renderTxDiagram(
+		buildDiagramInputs(req.Outpoints, s.attempt.prepared.Coins(), nil),
+		req.Address, amount, "unknown", "unknown", req.SendAll, w) {
+		p.line(line)
 	}
-
-	// Error
 	if s.error != "" {
-		lines = append(lines, "")
-		lineW := w - 4
-		if lineW < 16 {
-			lineW = 16
-		}
-		errText := s.error
-		for len(errText) > 0 {
-			end := lineW
-			if end > len(errText) {
-				end = len(errText)
-			}
-			lines = append(lines,
-				" "+theme.Warning.Render(
-					errText[:end]))
-			errText = errText[end:]
-		}
+		p.warnWrap(s.error)
 	}
-
-	// ── Bottom buttons, pinned ──────────────────
-	btnFocused := isFocused
-	btnLine := renderButtons(
-		[]string{"Go Back", "Confirm & Broadcast"},
-		s.confirmBtnIdx, btnFocused, w)
-
-	contentH := len(lines)
-	padH := max(h-contentH-1, 1)
-	for i := 0; i < padH; i++ {
-		lines = append(lines, "")
-	}
-	lines = append(lines, btnLine)
-
-	return strings.Join(lines, "\n")
+	return p.renderWithBottomButtons([]string{"Go Back", "Confirm & Broadcast"}, s.confirmBtnIdx, s.ctx.ContentFocused, h)
 }
 
 func (s *OnChainSendScreen) viewBroadcast(
@@ -1241,27 +872,23 @@ func (s *OnChainSendScreen) viewBroadcast(
 		[]string{"Broadcasting..."}, 0, false, h)
 }
 
-func (s *OnChainSendScreen) viewResult(
-	w, h int,
-) string {
+func (s *OnChainSendScreen) viewResult(w, h int) string {
 	p := newPane(w)
-
-	if s.error != "" {
-		p.title(theme.Warning,
-			"On-Chain Send Failed")
-		p.warnWrap(s.error)
-	} else {
-		p.title(theme.Success,
-			"Transaction Broadcast")
-		if s.txid != "" {
-			p.labelLine("TX ID:")
-			p.monoWrap(s.txid)
-		}
+	switch s.result.State {
+	case app.OnChainBroadcast:
+		p.title(theme.Success, "Transaction Broadcast")
+		p.labelLine("TX ID:")
+		p.monoWrap(s.result.Txid)
+	case app.OnChainOutcomeUnknown:
+		p.title(theme.Warning, "Broadcast Outcome Unknown")
+		p.warnWrap("Check transaction history before attempting another send.")
+	default:
+		p.title(theme.Warning, "Transaction Not Submitted")
 	}
-
-	return p.renderWithBottomButtons(
-		[]string{"Done"}, 0,
-		s.ctx.ContentFocused, h)
+	if s.result.Err != nil {
+		p.warnWrap(s.result.Err.Error())
+	}
+	return p.renderWithBottomButtons([]string{"Done"}, 0, s.ctx.ContentFocused, h)
 }
 
 // ── Helpbar bindings ───────────────────────────────────
@@ -1301,27 +928,10 @@ func (s *OnChainSendScreen) inputButtonBindings() []key.Binding {
 	return binds
 }
 
-// ── Diagram helpers ────────────────────────────────────
-
-// ── Transaction diagram ────────────────────────────────
-//
-// Renders a Sparrow-style transaction diagram with inputs
-// on the left, "Transaction" centered, and outputs on
-// the right. Uses lipgloss/tree for outputs. Inputs are
-// shown with their label (from tx history) or truncated
-// address + amount.
-//
-//   test (recv)  ─────╮              ╭── bc1q..f39m   1,479,949
-//   003f8bce4d.. ─────┤              │
-//   8c7c97e111.. ─────┤ Transaction  │
-//   452a4c2b09.. ─────┤              ╰── fee               ~449
-//   2a191e9700.. ─────╯
-
-// txDiagramInput holds display info for a transaction
-// input in the diagram.
+// The diagram shows selected input labels and explicit unknown output values.
+// LND determines the transaction shape when submitting the reviewed request.
 type txDiagramInput struct {
 	label string // display label (tx label, address, or txid)
-	amt   string // formatted amount
 }
 
 func renderTxDiagram(
@@ -1336,7 +946,7 @@ func renderTxDiagram(
 	// ── Fallback if no inputs ────────────────────
 	if len(inputs) == 0 {
 		inputs = []txDiagramInput{
-			{label: "? inputs", amt: ""},
+			{label: "? inputs"},
 		}
 	}
 
@@ -1373,9 +983,12 @@ func renderTxDiagram(
 
 	outTree.Child(fmt.Sprintf("%-12s %*s",
 		destLabel, outValueW, destAmt))
-	if !sendAll && changeAmt != "" {
-		outTree.Child(fmt.Sprintf("%-12s %*s",
-			"change", outValueW, changeAmt))
+	if changeAmt != "" {
+		changeLabel := "change"
+		if sendAll {
+			changeLabel = "reserve?"
+		}
+		outTree.Child(fmt.Sprintf("%-12s %*s", changeLabel, outValueW, changeAmt))
 	}
 	outTree.Child(fmt.Sprintf("%-12s %*s",
 		"fee", outValueW, feeAmt))
@@ -1383,8 +996,7 @@ func renderTxDiagram(
 	outputsRendered := outTree.String()
 
 	// ── Build inputs column ──────────────────────
-	// Each input: "label ────╮" (no amounts — those
-	// are visible in the UTXO table above)
+	// Input amounts remain in the UTXO table.
 	inLabelW := 8
 	for _, inp := range inputs {
 		inLabelW = max(inLabelW,
@@ -1460,7 +1072,7 @@ func renderTxDiagram(
 
 // buildDiagramInputs creates txDiagramInput entries from
 // outpoints, cross-referencing UTXOs and tx history for
-// labels and amounts.
+// labels.
 func buildDiagramInputs(
 	outpoints []string,
 	utxos []lndrpc.UTXO,
@@ -1480,7 +1092,6 @@ func buildDiagramInputs(
 		for _, u := range utxos {
 			uOP := fmt.Sprintf("%s:%d", u.Txid, u.Vout)
 			if uOP == op {
-				inp.amt = formatSats(u.AmountSats)
 				if len(u.Address) > 14 {
 					inp.label = u.Address[:8] + ".." +
 						u.Address[len(u.Address)-4:]

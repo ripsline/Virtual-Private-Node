@@ -185,19 +185,16 @@ type utxoListMsg struct {
 	err   error
 }
 
+type onChainSendAttempt struct{ prepared app.PreparedOnChainSend }
+
 type sendCoinsResultMsg struct {
-	txid string
-	err  error
+	attempt *onChainSendAttempt
+	result  app.OnChainSendResult
 }
 
 type feeTiersMsg struct {
 	tiers [4]feeTier
 	err   error
-}
-
-type feeEstimateMsg struct {
-	feeSats int64
-	err     error
 }
 
 type onChainTxMsg struct {
@@ -373,9 +370,7 @@ func NewModel(
 		LndClient: client,
 		Version:   version,
 	}
-	m.ocCtx = &OnChainContext{
-		UtxoSelected: make(map[int]bool),
-	}
+	m.ocCtx = &OnChainContext{}
 	m.sectionScreens[secChannels] =
 		NewChannelsHomeScreen(m.screenCtx)
 	m.sectionScreens[secWallet] =

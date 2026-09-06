@@ -4,6 +4,7 @@ import (
 	"charm.land/bubbles/v2/key"
 	tea "charm.land/bubbletea/v2"
 
+	"github.com/virtualprivatenode/vpn/internal/app"
 	"github.com/virtualprivatenode/vpn/internal/config"
 	"github.com/virtualprivatenode/vpn/internal/installer"
 	"github.com/virtualprivatenode/vpn/internal/lndrpc"
@@ -89,19 +90,13 @@ func walletUnavailableHelpBindings(c *ScreenContext) []key.Binding {
 	return []key.Binding{enter, kSidebar, kBack, kQuit}
 }
 
-// ── OnChainContext ───────────────────────────────────────
-// Shared on-chain state that the on-chain send screen
-// reads. Model owns the data and keeps it synced.
-// Only OnChainSendScreen receives this — other screens
-// don't need it.
-
+// OnChainContext holds wallet data and the selection shared by home and send.
+// Prepared sends own copies of their reviewed inputs.
 type OnChainContext struct {
-	Utxos             []lndrpc.UTXO
-	UtxoSelected      map[int]bool
-	UtxoSelectedTotal int64
-	UtxoOutpoints     []string
-	OnChainTxs        []lndrpc.OnChainTx
-	SendFeeTiers      [4]feeTier
+	Utxos        []lndrpc.UTXO
+	Selection    app.CoinSelection
+	OnChainTxs   []lndrpc.OnChainTx
+	SendFeeTiers [4]feeTier
 }
 
 // ── Screen-to-Model messages ────────────────────────────
@@ -158,10 +153,6 @@ type showFullURLMsg struct {
 // data.
 type refreshStatusMsg struct{}
 
-// clearUtxoSelectionMsg tells Model to clear coin control
-// selection after a successful on-chain send.
-type clearUtxoSelectionMsg struct{}
-
 // ── Message emitters ────────────────────────────────────
 // Screens use these as tea.Cmd values. Each is a
 // func() tea.Msg that returns instantly — the message
@@ -185,8 +176,4 @@ func emitFocusParent() tea.Msg {
 
 func emitRefreshStatus() tea.Msg {
 	return refreshStatusMsg{}
-}
-
-func emitClearUtxoSelection() tea.Msg {
-	return clearUtxoSelectionMsg{}
 }

@@ -314,16 +314,14 @@ func (s *OnChainHomeScreen) openSend() (
 ) {
 	screen := NewOnChainSendScreen(
 		s.ctx, s.ocCtx)
-	// Pre-fill fee before Max so the computation
-	// uses the real fee rate, not the default of 1.
+	// Pre-fill the manual rate from the cached suggestion.
 	if s.ocCtx.SendFeeTiers[0].SatPerVB > 0 {
 		screen.feeInput.SetSats(
 			int64(s.ocCtx.SendFeeTiers[0].SatPerVB))
 	}
-	// Engage Max for UTXO selection (send_all +
-	// amount = selectedTotal - estFee).
-	if len(s.ocCtx.UtxoSelected) > 0 {
-		screen.EngageMaxForSelection()
+	// Selected coins default to Max; LND determines the net amount.
+	if s.ocCtx.Selection.Len() > 0 {
+		screen.applyMax()
 	}
 	replace := s.utxoChanged
 	s.utxoChanged = false
@@ -566,9 +564,13 @@ func (s *OnChainHomeScreen) View(
 	headerLines = append(headerLines, "")
 
 	sendLabel := "Send"
-	if len(s.ocCtx.UtxoSelected) > 0 {
-		sendLabel = fmt.Sprintf("Send Selected (%s)",
-			formatSats(s.ocCtx.UtxoSelectedTotal))
+	if s.ocCtx.Selection.Len() > 0 {
+		total, err := s.ocCtx.Selection.Total(s.ocCtx.Utxos)
+		if err != nil {
+			sendLabel = "Send Selected (unavailable)"
+		} else {
+			sendLabel = fmt.Sprintf("Send Selected (%s)", formatSats(total))
+		}
 	}
 	headerLines = append(headerLines,
 		renderButtons(
@@ -623,7 +625,7 @@ func (s *OnChainHomeScreen) View(
 			isSelected := isFocused &&
 				s.focusZone == ocHomeZoneUtxos &&
 				s.utxoCursor == i
-			isChecked := s.ocCtx.UtxoSelected[i]
+			isChecked := s.ocCtx.Selection.Contains(u)
 
 			// Date from tx lookup
 			dateStr := s.utxoDate(u.Txid)
@@ -1039,28 +1041,7 @@ func (s *OnChainHomeScreen) toggleSelection(idx int) {
 	if idx < 0 || idx >= len(s.ocCtx.Utxos) {
 		return
 	}
-	if s.ocCtx.UtxoSelected[idx] {
-		delete(s.ocCtx.UtxoSelected, idx)
-	} else {
-		s.ocCtx.UtxoSelected[idx] = true
-	}
-	s.recalcSelectedTotal()
-}
-
-func (s *OnChainHomeScreen) recalcSelectedTotal() {
-	s.ocCtx.UtxoSelectedTotal = 0
-	s.ocCtx.UtxoOutpoints = nil
-	for idx := range s.ocCtx.UtxoSelected {
-		if idx < len(s.ocCtx.Utxos) {
-			s.ocCtx.UtxoSelectedTotal +=
-				s.ocCtx.Utxos[idx].AmountSats
-			s.ocCtx.UtxoOutpoints = append(
-				s.ocCtx.UtxoOutpoints,
-				fmt.Sprintf("%s:%d",
-					s.ocCtx.Utxos[idx].Txid,
-					s.ocCtx.Utxos[idx].Vout))
-		}
-	}
+	s.ocCtx.Selection.Toggle(s.ocCtx.Utxos[idx])
 }
 
 // ── Helpers ─────────────────────────────────────────────

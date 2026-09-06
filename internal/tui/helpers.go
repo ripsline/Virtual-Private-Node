@@ -117,19 +117,6 @@ func estimateSimpleFee(
 	return vbytes * satPerVB
 }
 
-// isValidOnChainAddr does a basic prefix check.
-// LND will do full validation on send.
-func isValidOnChainAddr(addr string, network string) bool {
-	if len(addr) < 14 {
-		return false
-	}
-	profile, err := config.NetworkConfigFromName(network)
-	if err != nil {
-		return false
-	}
-	return profile.AcceptsOnChainAddress(addr)
-}
-
 // renderViewport creates a local viewport, sets content,
 // auto-scrolls to keep cursorLine visible, and returns the
 // rendered view with scroll indicators overlaid.
