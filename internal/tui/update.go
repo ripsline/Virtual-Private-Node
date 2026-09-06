@@ -154,24 +154,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.screen == nil || msg.screen.step != ocStepResult {
 			return m, nil
 		}
-		// Done belongs to its screen even if navigation changes before delivery.
-		for i, tab := range m.tabs {
-			if tab.Screen != msg.screen || onChainSendBusy(tab.Screen) {
-				continue
-			}
-			if tab.Section == m.nav.ActiveSection() {
-				for index, visible := range m.effectiveTabs() {
-					if visible.Screen == msg.screen {
-						return m.closeTab(index)
-					}
-				}
-			} else {
-				m.tabs = append(m.tabs[:i], m.tabs[i+1:]...)
-				m.sectionFocus[tab.Section] = 0
-				return m, nil
-			}
+		return m.closeScreenTab(msg.screen)
+	case closeChannelOpenMsg:
+		if msg.screen == nil || msg.screen.step != coStepResult {
+			return m, nil
 		}
-		return m, nil
+		return m.closeScreenTab(msg.screen)
 	case focusSidebarMsg:
 		m.focusSidebar()
 		return m, nil
@@ -262,7 +250,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					t.Section == sec {
 					m.activeTab = i
 					m.rememberTabPosition()
-					if msg.Replace && onChainSendBusy(t.Screen) {
+					if msg.Replace && (onChainSendBusy(t.Screen) || channelOpenBusy(t.Screen)) {
 						return m, nil
 					}
 					if msg.Replace &&
@@ -883,6 +871,27 @@ func (m Model) handleTabBarKey(
 	return m, nil
 }
 
+// Done belongs to its originating screen even if navigation changes before delivery.
+func (m Model) closeScreenTab(screen Screen) (tea.Model, tea.Cmd) {
+	for i, tab := range m.tabs {
+		if tab.Screen != screen {
+			continue
+		}
+		if tab.Section == m.nav.ActiveSection() {
+			for index, visible := range m.effectiveTabs() {
+				if visible.Screen == screen {
+					return m.closeTab(index)
+				}
+			}
+		} else {
+			m.tabs = append(m.tabs[:i], m.tabs[i+1:]...)
+			m.sectionFocus[tab.Section] = 0
+			return m, nil
+		}
+	}
+	return m, nil
+}
+
 func (m Model) closeTab(
 	tabIdx int,
 ) (tea.Model, tea.Cmd) {
@@ -892,8 +901,8 @@ func (m Model) closeTab(
 	}
 
 	closingTab := tabs[tabIdx]
-	// Keep a submitted send reachable until its bounded RPC returns.
-	if onChainSendBusy(closingTab.Screen) {
+	// Keep submitted funding operations reachable until their bounded calls return.
+	if onChainSendBusy(closingTab.Screen) || channelOpenBusy(closingTab.Screen) {
 		return m, nil
 	}
 
@@ -1044,12 +1053,12 @@ func (m *Model) setTabScreen(
 	}
 }
 
-// Payment, invoice, and on-chain send results reach their open tabs across sections.
+// Payment, invoice, on-chain send and channel-open results reach their open tabs across sections.
 // Other workflows retain visible-section routing until their lifecycle is reviewed.
 func (m Model) routeToScreen(kind tabKind, msg tea.Msg) (Model, tea.Cmd, bool) {
 	section := m.nav.ActiveSection()
 	for i, tab := range m.tabs {
-		if tab.Section != section && kind != tabSend && kind != tabReceive && kind != tabOnChain {
+		if tab.Section != section && kind != tabSend && kind != tabReceive && kind != tabOnChain && kind != tabOpenChannel {
 			continue
 		}
 		if tab.Kind == kind && tab.Screen != nil {

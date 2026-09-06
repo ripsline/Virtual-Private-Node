@@ -107,38 +107,14 @@ func removeSyncthingDeviceCmd(
 
 // ── LND queries & fund-moving ────────────────────────────
 
-func openChannelCmd(
-	client *lndrpc.Client, pubkey, host string,
-	amount int64, private bool, taproot bool,
-	outpoints []string, fundMax bool,
-	satPerVbyte uint64,
-) tea.Cmd {
+type channelOpenAttempt struct {
+	prepared app.PreparedChannelOpen
+	alias    string
+}
+
+func openChannelCmd(client app.ChannelOpenClient, attempt *channelOpenAttempt) tea.Cmd {
 	return func() tea.Msg {
-		if client == nil {
-			return channelOpenResultMsg{
-				err: fmt.Errorf("LND not connected")}
-		}
-		if host != "" {
-			if err := client.ConnectPeer(
-				pubkey, host); err != nil {
-				logger.TUI(
-					"Peer connect warning: %v", err)
-			}
-		}
-		if err := client.WaitForPeer(
-			pubkey, 60*time.Second); err != nil {
-			return channelOpenResultMsg{
-				err: fmt.Errorf(
-					"could not connect: %v", err)}
-		}
-		result, err := client.OpenChannel(
-			pubkey, amount, private, taproot,
-			outpoints, fundMax, satPerVbyte)
-		if err != nil {
-			return channelOpenResultMsg{err: err}
-		}
-		return channelOpenResultMsg{
-			txid: result.FundingTxID}
+		return channelOpenResultMsg{attempt: attempt, result: app.OpenChannel(client, attempt.prepared)}
 	}
 }
 

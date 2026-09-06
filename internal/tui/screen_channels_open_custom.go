@@ -1,11 +1,10 @@
 package tui
 
 import (
-	"strings"
-
 	"charm.land/bubbles/v2/key"
 	tea "charm.land/bubbletea/v2"
 
+	"github.com/virtualprivatenode/vpn/internal/app"
 	"github.com/virtualprivatenode/vpn/internal/theme"
 )
 
@@ -193,20 +192,9 @@ func (s *ChannelOpenScreen) handleCustomButtonKey(
 func (s *ChannelOpenScreen) submitCustomPeer() (
 	Screen, tea.Cmd,
 ) {
-	pubkey := strings.TrimSpace(
-		s.pubkeyInput.Value())
-	host := strings.TrimSpace(
-		s.hostInput.Value())
-	if pubkey == "" {
-		s.error = "Pubkey is required"
-		return s, nil
-	}
-	if len(pubkey) != 66 {
-		s.error = "Pubkey must be 66 hex chars"
-		return s, nil
-	}
-	if host == "" {
-		s.error = "Host required"
+	pubkey, host, err := app.ValidateChannelPeer(s.pubkeyInput.Value(), s.hostInput.Value())
+	if err != nil {
+		s.error = err.Error()
 		return s, nil
 	}
 	s.customPubkey = pubkey

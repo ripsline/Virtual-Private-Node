@@ -2,6 +2,7 @@ package tui
 
 import (
 	"fmt"
+	"math"
 	"strings"
 
 	"charm.land/bubbles/v2/key"
@@ -12,78 +13,77 @@ import (
 	"github.com/virtualprivatenode/vpn/internal/theme"
 )
 
-// ── UTXO + transaction fetch for channel open ─────────
-// Separate message types so the Model-level utxoListMsg
-// and onChainTxMsg handlers (which populate OnChainContext)
-// are unaffected. Both routed via dispatchToTab(tabOpenChannel)
-// in update.go. Fetched in parallel via tea.Batch,
-// matching the previewSection(secOnChain) pattern.
+// Each refresh belongs to one screen and supersedes its previous requests.
+// A completed or submitted attempt no longer accepts these presentation reads.
+type channelOpenRefresh struct{ screen *ChannelOpenScreen }
 
 type coUtxoListMsg struct {
-	utxos []lndrpc.UTXO
-	err   error
+	refresh *channelOpenRefresh
+	utxos   []lndrpc.UTXO
+	err     error
 }
-
 type coTxListMsg struct {
-	txs []lndrpc.OnChainTx
-	err error
+	refresh *channelOpenRefresh
+	txs     []lndrpc.OnChainTx
+	err     error
 }
 
-func fetchChannelUtxosCmd(
-	client *lndrpc.Client,
-) tea.Cmd {
+func (s *ChannelOpenScreen) refreshCoins() tea.Cmd {
+	s.refresh = &channelOpenRefresh{screen: s}
+	return tea.Batch(fetchChannelUtxosCmd(s.ctx.LndClient, s.refresh), fetchChannelTxsCmd(s.ctx.LndClient, s.refresh))
+}
+
+func fetchChannelUtxosCmd(client *lndrpc.Client, refresh *channelOpenRefresh) tea.Cmd {
 	return func() tea.Msg {
 		if client == nil {
-			return coUtxoListMsg{err: fmt.Errorf(
-				"LND not connected")}
+			return coUtxoListMsg{refresh: refresh, err: fmt.Errorf("LND not connected")}
 		}
-		utxos, err := client.ListUnspent(0, 999999)
-		return coUtxoListMsg{utxos: utxos, err: err}
+		utxos, err := client.ListUnspent(0, math.MaxInt32)
+		return coUtxoListMsg{refresh: refresh, utxos: utxos, err: err}
 	}
 }
 
-func fetchChannelTxsCmd(
-	client *lndrpc.Client,
-) tea.Cmd {
+func fetchChannelTxsCmd(client *lndrpc.Client, refresh *channelOpenRefresh) tea.Cmd {
 	return func() tea.Msg {
 		if client == nil {
-			return coTxListMsg{err: fmt.Errorf(
-				"LND not connected")}
+			return coTxListMsg{refresh: refresh, err: fmt.Errorf("LND not connected")}
 		}
 		txs, err := client.GetTransactions()
-		return coTxListMsg{txs: txs, err: err}
+		return coTxListMsg{refresh: refresh, txs: txs, err: err}
 	}
 }
 
-func (s *ChannelOpenScreen) handleUtxoList(
-	msg coUtxoListMsg,
-) (Screen, tea.Cmd) {
+func (s *ChannelOpenScreen) handleUtxoList(msg coUtxoListMsg) (Screen, tea.Cmd) {
+	if msg.refresh == nil || msg.refresh != s.refresh || s.step >= coStepOpening {
+		return s, nil
+	}
+	if s.utxoErr != nil && s.error == s.utxoErr.Error() {
+		s.error = ""
+	}
+	s.utxoErr = msg.err
 	if msg.err != nil {
 		s.error = msg.err.Error()
 		return s, nil
 	}
 	s.utxos = msg.utxos
 	s.utxoFetched = true
-	// Prune selections beyond new UTXO range
-	for idx := range s.utxoSelected {
-		if idx >= len(s.utxos) {
-			delete(s.utxoSelected, idx)
-		}
-	}
-	s.recalcUtxoTotal()
+	s.utxoCursor = max(0, min(s.utxoCursor, len(s.utxos)-1))
 	return s, nil
 }
 
-func (s *ChannelOpenScreen) handleTxList(
-	msg coTxListMsg,
-) (Screen, tea.Cmd) {
-	if msg.err != nil {
-		// Non-fatal: table still works without
-		// date and label columns.
-		return s, nil
+func (s *ChannelOpenScreen) handleTxList(msg coTxListMsg) (Screen, tea.Cmd) {
+	if msg.refresh != nil && msg.refresh == s.refresh && s.step < coStepOpening && msg.err == nil {
+		s.txs = msg.txs
 	}
-	s.txs = msg.txs
 	return s, nil
+}
+
+func (s *ChannelOpenScreen) selectionSummary() string {
+	total, err := s.selection.Total(s.utxos)
+	if err != nil {
+		return fmt.Sprintf("%d selected; unavailable coins", s.selection.Len())
+	}
+	return fmt.Sprintf("%d selected (%s sats)", s.selection.Len(), formatSats(total))
 }
 
 // ── Transaction lookup helpers ────────────────────────
@@ -234,10 +234,15 @@ func (s *ChannelOpenScreen) returnFromCoinControl(
 	s.step = coStepInput
 	s.error = ""
 
-	if confirm && len(s.utxoSelected) > 0 {
+	if confirm && s.selection.Len() > 0 {
 		// Pre-fill amount, auto-confirm, advance
-		s.amount = s.utxoSelectedTotal
-		s.amountInput.SetSats(s.amount)
+		total, err := s.selection.Total(s.utxos)
+		if err != nil {
+			s.error = err.Error()
+			s.step = coStepCoinControl
+			return s, nil
+		}
+		s.amountInput.SetSats(total)
 		s.fundMax = true
 		s.amountConfirmed = true
 		s.amountIdx = 1
@@ -247,11 +252,10 @@ func (s *ChannelOpenScreen) returnFromCoinControl(
 		return s, nil
 	}
 
-	// No selection or cancelled
-	if len(s.utxoSelected) == 0 {
-		s.amount = 0
+	// Returning without confirmation requires another amount review.
+	s.amountConfirmed = false
+	if s.selection.Len() == 0 {
 		s.fundMax = false
-		s.amountConfirmed = false
 		s.amountInput.Clear()
 	}
 	s.focusZone = coZoneAmounts
@@ -261,33 +265,9 @@ func (s *ChannelOpenScreen) returnFromCoinControl(
 
 // ── Selection helpers ──────────────────────────────────
 
-func (s *ChannelOpenScreen) toggleUtxoSelection(
-	idx int,
-) {
-	if idx < 0 || idx >= len(s.utxos) {
-		return
-	}
-	if s.utxoSelected[idx] {
-		delete(s.utxoSelected, idx)
-	} else {
-		s.utxoSelected[idx] = true
-	}
-	s.recalcUtxoTotal()
-}
-
-func (s *ChannelOpenScreen) recalcUtxoTotal() {
-	s.utxoSelectedTotal = 0
-	s.utxoOutpoints = nil
-	for idx := range s.utxoSelected {
-		if idx < len(s.utxos) {
-			s.utxoSelectedTotal +=
-				s.utxos[idx].AmountSats
-			s.utxoOutpoints = append(
-				s.utxoOutpoints,
-				fmt.Sprintf("%s:%d",
-					s.utxos[idx].Txid,
-					s.utxos[idx].Vout))
-		}
+func (s *ChannelOpenScreen) toggleUtxoSelection(idx int) {
+	if idx >= 0 && idx < len(s.utxos) {
+		s.selection.Toggle(s.utxos[idx])
 	}
 }
 
@@ -299,12 +279,8 @@ func (s *ChannelOpenScreen) viewCoinControl(
 	p := newPane(w)
 	p.title(theme.Header, "Coin Control")
 
-	// Selection summary
-	if len(s.utxoSelected) > 0 {
-		p.field("Selected: ",
-			fmt.Sprintf("%d UTXO(s) (%s sats)",
-				len(s.utxoSelected),
-				formatSats(s.utxoSelectedTotal)))
+	if s.selection.Len() > 0 {
+		p.field("Selected: ", s.selectionSummary())
 	} else {
 		p.dim(" Select UTXOs for the channel open.")
 	}
@@ -390,7 +366,7 @@ func (s *ChannelOpenScreen) viewUtxoTable(
 	for i := startIdx; i < endIdx; i++ {
 		u := s.utxos[i]
 		isCursor := focused && s.utxoCursor == i
-		isChecked := s.utxoSelected[i]
+		isChecked := s.selection.Contains(u)
 
 		// Date from tx lookup
 		dateStr := s.utxoDate(u.Txid)

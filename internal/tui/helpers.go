@@ -107,16 +107,6 @@ func formatFeeHints(tiers [4]feeTier) string {
 	return strings.Join(parts, "  ·  ")
 }
 
-// estimateSimpleFee estimates the transaction fee in
-// sats given the number of inputs, outputs, and the
-// fee rate in sat/vB. Uses simplified vbyte estimation.
-func estimateSimpleFee(
-	numInputs, numOutputs int, satPerVB int64,
-) int64 {
-	vbytes := int64(10 + numInputs*68 + numOutputs*31)
-	return vbytes * satPerVB
-}
-
 // renderViewport creates a local viewport, sets content,
 // auto-scrolls to keep cursorLine visible, and returns the
 // rendered view with scroll indicators overlaid.
