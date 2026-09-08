@@ -113,7 +113,8 @@ type closeTabMsg struct{}
 type openTabMsg struct {
 	Kind        tabKind
 	Label       string
-	Index       int // for detail tabs (dedup key)
+	Index       int    // for other detail tabs (dedup key)
+	Key         string // funding outpoint for channel detail tabs
 	Screen      Screen
 	FocusTabBar bool    // true = tab bar focused on open
 	Replace     bool    // true = replace existing screen on dedup

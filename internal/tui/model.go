@@ -66,7 +66,8 @@ const (
 type openTab struct {
 	Kind  tabKind
 	Label string
-	Index int // channel index, payment index, etc.
+	Index int    // row identity for other detail tabs
+	Key   string // funding outpoint for channel detail tabs
 	// Section is the sticky owner of this tab — set
 	// at construction from m.nav.ActiveSection() and
 	// must never be mutated afterward. effectiveTabs,
@@ -202,9 +203,9 @@ type onChainTxMsg struct {
 	err error
 }
 
-type closeChannelMsg struct {
-	txid string
-	err  error
+type channelCloseResultMsg struct {
+	attempt *channelCloseAttempt
+	result  app.ChannelCloseResult
 }
 
 type closedChannelsMsg struct {

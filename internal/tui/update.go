@@ -160,6 +160,16 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		return m.closeScreenTab(msg.screen)
+	case closeChannelDoneMsg:
+		if msg.screen == nil || msg.screen.step != closeStepResult {
+			return m, nil
+		}
+		for _, tab := range m.tabs {
+			if detail, ok := tab.Screen.(*ChannelDetailScreen); ok && detail.closeScreen == msg.screen {
+				return m.closeScreenTab(detail)
+			}
+		}
+		return m, nil
 	case focusSidebarMsg:
 		m.focusSidebar()
 		return m, nil
@@ -223,8 +233,22 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case refreshStatusMsg:
 		return m, fetchStatus(m.cfg, m.state, m.lndClient)
 	case openTabMsg:
+		if msg.Kind == tabChannel {
+			detail, ok := msg.Screen.(*ChannelDetailScreen)
+			if !ok || msg.Key == "" || detail.channel.ChannelPoint != msg.Key || m.nav.ActiveSection() != secChannels {
+				return m, nil
+			}
+			for i, tab := range m.effectiveTabs() {
+				if tab.Kind == tabChannel && tab.Key == msg.Key {
+					m.activeTab = i
+					m.rememberTabPosition()
+					m.focusContent()
+					return m, m.activateTab()
+				}
+			}
+		}
 		// Dedup by kind + index if Index is set
-		if msg.Index != 0 {
+		if msg.Kind != tabChannel && msg.Index != 0 {
 			tabs := m.effectiveTabs()
 			for i, t := range tabs {
 				if t.Kind == msg.Kind &&
@@ -242,7 +266,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		}
 		// Dedup flow tabs by kind + section
-		if msg.Index == 0 {
+		if msg.Kind != tabChannel && msg.Index == 0 {
 			sec := m.nav.ActiveSection()
 			tabs := m.effectiveTabs()
 			for i, t := range tabs {
@@ -278,6 +302,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			Kind:    msg.Kind,
 			Label:   msg.Label,
 			Index:   msg.Index,
+			Key:     msg.Key,
 			Section: m.nav.ActiveSection(),
 			Parent:  msg.Parent,
 			Screen:  msg.Screen,
@@ -392,29 +417,18 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 	case sendCoinsResultMsg:
 		return m.dispatchToTab(tabOnChain, msg)
-	case closeChannelMsg:
-		// Broadcast to all channel detail tabs — only
-		// the one with an active close flow (embedded
-		// ChannelCloseScreen) will consume the message.
-		// Broadcast is needed because multiple detail
-		// tabs can be open simultaneously, and
-		// dispatchToTab's first-match would miss the
-		// active close flow if it's not on the first
-		// detail tab.
-		tabs := m.effectiveTabs()
+	case channelCloseResultMsg, channelCloseFeesMsg:
 		var cmds []tea.Cmd
-		for i, tab := range tabs {
-			if tab.Kind == tabChannel &&
-				tab.Screen != nil {
-				m.screenCtx.HasTabs = m.hasDetailTabs()
-				m.screenCtx.ContentFocused =
-					m.contentFocused
-				newScreen, cmd :=
-					tab.Screen.HandleMsg(msg)
-				m.setTabScreen(i, newScreen)
-				if cmd != nil {
-					cmds = append(cmds, cmd)
-				}
+		for i, tab := range m.tabs {
+			if tab.Kind != tabChannel || tab.Screen == nil {
+				continue
+			}
+			m.screenCtx.HasTabs = true
+			m.screenCtx.ContentFocused = m.contentFocused && tab.Section == m.nav.ActiveSection()
+			screen, cmd := tab.Screen.HandleMsg(msg)
+			m.tabs[i].Screen = screen
+			if cmd != nil {
+				cmds = append(cmds, cmd)
 			}
 		}
 		return m, tea.Batch(cmds...)
@@ -439,7 +453,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Keep each screen update and batch the resulting commands.
 		var cmds []tea.Cmd
 		for _, kind := range []tabKind{
-			tabChannel, tabOnChain, tabOpenChannel,
+			tabOnChain, tabOpenChannel,
 		} {
 			rm, cmd, ok := m.routeToScreen(kind, msg)
 			if !ok {
@@ -901,8 +915,8 @@ func (m Model) closeTab(
 	}
 
 	closingTab := tabs[tabIdx]
-	// Keep submitted funding operations reachable until their bounded calls return.
-	if onChainSendBusy(closingTab.Screen) || channelOpenBusy(closingTab.Screen) {
+	// Keep submitted operations reachable until their bounded calls return.
+	if onChainSendBusy(closingTab.Screen) || channelOpenBusy(closingTab.Screen) || channelCloseBusy(closingTab.Screen) {
 		return m, nil
 	}
 
@@ -917,7 +931,7 @@ func (m Model) closeTab(
 			return false
 		}
 		if t.Kind == closingTab.Kind &&
-			t.Index == closingTab.Index {
+			t.Index == closingTab.Index && t.Key == closingTab.Key {
 			return true
 		}
 		// Cascade: remove children whose Parent is
@@ -1046,6 +1060,7 @@ func (m *Model) setTabScreen(
 	for i := range m.tabs {
 		if m.tabs[i].Kind == target.Kind &&
 			m.tabs[i].Index == target.Index &&
+			m.tabs[i].Key == target.Key &&
 			m.tabs[i].Section == target.Section {
 			m.tabs[i].Screen = s
 			return
